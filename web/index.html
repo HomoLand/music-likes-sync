@@ -136,7 +136,14 @@
             </details>
             <div class="auth-stage quote-mode" id="authStage">
               <div class="qr-box" id="neteaseQrBox" hidden>
-                <img id="neteaseQrImage" alt="网易云登录二维码">
+                <div class="qr-visual">
+                  <img id="neteaseQrImage" alt="网易云登录二维码" hidden>
+                  <div class="qr-placeholder" id="neteaseQrPlaceholder" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M7 3H3v4M17 3h4v4M7 21H3v-4M21 17v4h-4M8 8h2v2H8zM14 8h2v2h-2zM8 14h2v2H8zM14 14h2v2h-2z"/>
+                    </svg>
+                  </div>
+                </div>
                 <div>
                   <strong id="neteaseQrTitle">等待扫码</strong>
                   <span id="neteaseQrHint">用网易云音乐 App 扫码并确认登录。</span>

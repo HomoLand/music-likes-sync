@@ -47,6 +47,7 @@ const elements = {
   neteaseQrButton: $('#neteaseQrButton'),
   neteaseQrBox: $('#neteaseQrBox'),
   neteaseQrImage: $('#neteaseQrImage'),
+  neteaseQrPlaceholder: $('#neteaseQrPlaceholder'),
   neteaseQrTitle: $('#neteaseQrTitle'),
   neteaseQrHint: $('#neteaseQrHint'),
   qqSnapshotButton: $('#qqSnapshotButton'),
@@ -409,14 +410,20 @@ async function startNeteaseQr() {
   try {
     closeManualCookie('qr');
     elements.neteaseQrBox.hidden = false;
+    elements.neteaseQrBox.classList.add('is-loading');
+    elements.neteaseQrImage.hidden = true;
     elements.neteaseQrImage.removeAttribute('src');
+    elements.neteaseQrPlaceholder.hidden = false;
     elements.neteaseQrTitle.textContent = '正在生成二维码';
     elements.neteaseQrHint.textContent = '正在向网易云请求登录二维码。';
     setAuthStage('qr');
     const payload = await postJson('/api/netease/qr/start', {});
-    if (!payload.ok) throw new Error(payload.error || '二维码生成失败');
+    if (!payload.ok || !payload.qr?.qrimg) throw new Error(payload.error || '二维码生成失败');
     neteaseQrKey = payload.qr.key;
     elements.neteaseQrImage.src = payload.qr.qrimg;
+    elements.neteaseQrImage.hidden = false;
+    elements.neteaseQrPlaceholder.hidden = true;
+    elements.neteaseQrBox.classList.remove('is-loading');
     elements.neteaseQrTitle.textContent = '等待扫码';
     elements.neteaseQrHint.textContent = '用网易云音乐 App 扫码并确认登录。';
     showToast('网易云二维码已生成');
@@ -444,7 +451,10 @@ function hideNeteaseQr(options = {}) {
     neteaseQrKey = '';
   }
   elements.neteaseQrBox.hidden = true;
+  elements.neteaseQrBox.classList.remove('is-loading');
+  elements.neteaseQrImage.hidden = true;
   elements.neteaseQrImage.removeAttribute('src');
+  elements.neteaseQrPlaceholder.hidden = false;
 }
 
 function setAuthStage(mode) {

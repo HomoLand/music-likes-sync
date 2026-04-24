@@ -522,13 +522,13 @@ select {
 }
 
 .quote-topline {
-  position: relative;
-  z-index: 1;
   display: flex;
   align-items: center;
 }
 
 .quote-topline span {
+  position: relative;
+  z-index: 1;
   color: var(--muted);
   font-size: 12px;
   text-transform: uppercase;
@@ -585,15 +585,70 @@ select {
   align-items: center;
 }
 
+.qr-visual {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: white;
+}
+
 .qr-box[hidden] {
   display: none;
 }
 
 .qr-box img {
-  width: 132px;
-  height: 132px;
+  width: 100%;
+  height: 100%;
   border-radius: 6px;
   background: white;
+  display: block;
+}
+
+.qr-visual img[hidden],
+.qr-placeholder[hidden] {
+  display: none;
+}
+
+.qr-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(31, 111, 91, 0.34);
+  border-radius: 6px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(31, 111, 91, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(31, 111, 91, 0.08), rgba(216, 162, 51, 0.1)),
+    white;
+  color: var(--green);
+}
+
+.qr-placeholder svg {
+  width: 54px;
+  height: 54px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  animation: qr-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes qr-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.96);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .qr-box strong,
@@ -1276,7 +1331,7 @@ pre {
     margin-left: 0;
   }
 
-  .qr-box img {
+  .qr-visual {
     width: 150px;
     height: 150px;
   }
