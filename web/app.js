@@ -97,6 +97,7 @@ let activeFilter = 'all-gaps';
 let libraryOffset = 0;
 let libraryLimit = 40;
 let searchTimer = 0;
+let manualCloseTarget = '';
 
 init();
 
@@ -155,6 +156,12 @@ async function fetchAuthQuote() {
 function bindEvents() {
   elements.authQuoteRefresh?.addEventListener('click', fetchAuthQuote);
   elements.manualCookieDetails?.addEventListener('toggle', () => {
+    if (manualCloseTarget) {
+      const target = manualCloseTarget;
+      manualCloseTarget = '';
+      setAuthStage(target);
+      return;
+    }
     if (elements.manualCookieDetails.open) {
       hideNeteaseQr({ stopPolling: true });
       setAuthStage('manual');
@@ -400,23 +407,34 @@ async function startNeteaseQr() {
   if (busy) return;
   setBusy(true);
   try {
-    elements.manualCookieDetails.open = false;
+    closeManualCookie('qr');
+    elements.neteaseQrBox.hidden = false;
+    elements.neteaseQrImage.removeAttribute('src');
+    elements.neteaseQrTitle.textContent = '正在生成二维码';
+    elements.neteaseQrHint.textContent = '正在向网易云请求登录二维码。';
+    setAuthStage('qr');
     const payload = await postJson('/api/netease/qr/start', {});
     if (!payload.ok) throw new Error(payload.error || '二维码生成失败');
     neteaseQrKey = payload.qr.key;
     elements.neteaseQrImage.src = payload.qr.qrimg;
-    elements.neteaseQrBox.hidden = false;
-    setAuthStage('qr');
     elements.neteaseQrTitle.textContent = '等待扫码';
     elements.neteaseQrHint.textContent = '用网易云音乐 App 扫码并确认登录。';
     showToast('网易云二维码已生成');
     clearInterval(neteaseQrTimer);
     neteaseQrTimer = setInterval(checkNeteaseQr, 1800);
   } catch (error) {
+    hideNeteaseQr({ stopPolling: true });
+    setAuthStage('quote');
     showToast(error.message || String(error), true);
   } finally {
     setBusy(false);
   }
+}
+
+function closeManualCookie(targetMode = '') {
+  if (!elements.manualCookieDetails?.open) return;
+  manualCloseTarget = targetMode;
+  elements.manualCookieDetails.open = false;
 }
 
 function hideNeteaseQr(options = {}) {
@@ -426,6 +444,7 @@ function hideNeteaseQr(options = {}) {
     neteaseQrKey = '';
   }
   elements.neteaseQrBox.hidden = true;
+  elements.neteaseQrImage.removeAttribute('src');
 }
 
 function setAuthStage(mode) {

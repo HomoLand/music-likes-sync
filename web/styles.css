@@ -526,8 +526,6 @@ select {
   z-index: 1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .quote-topline span {
@@ -537,6 +535,10 @@ select {
 }
 
 .quote-refresh {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
   min-height: 32px;
   width: 32px;
   padding: 0;
@@ -562,6 +564,7 @@ select {
 .auth-hitokoto small {
   position: relative;
   z-index: 1;
+  padding-right: 42px;
   min-height: 18px;
   color: var(--muted);
   font-size: 12px;
