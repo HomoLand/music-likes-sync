@@ -163,7 +163,7 @@ h1 {
 
 .grid {
   display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(340px, 1.05fr);
+  grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
   gap: 18px;
   align-items: start;
   min-width: 0;
@@ -200,10 +200,6 @@ h1 {
 .panel h2 {
   font-size: 20px;
   line-height: 1.1;
-}
-
-.panel-apple {
-  grid-row: span 2;
 }
 
 .dropzone {
@@ -317,6 +313,93 @@ select {
   flex: 1 1 190px;
 }
 
+.auth-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.login-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.login-actions button {
+  min-width: 0;
+}
+
+.manual-cookie,
+.optional-section {
+  border-top: 1px solid rgba(213, 200, 180, 0.76);
+  padding-top: 10px;
+}
+
+.manual-cookie summary,
+.optional-section summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.manual-cookie summary::marker,
+.optional-section summary::marker {
+  content: "";
+}
+
+.manual-cookie summary::-webkit-details-marker,
+.optional-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.manual-cookie summary::before,
+.optional-section summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 140ms ease;
+}
+
+.manual-cookie[open] summary::before,
+.optional-section[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.manual-cookie summary:hover,
+.optional-section summary:hover {
+  color: var(--ink);
+}
+
+.optional-section {
+  margin-bottom: 12px;
+}
+
+.optional-section textarea {
+  min-height: 116px;
+  margin-top: 10px;
+}
+
+.manual-cookie-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 10px;
+}
+
+.manual-cookie-body textarea {
+  min-height: 110px;
+}
+
+.manual-cookie-body button {
+  justify-self: start;
+}
+
 .qr-box {
   margin-top: 14px;
   border: 1px solid var(--line);
@@ -403,13 +486,29 @@ button:disabled {
   color: var(--green);
 }
 
+#runForm,
 .library-panel {
   grid-column: span 2;
 }
 
+.match-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.match-fields .field {
+  margin-bottom: 0;
+}
+
+#runForm .button-row button {
+  flex: 1 1 150px;
+}
+
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -932,14 +1031,17 @@ pre {
     border-bottom: 1px solid var(--line);
   }
 
-  .grid,
-  .library-panel {
+  .grid {
     grid-template-columns: 1fr;
+  }
+
+  #runForm,
+  .library-panel {
     grid-column: span 1;
   }
 
-  .panel-apple {
-    grid-row: span 1;
+  .match-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -962,6 +1064,9 @@ pre {
   }
 
   .two-col,
+  .login-actions,
+  .manual-cookie-body,
+  .match-fields,
   .summary-grid,
   .qr-box,
   .ai-panel,
