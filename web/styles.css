@@ -385,12 +385,7 @@ select {
 }
 
 .manual-cookie {
-  position: static;
-  z-index: 4;
-}
-
-.manual-cookie[open] {
-  z-index: 6;
+  flex: 0 0 auto;
 }
 
 .manual-cookie summary,
@@ -457,10 +452,8 @@ select {
 
 .manual-cookie-body {
   position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 18px;
-  z-index: 6;
+  inset: 0;
+  z-index: 2;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -479,9 +472,25 @@ select {
   justify-self: start;
 }
 
-.auth-filler {
+.auth-stage {
+  position: relative;
   flex: 1 1 auto;
-  min-height: 196px;
+  min-height: 232px;
+  display: grid;
+}
+
+.auth-stage.manual-mode .auth-filler,
+.auth-stage.manual-mode .qr-box,
+.auth-stage.qr-mode .auth-filler,
+.auth-stage.qr-mode .manual-cookie-body,
+.auth-stage.quote-mode .manual-cookie-body,
+.auth-stage.quote-mode .qr-box {
+  display: none;
+}
+
+.auth-filler {
+  position: absolute;
+  inset: 0;
   display: grid;
   align-items: stretch;
 }
@@ -559,18 +568,10 @@ select {
   line-height: 1.5;
 }
 
-.auth-panel:has(.manual-cookie[open]) .auth-filler,
-.auth-panel:has(.qr-box:not([hidden])) .auth-filler {
-  display: none;
-}
-
 .qr-box {
   position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 18px;
+  inset: 0;
   z-index: 5;
-  margin-top: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 252, 246, 0.96);

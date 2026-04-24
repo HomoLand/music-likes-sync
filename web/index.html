@@ -131,15 +131,17 @@
                 <strong>未保存</strong>
               </div>
             </div>
-            <div class="qr-box" id="neteaseQrBox" hidden>
-              <img id="neteaseQrImage" alt="网易云登录二维码">
-              <div>
-                <strong id="neteaseQrTitle">等待扫码</strong>
-                <span id="neteaseQrHint">用网易云音乐 App 扫码并确认登录。</span>
-              </div>
-            </div>
-            <details class="manual-cookie">
+            <details class="manual-cookie" id="manualCookieDetails">
               <summary>手动粘贴 Cookie（选填）</summary>
+            </details>
+            <div class="auth-stage quote-mode" id="authStage">
+              <div class="qr-box" id="neteaseQrBox" hidden>
+                <img id="neteaseQrImage" alt="网易云登录二维码">
+                <div>
+                  <strong id="neteaseQrTitle">等待扫码</strong>
+                  <span id="neteaseQrHint">用网易云音乐 App 扫码并确认登录。</span>
+                </div>
+              </div>
               <div class="manual-cookie-body">
                 <label class="field">
                   <span>QQ 音乐 Cookie</span>
@@ -154,17 +156,17 @@
                   保存 Cookie
                 </button>
               </div>
-            </details>
-            <div class="auth-filler">
-              <div class="auth-hitokoto">
-                <div class="quote-topline">
-                  <span>一言 API</span>
-                  <button class="quote-refresh" id="authQuoteRefresh" type="button" aria-label="换一句">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.8 9A7 7 0 0 0 6.2 7.8L4 10m2 5a7 7 0 0 0 11.8 1.2L20 14"/></svg>
-                  </button>
+              <div class="auth-filler">
+                <div class="auth-hitokoto">
+                  <div class="quote-topline">
+                    <span>一言 API</span>
+                    <button class="quote-refresh" id="authQuoteRefresh" type="button" aria-label="换一句">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.8 9A7 7 0 0 0 6.2 7.8L4 10m2 5a7 7 0 0 0 11.8 1.2L20 14"/></svg>
+                    </button>
+                  </div>
+                  <p id="authQuoteText">把歌单先放在同一张桌上，剩下的交给匹配。</p>
+                  <small id="authQuoteFrom">正在从 hitokoto.cn 取一句</small>
                 </div>
-                <p id="authQuoteText">把歌单先放在同一张桌上，剩下的交给匹配。</p>
-                <small id="authQuoteFrom">正在从 hitokoto.cn 取一句</small>
               </div>
             </div>
           </form>

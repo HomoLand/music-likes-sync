@@ -40,6 +40,8 @@ const elements = {
   cookieForm: $('#cookieForm'),
   qqCookie: $('#qqCookie'),
   neteaseCookie: $('#neteaseCookie'),
+  manualCookieDetails: $('#manualCookieDetails'),
+  authStage: $('#authStage'),
   qqBrowserOpenButton: $('#qqBrowserOpenButton'),
   qqBrowserCaptureButton: $('#qqBrowserCaptureButton'),
   neteaseQrButton: $('#neteaseQrButton'),
@@ -100,8 +102,15 @@ init();
 
 function init() {
   bindEvents();
+  resetAuthStage();
   fetchAuthQuote();
   refreshState();
+}
+
+function resetAuthStage() {
+  if (elements.manualCookieDetails) elements.manualCookieDetails.open = false;
+  hideNeteaseQr({ stopPolling: true });
+  setAuthStage('quote');
 }
 
 function renderLocalAuthQuote() {
@@ -145,6 +154,18 @@ async function fetchAuthQuote() {
 
 function bindEvents() {
   elements.authQuoteRefresh?.addEventListener('click', fetchAuthQuote);
+  elements.manualCookieDetails?.addEventListener('toggle', () => {
+    if (elements.manualCookieDetails.open) {
+      hideNeteaseQr({ stopPolling: true });
+      setAuthStage('manual');
+      return;
+    }
+    if (!elements.neteaseQrBox.hidden) {
+      setAuthStage('qr');
+      return;
+    }
+    setAuthStage('quote');
+  });
 
   elements.appleFile.addEventListener('change', async () => {
     const file = elements.appleFile.files?.[0];
@@ -379,11 +400,13 @@ async function startNeteaseQr() {
   if (busy) return;
   setBusy(true);
   try {
+    elements.manualCookieDetails.open = false;
     const payload = await postJson('/api/netease/qr/start', {});
     if (!payload.ok) throw new Error(payload.error || '二维码生成失败');
     neteaseQrKey = payload.qr.key;
     elements.neteaseQrImage.src = payload.qr.qrimg;
     elements.neteaseQrBox.hidden = false;
+    setAuthStage('qr');
     elements.neteaseQrTitle.textContent = '等待扫码';
     elements.neteaseQrHint.textContent = '用网易云音乐 App 扫码并确认登录。';
     showToast('网易云二维码已生成');
@@ -394,6 +417,22 @@ async function startNeteaseQr() {
   } finally {
     setBusy(false);
   }
+}
+
+function hideNeteaseQr(options = {}) {
+  if (options.stopPolling) {
+    clearInterval(neteaseQrTimer);
+    neteaseQrTimer = 0;
+    neteaseQrKey = '';
+  }
+  elements.neteaseQrBox.hidden = true;
+}
+
+function setAuthStage(mode) {
+  if (!elements.authStage) return;
+  elements.authStage.classList.toggle('manual-mode', mode === 'manual');
+  elements.authStage.classList.toggle('qr-mode', mode === 'qr');
+  elements.authStage.classList.toggle('quote-mode', mode === 'quote');
 }
 
 async function checkNeteaseQr() {
