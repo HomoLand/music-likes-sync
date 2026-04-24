@@ -53,6 +53,8 @@ const elements = {
   qqCount: $('#qqCount'),
   neteaseCount: $('#neteaseCount'),
   cookieState: $('#cookieState'),
+  qqCookieStatus: $('#qqCookieStatus'),
+  neteaseCookieStatus: $('#neteaseCookieStatus'),
   statusStack: $('#statusStack'),
   reportTime: $('#reportTime'),
   summaryGrid: $('#summaryGrid'),
@@ -393,9 +395,17 @@ function renderState(state) {
     state.hasQqCookie ? 'QQ 已存' : 'QQ 未存',
     state.hasNeteaseCookie ? '网易云已存' : '网易云未存',
   ].join(' / ');
+  setCredentialState(elements.qqCookieStatus, state.hasQqCookie);
+  setCredentialState(elements.neteaseCookieStatus, state.hasNeteaseCookie);
 
   renderReportSummary(state.report, state.unified, state.decisions);
   renderAiSummary(state.ai);
+}
+
+function setCredentialState(node, saved) {
+  if (!node) return;
+  node.classList.toggle('saved', Boolean(saved));
+  node.querySelector('strong').textContent = saved ? '本机已保存' : '待登录';
 }
 
 function setCount(kind, snapshot) {

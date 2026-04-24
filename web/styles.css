@@ -165,7 +165,7 @@ h1 {
   display: grid;
   grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
   min-width: 0;
 }
 
@@ -315,6 +315,7 @@ select {
 
 .auth-panel {
   display: grid;
+  align-content: start;
   gap: 14px;
 }
 
@@ -326,6 +327,44 @@ select {
 
 .login-actions button {
   min-width: 0;
+}
+
+.login-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.credential-state {
+  border: 1px solid rgba(213, 200, 180, 0.74);
+  border-radius: 8px;
+  background: rgba(247, 242, 232, 0.48);
+  padding: 11px 12px;
+}
+
+.credential-state span,
+.credential-state strong {
+  display: block;
+}
+
+.credential-state span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.credential-state strong {
+  margin-top: 4px;
+  color: var(--red);
+  font-size: 17px;
+}
+
+.credential-state.saved {
+  border-color: rgba(31, 111, 91, 0.3);
+  background: rgba(31, 111, 91, 0.07);
+}
+
+.credential-state.saved strong {
+  color: var(--green);
 }
 
 .manual-cookie,
@@ -1065,6 +1104,7 @@ pre {
 
   .two-col,
   .login-actions,
+  .login-status,
   .manual-cookie-body,
   .match-fields,
   .summary-grid,
