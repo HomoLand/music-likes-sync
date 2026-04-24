@@ -314,6 +314,7 @@ select {
 }
 
 .auth-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -371,6 +372,15 @@ select {
 .optional-section {
   border-top: 1px solid rgba(213, 200, 180, 0.76);
   padding-top: 10px;
+}
+
+.manual-cookie {
+  position: relative;
+  z-index: 4;
+}
+
+.manual-cookie[open] {
+  z-index: 6;
 }
 
 .manual-cookie summary,
@@ -436,14 +446,22 @@ select {
 }
 
 .manual-cookie-body {
+  position: absolute;
+  top: 48px;
+  left: 0;
+  right: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  padding-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(213, 200, 180, 0.84);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.96);
+  box-shadow: 0 18px 36px rgba(39, 35, 29, 0.12);
 }
 
 .manual-cookie-body textarea {
-  min-height: 110px;
+  min-height: 92px;
 }
 
 .manual-cookie-body button {
@@ -536,10 +554,15 @@ select {
 }
 
 .qr-box {
-  margin-top: 14px;
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 5;
+  margin-top: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(247, 242, 232, 0.76);
+  background: rgba(255, 252, 246, 0.96);
   padding: 12px;
   display: grid;
   grid-template-columns: 132px 1fr;
@@ -1222,6 +1245,15 @@ pre {
     position: static;
     margin-left: auto;
     margin-bottom: 8px;
+  }
+
+  .manual-cookie-body,
+  .qr-box {
+    position: static;
+  }
+
+  .qr-box {
+    margin-top: 14px;
   }
 
   .export-links {
