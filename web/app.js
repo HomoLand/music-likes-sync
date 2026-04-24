@@ -18,6 +18,14 @@ const FILTER_LABELS = {
   'netease-only': '仅网易云',
 };
 
+const AUTH_QUOTES = [
+  '把歌单先放在同一张桌上，剩下的交给匹配。',
+  '收藏夹不需要忠诚，只需要完整。',
+  '先抓快照，再谈版本；先有证据，再做同步。',
+  '同一首歌可以有很多名字，目标曲库只认清单。',
+  '今天少漏一首歌，明天少一次手工补。',
+];
+
 const elements = {
   appleForm: $('#appleForm'),
   appleFile: $('#appleFile'),
@@ -55,6 +63,7 @@ const elements = {
   cookieState: $('#cookieState'),
   qqCookieStatus: $('#qqCookieStatus'),
   neteaseCookieStatus: $('#neteaseCookieStatus'),
+  authQuoteText: $('#authQuoteText'),
   statusStack: $('#statusStack'),
   reportTime: $('#reportTime'),
   summaryGrid: $('#summaryGrid'),
@@ -87,8 +96,15 @@ let searchTimer = 0;
 init();
 
 function init() {
+  renderAuthQuote();
   bindEvents();
   refreshState();
+}
+
+function renderAuthQuote() {
+  if (!elements.authQuoteText) return;
+  const index = new Date().getDate() % AUTH_QUOTES.length;
+  elements.authQuoteText.textContent = AUTH_QUOTES[index];
 }
 
 function bindEvents() {
