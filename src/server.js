@@ -41,11 +41,15 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
     if (url.pathname.startsWith('/api/')) {
-      return handleApi(req, res, url);
+      return await handleApi(req, res, url);
     }
 
-    return serveStatic(req, res, url);
+    return await serveStatic(req, res, url);
   } catch (error) {
+    if (res.headersSent) {
+      res.destroy(error);
+      return null;
+    }
     return sendJson(res, 500, {
       ok: false,
       error: error?.message || String(error),
@@ -282,6 +286,7 @@ async function handleApi(req, res, url) {
       model: body.model,
       apiKey: body.apiKey,
       thinking: body.thinking,
+      refresh: body.refresh,
       dryRun: body.dryRun,
     });
     return sendJson(res, 200, {
@@ -293,6 +298,8 @@ async function handleApi(req, res, url) {
         model: result.model,
         itemCount: result.itemCount || result.batch?.items?.length || 0,
         decisionCount: result.decisions.length,
+        total: result.total || result.batch?.items?.length || 0,
+        remaining: result.remaining || 0,
       },
       state: await getState(),
     });

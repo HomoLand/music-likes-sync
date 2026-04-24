@@ -492,7 +492,7 @@ button:disabled {
 
 .ai-panel {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 170px 92px minmax(220px, auto) auto;
+  grid-template-columns: minmax(220px, 1fr) 170px 92px minmax(220px, auto) 120px auto;
   gap: 10px;
   align-items: end;
   border: 1px solid rgba(213, 200, 180, 0.84);

@@ -62,6 +62,7 @@ const elements = {
   deepseekModel: $('#deepseekModel'),
   aiBatchSize: $('#aiBatchSize'),
   aiConsent: $('#aiConsent'),
+  aiThinking: $('#aiThinking'),
   aiReviewButton: $('#aiReviewButton'),
   libraryResultCount: $('#libraryResultCount'),
   decisionSummary: $('#decisionSummary'),
@@ -268,26 +269,54 @@ async function refreshState() {
 }
 
 async function runAiReview() {
-  if (!['review-candidates', 'conflicts'].includes(activeFilter)) {
-    showToast('AI 建议目前只处理“低置信”和“冲突”筛选', true);
-    return;
-  }
+  if (busy) return;
   if (!elements.aiConsent.checked) {
-    showToast('需要先确认会把当前筛选的曲目信息发送到 DeepSeek', true);
+    showToast('需要先确认会把全部待判断曲目信息发送到 DeepSeek', true);
     return;
   }
   const apiKey = elements.deepseekApiKey.value.trim();
-  await runAction('正在请求 DeepSeek 生成建议', () => postJson('/api/ai/review', {
-    filter: activeFilter,
-    query: elements.librarySearch.value.trim(),
-    limit: elements.aiBatchSize.value.trim(),
-    model: elements.deepseekModel.value,
-    apiKey,
-  }), async () => {
+  const limit = elements.aiBatchSize.value.trim();
+  const model = elements.deepseekModel.value;
+  const thinking = elements.aiThinking.checked;
+  let processed = 0;
+  let batches = 0;
+
+  setBusy(true);
+  showToast('正在全量请求 DeepSeek 生成建议');
+  try {
+    while (true) {
+      const prefix = batches ? `AI 分析中：已完成 ${processed} 条` : 'AI 分析中：准备第一批';
+      elements.aiSummary.textContent = `${prefix} / 批量 ${limit}`;
+      const payload = await postJson('/api/ai/review', {
+        filter: 'all-review',
+        limit,
+        model,
+        apiKey,
+        thinking,
+      });
+      if (!payload.ok) throw new Error(payload.error || 'AI 分析失败');
+      renderState(payload.state);
+      batches += 1;
+      processed += payload.result?.decisionCount || 0;
+      const remaining = payload.result?.remaining || 0;
+      elements.aiSummary.textContent = `AI 分析中：已完成 ${processed} 条 / 剩余 ${remaining} 条`;
+      await loadUnifiedItems({ reset: true });
+
+      if (remaining <= 0) {
+        showToast(`AI 全量分析完成：新增 ${processed} 条`);
+        break;
+      }
+      if (!payload.result?.decisionCount) {
+        throw new Error('DeepSeek 没有返回可保存的判断，已停止继续批量分析。');
+      }
+    }
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  } finally {
     if (apiKey) elements.deepseekApiKey.value = '';
     elements.aiConsent.checked = false;
-    await loadUnifiedItems({ reset: true });
-  });
+    setBusy(false);
+  }
 }
 
 async function startNeteaseQr() {
@@ -438,7 +467,11 @@ async function loadUnifiedItems(options = {}) {
   });
   const payload = await getJson(`/api/unified/items?${params.toString()}`);
   renderDecisionSummary(payload.decisions);
-  renderAiSummary({ hasEnvKey: currentState?.ai?.hasEnvKey, model: currentState?.ai?.model, suggestions: payload.aiSuggestions });
+  renderAiSummary({
+    hasEnvKey: currentState?.ai?.hasEnvKey,
+    model: currentState?.ai?.model,
+    suggestions: payload.aiSuggestions || payload.suggestions || currentState?.ai?.suggestions,
+  });
   elements.libraryResultCount.textContent = `${FILTER_LABELS[activeFilter] || '条目'}：${payload.total} 条`;
   renderLibraryItems(payload.items, { append: libraryOffset > 0 });
   libraryOffset += payload.items.length;

@@ -237,19 +237,57 @@ export async function getUnifiedItems(options = {}) {
   };
 }
 
+export async function getAiReviewItems(options = {}) {
+  await ensureDirs();
+  const unified = await readJsonIfExists(FILES.unifiedJson);
+  if (!unified) throw new Error('缺少统一曲库，请先生成统一曲库。');
+
+  const decisions = await readDecisionState();
+  const suggestions = await readAiSuggestionState();
+  const filter = options.filter || 'all-review';
+  const query = normalizeText(options.query || '');
+  const offset = Math.max(0, Number(options.offset || 0));
+  const limit = Math.min(50, Math.max(1, Number(options.limit || 12)));
+  const includeSuggested = Boolean(options.refresh || options.includeSuggested);
+  const clusters = buildClusterItems(unified.clusters || [], decisions, suggestions)
+    .filter((item) => item.needsReview);
+  const candidates = buildCandidateItems(unified.reviewCandidates || [], decisions, suggestions);
+  const source = filter === 'conflicts'
+    ? clusters
+    : filter === 'review-candidates'
+      ? candidates
+      : [...clusters, ...candidates];
+  const filtered = source
+    .filter((item) => matchesUnifiedQuery(item, query))
+    .filter((item) => includeSuggested || !item.aiSuggestion);
+  const items = filtered.slice(offset, offset + limit);
+
+  return {
+    filter,
+    query: options.query || '',
+    total: filtered.length,
+    offset,
+    limit,
+    remaining: Math.max(0, filtered.length - offset - items.length),
+    suggestions: summarizeAiSuggestions(suggestions),
+    items,
+  };
+}
+
 export async function generateAiSuggestions(options = {}) {
   await ensureDirs();
-  const filter = options.filter || 'review-candidates';
-  if (!['review-candidates', 'conflicts'].includes(filter)) {
-    throw new Error('AI 建议目前只处理“低置信”和“冲突”筛选。');
+  const filter = options.filter || 'all-review';
+  if (!['all-review', 'review-candidates', 'conflicts'].includes(filter)) {
+    throw new Error('AI 建议目前只处理“全部待判断”“低置信”和“版本/冲突”。');
   }
 
-  const limit = Math.min(30, Math.max(1, Number(options.limit || 12)));
-  const itemsPayload = await getUnifiedItems({
+  const limit = Math.min(50, Math.max(1, Number(options.limit || 12)));
+  const itemsPayload = await getAiReviewItems({
     filter,
     query: options.query || '',
     offset: options.offset || 0,
     limit,
+    refresh: options.refresh,
   });
   if (!itemsPayload.items.length) throw new Error('当前筛选没有可分析条目。');
 
@@ -260,6 +298,8 @@ export async function generateAiSuggestions(options = {}) {
       model: options.model || 'deepseek-v4-pro',
       batch,
       decisions: [],
+      total: itemsPayload.total,
+      remaining: itemsPayload.remaining,
       suggestions: await readAiSuggestionState(),
     };
   }
@@ -303,6 +343,8 @@ export async function generateAiSuggestions(options = {}) {
     model: result.model,
     reviewedAt: result.reviewedAt,
     itemCount: itemsPayload.items.length,
+    total: itemsPayload.total,
+    remaining: Math.max(0, itemsPayload.total - itemsPayload.items.length),
     decisions: result.decisions,
     suggestions,
   };
