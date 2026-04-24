@@ -1,0 +1,10 @@
+node_modules/
+data/*-edge-profile/
+data/*.json
+data/*.csv
+data/*.cookie
+reports/*.json
+reports/*.md
+.env
+.env.*
+*.log

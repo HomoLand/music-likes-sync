@@ -1,0 +1,20 @@
+{
+  "name": "music-likes-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Compare Apple Music liked songs against QQ Music and NetEase Cloud Music libraries.",
+  "bin": {
+    "music-likes-sync": "./src/cli.js"
+  },
+  "scripts": {
+    "snapshot": "node ./src/cli.js snapshot",
+    "match": "node ./src/cli.js match",
+    "check": "node ./src/cli.js check",
+    "web": "node ./src/server.js"
+  },
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "^4.32.0",
+    "qq-music-api": "^1.1.2"
+  }
+}

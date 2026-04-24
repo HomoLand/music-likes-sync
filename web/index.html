@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Music Likes Sync</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail">
+        <div class="brand">
+          <img src="/mark.svg" alt="" class="brand-mark">
+          <div>
+            <div class="brand-title">Likes Sync</div>
+            <div class="brand-subtitle">Apple / QQ / 网易云 并集同步</div>
+          </div>
+        </div>
+
+        <div class="status-stack" id="statusStack">
+          <div class="status-row">
+            <span class="dot empty"></span>
+            <span>Apple</span>
+            <strong id="appleCount">0</strong>
+          </div>
+          <div class="status-row">
+            <span class="dot empty"></span>
+            <span>QQ</span>
+            <strong id="qqCount">0</strong>
+          </div>
+          <div class="status-row">
+            <span class="dot empty"></span>
+            <span>网易云</span>
+            <strong id="neteaseCount">0</strong>
+          </div>
+        </div>
+
+        <div class="rail-note">
+          <span>本地只读预检</span>
+          <span id="cookieState">Cookie 未保存</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>收藏对账台</h1>
+            <p>默认用三端并集做目标曲库，人工只处理版本冲突和低置信匹配。</p>
+          </div>
+          <div class="top-actions">
+            <button class="ghost-button" id="refreshButton" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.8 9A7 7 0 0 0 6.2 7.8L4 10m2 5a7 7 0 0 0 11.8 1.2L20 14"/></svg>
+              刷新
+            </button>
+          </div>
+        </header>
+
+        <section class="grid">
+          <form class="panel panel-apple" id="appleForm">
+            <div class="panel-heading">
+              <span class="panel-index">01</span>
+              <div>
+                <h2>Apple 文件</h2>
+                <p>CSV / TSV / TXT / JSON</p>
+              </div>
+            </div>
+            <div class="dropzone" id="dropzone">
+              <input id="appleFile" type="file" accept=".csv,.tsv,.txt,.json,text/csv,text/plain,application/json">
+              <label for="appleFile">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+                <span id="fileLabel">选择或拖入文件</span>
+              </label>
+            </div>
+            <label class="field">
+              <span>Apple Music 歌单链接</span>
+              <input id="appleUrl" autocomplete="off" placeholder="https://music.apple.com/.../playlist/.../pl.xxxxx">
+            </label>
+            <button class="secondary-button wide-button" id="appleUrlButton" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"/></svg>
+              从链接抓取 Apple 歌单
+            </button>
+            <div class="button-row apple-browser-actions">
+              <button class="ghost-button" id="appleBrowserOpenButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 9h16M8 5v4"/></svg>
+                打开 Apple 登录页
+              </button>
+              <button class="primary-button" id="appleBrowserCaptureButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg>
+                抓取 Apple 页面
+              </button>
+            </div>
+            <textarea id="appleText" spellcheck="false" placeholder="也可以直接粘贴 Apple 导出的表格文本"></textarea>
+            <button class="primary-button" type="submit">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+              保存 Apple 快照
+            </button>
+          </form>
+
+          <form class="panel" id="cookieForm">
+            <div class="panel-heading">
+              <span class="panel-index">02</span>
+              <div>
+                <h2>登录凭据</h2>
+                <p>只存本机 data 目录，不回显</p>
+              </div>
+            </div>
+            <label class="field">
+              <span>QQ 音乐 Cookie</span>
+              <textarea id="qqCookie" spellcheck="false" placeholder="uin=...; qm_keyst=...;"></textarea>
+            </label>
+            <label class="field">
+              <span>网易云 Cookie</span>
+              <textarea id="neteaseCookie" spellcheck="false" placeholder="MUSIC_U=...;"></textarea>
+            </label>
+            <div class="button-row">
+              <button class="secondary-button" type="submit">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2ZM7 3v6h8"/></svg>
+                保存 Cookie
+              </button>
+              <button class="ghost-button" id="qqBrowserOpenButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 9h16M8 5v4"/></svg>
+                打开 QQ 登录页
+              </button>
+              <button class="ghost-button" id="qqBrowserCaptureButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg>
+                抓取 QQ Cookie
+              </button>
+              <button class="ghost-button" id="neteaseQrButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM18 18h3v3h-3zM18 14h3M14 21h3"/></svg>
+                网易云扫码
+              </button>
+            </div>
+            <div class="qr-box" id="neteaseQrBox" hidden>
+              <img id="neteaseQrImage" alt="网易云登录二维码">
+              <div>
+                <strong id="neteaseQrTitle">等待扫码</strong>
+                <span id="neteaseQrHint">用网易云音乐 App 扫码并确认登录。</span>
+              </div>
+            </div>
+          </form>
+
+          <form class="panel" id="runForm">
+            <div class="panel-heading">
+              <span class="panel-index">03</span>
+              <div>
+                <h2>拉取与匹配</h2>
+                <p>默认读取两边喜欢列表</p>
+              </div>
+            </div>
+            <div class="two-col">
+              <label class="field">
+                <span>QQ 指定歌单 ID</span>
+                <input id="qqPlaylistId" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>网易云指定歌单 ID</span>
+                <input id="neteasePlaylistId" autocomplete="off">
+              </label>
+            </div>
+            <div class="two-col">
+              <label class="field">
+                <span>自动匹配阈值</span>
+                <input id="threshold" value="0.82" inputmode="decimal">
+              </label>
+              <label class="field">
+                <span>人工确认阈值</span>
+                <input id="reviewThreshold" value="0.68" inputmode="decimal">
+              </label>
+            </div>
+            <div class="button-row">
+              <button class="ghost-button" id="qqSnapshotButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h16M17 10l3 3-3 3"/></svg>
+                只拉 QQ
+              </button>
+              <button class="ghost-button" id="neteaseSnapshotButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h16M17 10l3 3-3 3"/></svg>
+                只拉网易云
+              </button>
+              <button class="secondary-button" id="snapshotButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+                拉取平台快照
+              </button>
+              <button class="secondary-button" id="metadataButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M4 8h16M6 16h12M8 12h8"/></svg>
+                补元数据
+              </button>
+              <button class="primary-button" id="matchButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7h11M4 7h1m4 5h11M4 12h1m4 5h11M4 17h1"/></svg>
+                生成报告
+              </button>
+              <button class="primary-button" id="unifiedButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 6v12M16 6v12"/></svg>
+                生成统一曲库
+              </button>
+            </div>
+          </form>
+
+          <section class="panel library-panel">
+            <div class="panel-heading">
+              <span class="panel-index">04</span>
+              <div>
+                <h2>统一曲库</h2>
+                <p id="reportTime">尚未生成</p>
+              </div>
+            </div>
+            <div class="summary-grid" id="summaryGrid"></div>
+            <div class="library-controls">
+              <div class="filter-bar" id="libraryFilters" aria-label="统一曲库筛选">
+                <button class="filter-chip active" type="button" data-filter="all-gaps">默认待同步</button>
+                <button class="filter-chip" type="button" data-filter="missing-qq">缺 QQ</button>
+                <button class="filter-chip" type="button" data-filter="missing-netease">缺网易云</button>
+                <button class="filter-chip" type="button" data-filter="missing-apple">缺 Apple</button>
+                <button class="filter-chip" type="button" data-filter="conflicts">版本/冲突</button>
+                <button class="filter-chip" type="button" data-filter="review-candidates">低置信</button>
+                <button class="filter-chip" type="button" data-filter="apple-only">仅 Apple</button>
+                <button class="filter-chip" type="button" data-filter="qq-only">仅 QQ</button>
+                <button class="filter-chip" type="button" data-filter="netease-only">仅网易云</button>
+              </div>
+              <label class="search-box">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/></svg>
+                <input id="librarySearch" autocomplete="off" placeholder="搜索歌曲、歌手、专辑">
+              </label>
+              <div class="ai-panel">
+                <label class="ai-key-field">
+                  <span>DeepSeek Key</span>
+                  <input id="deepseekApiKey" type="password" autocomplete="off" placeholder="留空使用环境变量">
+                </label>
+                <label class="ai-select-field">
+                  <span>模型</span>
+                  <select id="deepseekModel">
+                    <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                    <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                  </select>
+                </label>
+                <label class="ai-select-field">
+                  <span>批量</span>
+                  <input id="aiBatchSize" value="12" inputmode="numeric">
+                </label>
+                <label class="ai-consent">
+                  <input id="aiConsent" type="checkbox">
+                  <span>发送当前筛选曲目信息到 DeepSeek</span>
+                </label>
+                <button class="secondary-button" id="aiReviewButton" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M4.9 4.9 7 7M17 17l2.1 2.1M3 12h3M18 12h3M4.9 19.1 7 17M17 7l2.1-2.1M9 12l2 2 4-5"/></svg>
+                  AI 分析
+                </button>
+              </div>
+            </div>
+            <div class="library-meta">
+              <span id="libraryResultCount">暂无条目</span>
+              <span id="decisionSummary">尚未选择</span>
+              <span id="aiSummary">AI 尚未分析</span>
+              <span class="export-links">
+                <a class="text-link compact-link" href="/api/unified.md" target="_blank" rel="noreferrer">Markdown</a>
+                <a class="text-link compact-link" href="/api/unified.json" target="_blank" rel="noreferrer">JSON</a>
+              </span>
+            </div>
+            <div class="library-list" id="libraryList"></div>
+            <button class="ghost-button load-more-button" id="loadMoreButton" type="button" hidden>加载更多</button>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

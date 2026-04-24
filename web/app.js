@@ -1,0 +1,804 @@
+const $ = (selector) => document.querySelector(selector);
+
+const PLATFORM_LABELS = {
+  apple: 'Apple',
+  qq: 'QQ',
+  netease: '网易云',
+};
+
+const FILTER_LABELS = {
+  'all-gaps': '默认待同步',
+  'missing-qq': '缺 QQ',
+  'missing-netease': '缺网易云',
+  'missing-apple': '缺 Apple',
+  conflicts: '版本/冲突',
+  'review-candidates': '低置信',
+  'apple-only': '仅 Apple',
+  'qq-only': '仅 QQ',
+  'netease-only': '仅网易云',
+};
+
+const elements = {
+  appleForm: $('#appleForm'),
+  appleFile: $('#appleFile'),
+  appleText: $('#appleText'),
+  appleUrl: $('#appleUrl'),
+  appleUrlButton: $('#appleUrlButton'),
+  appleBrowserOpenButton: $('#appleBrowserOpenButton'),
+  appleBrowserCaptureButton: $('#appleBrowserCaptureButton'),
+  dropzone: $('#dropzone'),
+  fileLabel: $('#fileLabel'),
+  cookieForm: $('#cookieForm'),
+  qqCookie: $('#qqCookie'),
+  neteaseCookie: $('#neteaseCookie'),
+  qqBrowserOpenButton: $('#qqBrowserOpenButton'),
+  qqBrowserCaptureButton: $('#qqBrowserCaptureButton'),
+  neteaseQrButton: $('#neteaseQrButton'),
+  neteaseQrBox: $('#neteaseQrBox'),
+  neteaseQrImage: $('#neteaseQrImage'),
+  neteaseQrTitle: $('#neteaseQrTitle'),
+  neteaseQrHint: $('#neteaseQrHint'),
+  qqSnapshotButton: $('#qqSnapshotButton'),
+  neteaseSnapshotButton: $('#neteaseSnapshotButton'),
+  snapshotButton: $('#snapshotButton'),
+  metadataButton: $('#metadataButton'),
+  matchButton: $('#matchButton'),
+  unifiedButton: $('#unifiedButton'),
+  refreshButton: $('#refreshButton'),
+  qqPlaylistId: $('#qqPlaylistId'),
+  neteasePlaylistId: $('#neteasePlaylistId'),
+  threshold: $('#threshold'),
+  reviewThreshold: $('#reviewThreshold'),
+  appleCount: $('#appleCount'),
+  qqCount: $('#qqCount'),
+  neteaseCount: $('#neteaseCount'),
+  cookieState: $('#cookieState'),
+  statusStack: $('#statusStack'),
+  reportTime: $('#reportTime'),
+  summaryGrid: $('#summaryGrid'),
+  libraryFilters: $('#libraryFilters'),
+  librarySearch: $('#librarySearch'),
+  deepseekApiKey: $('#deepseekApiKey'),
+  deepseekModel: $('#deepseekModel'),
+  aiBatchSize: $('#aiBatchSize'),
+  aiConsent: $('#aiConsent'),
+  aiReviewButton: $('#aiReviewButton'),
+  libraryResultCount: $('#libraryResultCount'),
+  decisionSummary: $('#decisionSummary'),
+  aiSummary: $('#aiSummary'),
+  libraryList: $('#libraryList'),
+  loadMoreButton: $('#loadMoreButton'),
+  toast: $('#toast'),
+};
+
+let selectedFileName = '';
+let busy = false;
+let neteaseQrKey = '';
+let neteaseQrTimer = 0;
+let currentState = null;
+let activeFilter = 'all-gaps';
+let libraryOffset = 0;
+let libraryLimit = 40;
+let searchTimer = 0;
+
+init();
+
+function init() {
+  bindEvents();
+  refreshState();
+}
+
+function bindEvents() {
+  elements.appleFile.addEventListener('change', async () => {
+    const file = elements.appleFile.files?.[0];
+    if (!file) return;
+    selectedFileName = file.name;
+    elements.fileLabel.textContent = file.name;
+    elements.appleText.value = await file.text();
+  });
+
+  for (const eventName of ['dragenter', 'dragover']) {
+    elements.dropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      elements.dropzone.classList.add('dragging');
+    });
+  }
+
+  for (const eventName of ['dragleave', 'drop']) {
+    elements.dropzone.addEventListener(eventName, () => {
+      elements.dropzone.classList.remove('dragging');
+    });
+  }
+
+  elements.dropzone.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    selectedFileName = file.name;
+    elements.fileLabel.textContent = file.name;
+    elements.appleText.value = await file.text();
+  });
+
+  elements.appleForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const content = elements.appleText.value.trim();
+    if (!content) return showToast('Apple 文件内容为空', true);
+    await runAction('正在解析 Apple 文件', () => postJson('/api/apple', {
+      filename: selectedFileName || 'pasted.txt',
+      content,
+    }));
+  });
+
+  elements.appleUrlButton.addEventListener('click', async () => {
+    const url = elements.appleUrl.value.trim();
+    if (!url) return showToast('Apple Music 歌单链接为空', true);
+    await runAction('正在抓取 Apple 歌单链接', () => postJson('/api/apple/url', { url }));
+  });
+
+  elements.appleBrowserOpenButton.addEventListener('click', async () => {
+    await runAction('正在打开 Apple 登录窗口', () => postJson('/api/apple/browser/open', {
+      url: elements.appleUrl.value.trim(),
+    }));
+  });
+
+  elements.appleBrowserCaptureButton.addEventListener('click', async () => {
+    await runAction('正在抓取 Apple 页面', () => postJson('/api/apple/browser/capture', {}));
+  });
+
+  elements.cookieForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await runAction('正在保存 Cookie', () => postJson('/api/cookies', {
+      qqCookie: elements.qqCookie.value,
+      neteaseCookie: elements.neteaseCookie.value,
+    }), () => {
+      elements.qqCookie.value = '';
+      elements.neteaseCookie.value = '';
+    });
+  });
+
+  elements.qqBrowserOpenButton.addEventListener('click', async () => {
+    await runAction('正在打开 QQ 登录窗口', () => postJson('/api/qq/browser/open', {}));
+  });
+
+  elements.qqBrowserCaptureButton.addEventListener('click', async () => {
+    await runAction('正在抓取 QQ Cookie', async () => {
+      await postJson('/api/qq/browser/capture', {});
+      showToast('QQ Cookie 已保存，正在拉取快照');
+      return postJson('/api/snapshot', {
+        qq: true,
+        netease: false,
+        qqPlaylistId: elements.qqPlaylistId.value.trim(),
+      });
+    });
+  });
+
+  elements.snapshotButton.addEventListener('click', async () => {
+    await runAction('正在拉取平台快照', () => postJson('/api/snapshot', {
+      qqPlaylistId: elements.qqPlaylistId.value.trim(),
+      neteasePlaylistId: elements.neteasePlaylistId.value.trim(),
+    }));
+  });
+
+  elements.qqSnapshotButton.addEventListener('click', async () => {
+    await runAction('正在拉取 QQ 快照', () => postJson('/api/snapshot', {
+      qq: true,
+      netease: false,
+      qqPlaylistId: elements.qqPlaylistId.value.trim(),
+    }));
+  });
+
+  elements.neteaseSnapshotButton.addEventListener('click', async () => {
+    await runAction('正在拉取网易云快照', () => postJson('/api/snapshot', {
+      qq: false,
+      netease: true,
+      neteasePlaylistId: elements.neteasePlaylistId.value.trim(),
+    }));
+  });
+
+  elements.metadataButton.addEventListener('click', async () => {
+    await runAction('正在补 Apple ISRC / MusicBrainz 别名', () => postJson('/api/metadata/enrich', {}));
+  });
+
+  elements.matchButton.addEventListener('click', async () => {
+    await runAction('正在生成匹配统计', () => postJson('/api/match', {
+      threshold: elements.threshold.value.trim(),
+      reviewThreshold: elements.reviewThreshold.value.trim(),
+    }));
+  });
+
+  elements.unifiedButton.addEventListener('click', async () => {
+    activeFilter = 'all-gaps';
+    await runAction('正在生成统一曲库', () => postJson('/api/unified/generate', {
+      threshold: elements.threshold.value.trim(),
+      reviewThreshold: elements.reviewThreshold.value.trim(),
+    }), async () => loadUnifiedItems({ reset: true }));
+  });
+
+  elements.neteaseQrButton.addEventListener('click', startNeteaseQr);
+  elements.refreshButton.addEventListener('click', refreshState);
+  elements.loadMoreButton.addEventListener('click', () => loadUnifiedItems({ reset: false }));
+  elements.aiReviewButton.addEventListener('click', runAiReview);
+
+  elements.libraryFilters.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-filter]');
+    if (!button) return;
+    activeFilter = button.dataset.filter;
+    loadUnifiedItems({ reset: true });
+  });
+
+  elements.librarySearch.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadUnifiedItems({ reset: true }), 220);
+  });
+
+  elements.libraryList.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-decision-type]');
+    if (!button) return;
+    await saveDecision(button);
+  });
+}
+
+async function runAction(workingMessage, action, afterSuccess) {
+  if (busy) return;
+  setBusy(true);
+  showToast(workingMessage);
+  try {
+    const payload = await action();
+    if (!payload.ok) throw new Error(payload.error || '操作失败');
+    renderState(payload.state);
+    await afterSuccess?.(payload);
+    showToast(payload.message || '完成');
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function refreshState() {
+  try {
+    const payload = await getJson('/api/state');
+    if (payload.ok) {
+      renderState(payload.state);
+      await loadUnifiedItems({ reset: true });
+    }
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  }
+}
+
+async function runAiReview() {
+  if (!['review-candidates', 'conflicts'].includes(activeFilter)) {
+    showToast('AI 建议目前只处理“低置信”和“冲突”筛选', true);
+    return;
+  }
+  if (!elements.aiConsent.checked) {
+    showToast('需要先确认会把当前筛选的曲目信息发送到 DeepSeek', true);
+    return;
+  }
+  const apiKey = elements.deepseekApiKey.value.trim();
+  await runAction('正在请求 DeepSeek 生成建议', () => postJson('/api/ai/review', {
+    filter: activeFilter,
+    query: elements.librarySearch.value.trim(),
+    limit: elements.aiBatchSize.value.trim(),
+    model: elements.deepseekModel.value,
+    apiKey,
+  }), async () => {
+    if (apiKey) elements.deepseekApiKey.value = '';
+    elements.aiConsent.checked = false;
+    await loadUnifiedItems({ reset: true });
+  });
+}
+
+async function startNeteaseQr() {
+  if (busy) return;
+  setBusy(true);
+  try {
+    const payload = await postJson('/api/netease/qr/start', {});
+    if (!payload.ok) throw new Error(payload.error || '二维码生成失败');
+    neteaseQrKey = payload.qr.key;
+    elements.neteaseQrImage.src = payload.qr.qrimg;
+    elements.neteaseQrBox.hidden = false;
+    elements.neteaseQrTitle.textContent = '等待扫码';
+    elements.neteaseQrHint.textContent = '用网易云音乐 App 扫码并确认登录。';
+    showToast('网易云二维码已生成');
+    clearInterval(neteaseQrTimer);
+    neteaseQrTimer = setInterval(checkNeteaseQr, 1800);
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function checkNeteaseQr() {
+  if (!neteaseQrKey) return;
+  try {
+    const payload = await postJson('/api/netease/qr/check', { key: neteaseQrKey });
+    const status = payload.status;
+    elements.neteaseQrTitle.textContent = status.message || '等待扫码';
+    if (status.code === 802) {
+      elements.neteaseQrHint.textContent = '已扫码，请在手机上确认登录。';
+    }
+    if (status.done) {
+      clearInterval(neteaseQrTimer);
+      neteaseQrTimer = 0;
+      neteaseQrKey = '';
+      elements.neteaseQrHint.textContent = '网易云 Cookie 已保存，正在拉取红心快照。';
+      renderState(payload.state);
+      showToast('网易云登录成功');
+      try {
+        const snapshotPayload = await postJson('/api/snapshot', {
+          qq: false,
+          netease: true,
+          neteasePlaylistId: elements.neteasePlaylistId.value.trim(),
+        });
+        renderState(snapshotPayload.state);
+        showToast(snapshotPayload.message || '网易云快照已更新');
+        elements.neteaseQrHint.textContent = '网易云快照已更新。';
+      } catch (error) {
+        elements.neteaseQrHint.textContent = 'Cookie 已保存，但快照拉取失败；可以稍后点“只拉网易云”。';
+        showToast(error.message || String(error), true);
+      }
+    }
+    if (status.code === 800) {
+      clearInterval(neteaseQrTimer);
+      neteaseQrTimer = 0;
+      neteaseQrKey = '';
+      elements.neteaseQrHint.textContent = '二维码已过期，请重新生成。';
+    }
+  } catch (error) {
+    clearInterval(neteaseQrTimer);
+    neteaseQrTimer = 0;
+    showToast(error.message || String(error), true);
+  }
+}
+
+function renderState(state) {
+  currentState = state;
+  setCount('apple', state.apple);
+  setCount('qq', state.qq);
+  setCount('netease', state.netease);
+
+  elements.cookieState.textContent = [
+    state.hasQqCookie ? 'QQ 已存' : 'QQ 未存',
+    state.hasNeteaseCookie ? '网易云已存' : '网易云未存',
+  ].join(' / ');
+
+  renderReportSummary(state.report, state.unified, state.decisions);
+  renderAiSummary(state.ai);
+}
+
+function setCount(kind, snapshot) {
+  const countEl = elements[`${kind}Count`];
+  countEl.textContent = snapshot?.count ?? 0;
+  const row = countEl.closest('.status-row');
+  const dot = row.querySelector('.dot');
+  dot.className = `dot ${snapshot?.exists ? '' : 'empty'} ${snapshot?.skipped ? 'warn' : ''}`.trim();
+  row.title = snapshot?.exists
+    ? `ISRC ${snapshot.isrcCount || 0} / 别名 ${snapshot.aliasCount || 0} / MusicBrainz ${snapshot.musicbrainzCount || 0}`
+    : '';
+}
+
+function renderReportSummary(report, unified, decisions) {
+  elements.summaryGrid.innerHTML = '';
+  if (!report?.exists && !unified?.exists) {
+    elements.reportTime.textContent = '尚未生成';
+    for (const item of [
+      ['自动匹配', 0],
+      ['人工确认', 0],
+      ['统一曲库', 0],
+      ['待人工判断', 0],
+    ]) {
+      elements.summaryGrid.appendChild(metric(item[0], item[1]));
+    }
+    return;
+  }
+
+  const latestTime = latestTimestamp(report?.generatedAt, unified?.generatedAt);
+  elements.reportTime.textContent = latestTime ? new Date(latestTime).toLocaleString('zh-CN') : '尚未生成';
+  const qq = report?.platforms?.qq;
+  const netease = report?.platforms?.netease;
+  const totalMatched = (qq?.matched || 0) + (netease?.matched || 0);
+  const totalReview = (qq?.review || 0) + (netease?.review || 0);
+  const defaultSyncActions = Object.values(unified?.missingByPlatform || {})
+    .reduce((sum, value) => sum + Number(value || 0), 0);
+  const selected = (decisions?.clusters || 0) + (decisions?.candidates || 0);
+
+  elements.summaryGrid.append(
+    metric('自动匹配', totalMatched),
+    metric('人工确认', totalReview),
+    metric('统一曲库', unified?.totalUnified || 0),
+    metric('默认同步动作', defaultSyncActions),
+    metric('缺 Apple / QQ / 网易云', `${unified?.missingByPlatform?.apple || 0} / ${unified?.missingByPlatform?.qq || qq?.missing || 0} / ${unified?.missingByPlatform?.netease || netease?.missing || 0}`),
+    metric('版本疑点', unified?.versionConflicts || 0),
+    metric('版本/冲突', unified?.conflictClusters || 0),
+    metric('低置信', unified?.reviewCandidates || 0),
+    metric('已人工判断', selected),
+  );
+}
+
+async function loadUnifiedItems(options = {}) {
+  if (!currentState?.unified?.exists) {
+    elements.libraryList.innerHTML = emptyState('先生成统一曲库，再处理版本/低置信条目。');
+    elements.libraryResultCount.textContent = '暂无条目';
+    elements.decisionSummary.textContent = '尚未选择';
+    elements.loadMoreButton.hidden = true;
+    updateFilterButtons();
+    return;
+  }
+
+  if (options.reset) libraryOffset = 0;
+  updateFilterButtons();
+  const params = new URLSearchParams({
+    filter: activeFilter,
+    q: elements.librarySearch.value.trim(),
+    offset: String(libraryOffset),
+    limit: String(libraryLimit),
+  });
+  const payload = await getJson(`/api/unified/items?${params.toString()}`);
+  renderDecisionSummary(payload.decisions);
+  renderAiSummary({ hasEnvKey: currentState?.ai?.hasEnvKey, model: currentState?.ai?.model, suggestions: payload.aiSuggestions });
+  elements.libraryResultCount.textContent = `${FILTER_LABELS[activeFilter] || '条目'}：${payload.total} 条`;
+  renderLibraryItems(payload.items, { append: libraryOffset > 0 });
+  libraryOffset += payload.items.length;
+  elements.loadMoreButton.hidden = !payload.hasMore;
+}
+
+function renderLibraryItems(items, options = {}) {
+  if (!options.append) elements.libraryList.innerHTML = '';
+  if (!items.length && !options.append) {
+    elements.libraryList.innerHTML = emptyState('没有符合条件的条目。');
+    return;
+  }
+
+  const html = items.map((item) => (
+    item.type === 'candidate' ? renderCandidateItem(item) : renderClusterItem(item)
+  )).join('');
+  elements.libraryList.insertAdjacentHTML('beforeend', html);
+}
+
+function renderClusterItem(item) {
+  const missingBadges = item.missingPlatforms.length
+    ? item.missingPlatforms.map((platform) => `<span class="platform-badge missing">待同步 ${platformLabel(platform)}</span>`).join('')
+    : '<span class="platform-badge ok">三端已有</span>';
+  const actionHtml = renderClusterActions(item);
+  const conflictHtml = item.needsReview ? renderConflictBlock(item) : '';
+  const versionHtml = renderVersionReviewBlock(item.versionReview);
+  const suggestionHtml = renderAiSuggestion(item.aiSuggestion);
+  return `
+    <article class="library-card ${item.needsReview ? 'needs-review' : ''}">
+      <div class="card-main">
+        <div class="card-kicker">
+          <span>${escapeHtml(item.id)}</span>
+          <span>${escapeHtml(statusLabel(item.status))}</span>
+        </div>
+        <h3>${escapeHtml(item.title || '(无标题)')}</h3>
+        <p>${escapeHtml(item.artist || '(未知歌手)')}</p>
+        <div class="track-meta">
+          <span>${escapeHtml(item.album || '无专辑')}</span>
+          <span>${escapeHtml(item.duration || '')}</span>
+        </div>
+        <div class="badge-row">
+          ${item.platforms.map((platform) => `<span class="platform-badge present">${platformLabel(platform)}</span>`).join('')}
+          ${missingBadges}
+        </div>
+      </div>
+      <div class="source-list">
+        ${renderSourceRows(item.sources)}
+      </div>
+      <div class="sync-plan">${renderSyncPlan(item)}</div>
+      ${conflictHtml}
+      ${versionHtml}
+      ${suggestionHtml}
+      ${actionHtml}
+    </article>
+  `;
+}
+
+function renderClusterActions(item) {
+  const reviewButtons = item.needsReview ? [
+    decisionButton({
+      label: '同曲同版本',
+      type: 'cluster-review',
+      id: item.id,
+      action: 'same',
+      active: item.decision?.reviewAction === 'same',
+      tone: 'include',
+    }),
+    decisionButton({
+      label: '不同版本/需拆开',
+      type: 'cluster-review',
+      id: item.id,
+      action: 'split',
+      active: item.decision?.reviewAction === 'split',
+      tone: 'exclude',
+    }),
+  ] : [];
+  const buttons = [...reviewButtons];
+  if (!buttons.length) return '';
+  return `<div class="choice-row">${buttons.join('')}</div>`;
+}
+
+function renderSyncPlan(item) {
+  if (!item.missingPlatforms.length) return '同步计划：三端已经都有，除非版本判断需要拆开。';
+  return `同步计划：默认补到 ${item.missingPlatforms.map(platformLabel).join(' / ')}。`;
+}
+
+function renderConflictBlock(item) {
+  if (!item.conflicts?.length) return '';
+  const conflicts = item.conflicts.map((conflict) => `
+    <div class="conflict-line">
+      <strong>${platformLabel(conflict.platform)} x ${conflict.count}</strong>
+      <span>${escapeHtml(conflict.tracks.map((track) => `${track.title} - ${track.artist}`).join('；'))}</span>
+    </div>
+  `).join('');
+  return `<div class="conflict-box">${conflicts}</div>`;
+}
+
+function renderVersionReviewBlock(review) {
+  if (!review) return '';
+  const trackRows = (review.tracks || []).map((track) => `
+    <div class="version-track">
+      <strong>${platformLabel(track.platform)}</strong>
+      <span>${escapeHtml([track.title, track.artist, track.duration, ...(track.tags || [])].filter(Boolean).join(' / '))}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="version-box">
+      <div class="version-reasons">${escapeHtml((review.reasons || []).join('；'))}</div>
+      ${trackRows}
+    </div>
+  `;
+}
+
+function renderCandidateItem(item) {
+  return `
+    <article class="library-card candidate-card">
+      <div class="candidate-score">${Math.round((item.score?.total || 0) * 100)}%</div>
+      <div class="candidate-grid">
+        ${renderCandidateEndpoint('来源', item.source, item.sourceCluster)}
+        ${renderCandidateEndpoint('候选', item.target, item.targetCluster)}
+      </div>
+      <div class="score-grid">
+        <span>标题 ${scoreText(item.score?.title)}</span>
+        <span>歌手 ${scoreText(item.score?.artist)}</span>
+        <span>专辑 ${scoreText(item.score?.album)}</span>
+        <span>时长 ${scoreText(item.score?.duration)}</span>
+      </div>
+      ${renderAiSuggestion(item.aiSuggestion)}
+      <div class="choice-row">
+        ${decisionButton({
+          label: '同曲同版本合并',
+          type: 'candidate',
+          key: item.key,
+          action: 'merge',
+          active: item.decision?.action === 'merge',
+          tone: 'include',
+        })}
+        ${decisionButton({
+          label: '不同曲/版本分开',
+          type: 'candidate',
+          key: item.key,
+          action: 'separate',
+          active: item.decision?.action === 'separate',
+          tone: 'exclude',
+        })}
+      </div>
+    </article>
+  `;
+}
+
+function renderCandidateEndpoint(label, endpoint, clusterId) {
+  const track = endpoint?.track || {};
+  return `
+    <div class="candidate-endpoint">
+      <div class="card-kicker">
+        <span>${escapeHtml(label)}</span>
+        <span>${escapeHtml(clusterId || '')}</span>
+        <span>${platformLabel(endpoint?.platform)}</span>
+      </div>
+      <h3>${escapeHtml(track.title || '(无标题)')}</h3>
+      <p>${escapeHtml(track.artist || '(未知歌手)')}</p>
+      <div class="track-meta">
+        <span>${escapeHtml(track.album || '无专辑')}</span>
+        <span>${escapeHtml(track.duration || '')}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderAiSuggestion(suggestion) {
+  if (!suggestion) return '';
+  const action = aiActionLabel(suggestion.recommendedAction);
+  const relation = relationLabel(suggestion.relation);
+  const confidence = Math.round(Number(suggestion.confidence || 0) * 100);
+  const canonical = [suggestion.canonical?.title, suggestion.canonical?.artist, suggestion.canonical?.album]
+    .filter(Boolean)
+    .join(' / ');
+  const preferred = [suggestion.preferred?.platform && platformLabel(suggestion.preferred.platform), suggestion.preferred?.title]
+    .filter(Boolean)
+    .join(' / ');
+  return `
+    <div class="ai-suggestion">
+      <div class="ai-suggestion-head">
+        <strong>AI 建议：${escapeHtml(action)}</strong>
+        <span>${confidence}%</span>
+      </div>
+      ${relation ? `<div class="ai-canonical">判断：${escapeHtml(relation)}</div>` : ''}
+      ${canonical ? `<div class="ai-canonical">${escapeHtml(canonical)}</div>` : ''}
+      ${preferred ? `<div class="ai-canonical">推荐版本：${escapeHtml(preferred)}${suggestion.preferred?.reason ? `，${escapeHtml(suggestion.preferred.reason)}` : ''}</div>` : ''}
+      <p>${escapeHtml(suggestion.reason || '')}</p>
+    </div>
+  `;
+}
+
+function aiActionLabel(action) {
+  if (action === 'merge') return '合并';
+  if (action === 'split_versions') return '按版本拆开';
+  if (action === 'keep_separate') return '分开';
+  return '人工确认';
+}
+
+function relationLabel(relation) {
+  if (relation === 'same_recording') return '同曲同版本';
+  if (relation === 'same_song_different_version') return '同曲不同版本';
+  if (relation === 'different_song') return '不是同一首';
+  if (relation === 'uncertain') return '证据不足';
+  return '';
+}
+
+function renderSourceRows(sources = {}) {
+  return Object.entries(sources).map(([platform, tracks]) => {
+    const visible = tracks.slice(0, 4);
+    const extra = tracks.length - visible.length;
+    return `
+      <div class="source-platform">
+        <span class="source-label">${platformLabel(platform)}</span>
+        <div>
+          ${visible.map((track) => `
+            <div class="source-track">
+              <strong>${escapeHtml(track.title || '(无标题)')}</strong>
+              <span>${escapeHtml([track.artist, track.album, track.duration].filter(Boolean).join(' / '))}</span>
+            </div>
+          `).join('')}
+          ${extra > 0 ? `<div class="source-extra">还有 ${extra} 条同平台记录</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function decisionButton({ label, type, id, target, key, action, active, tone }) {
+  return `
+    <button
+      class="choice-button ${tone || ''} ${active ? 'active' : ''}"
+      type="button"
+      data-decision-type="${escapeAttr(type)}"
+      data-id="${escapeAttr(id || '')}"
+      data-target="${escapeAttr(target || '')}"
+      data-key="${escapeAttr(key || '')}"
+      data-action="${escapeAttr(action)}"
+    >${escapeHtml(label)}</button>
+  `;
+}
+
+async function saveDecision(button) {
+  await runAction('正在保存选择', () => postJson('/api/unified/decision', {
+    type: button.dataset.decisionType,
+    id: button.dataset.id,
+    target: button.dataset.target,
+    key: button.dataset.key,
+    action: button.dataset.action,
+  }), async () => loadUnifiedItems({ reset: true }));
+}
+
+function renderDecisionSummary(decisions) {
+  const candidateMerge = decisions?.candidateActions?.merge || 0;
+  const candidateSeparate = decisions?.candidateActions?.separate || 0;
+  const reviewSame = decisions?.reviewActions?.same || 0;
+  const reviewSplit = decisions?.reviewActions?.split || 0;
+  elements.decisionSummary.textContent = `同版本 ${reviewSame} / 拆开 ${reviewSplit} / 低置信合并 ${candidateMerge} / 分开 ${candidateSeparate}`;
+}
+
+function renderAiSummary(ai) {
+  const total = ai?.suggestions?.total || 0;
+  const envText = ai?.hasEnvKey ? '环境变量已配置' : '未配置环境变量';
+  elements.aiSummary.textContent = total
+    ? `AI 建议 ${total} 条 / ${envText}`
+    : `AI 尚未分析 / ${envText}`;
+  if (ai?.model && elements.deepseekModel.value !== ai.model) {
+    const option = [...elements.deepseekModel.options].find((item) => item.value === ai.model);
+    if (option) elements.deepseekModel.value = ai.model;
+  }
+}
+
+function updateFilterButtons() {
+  for (const button of elements.libraryFilters.querySelectorAll('[data-filter]')) {
+    button.classList.toggle('active', button.dataset.filter === activeFilter);
+  }
+}
+
+function metric(label, value) {
+  const node = document.createElement('div');
+  node.className = 'metric';
+  node.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value || 0)}</strong>`;
+  return node;
+}
+
+function emptyState(message) {
+  return `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
+function platformLabel(platform) {
+  return PLATFORM_LABELS[platform] || platform || '';
+}
+
+function statusLabel(status) {
+  const labels = {
+    all_three: '三端都有',
+    apple_qq: 'Apple + QQ',
+    apple_netease: 'Apple + 网易云',
+    qq_netease: 'QQ + 网易云',
+    apple_only: '仅 Apple',
+    qq_only: '仅 QQ',
+    netease_only: '仅网易云',
+  };
+  return labels[status] || status || '';
+}
+
+function scoreText(value) {
+  if (value === undefined || value === null) return '-';
+  return `${Math.round(Number(value) * 100)}%`;
+}
+
+function latestTimestamp(...values) {
+  return values
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || '';
+}
+
+async function getJson(url) {
+  const response = await fetch(url);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || response.statusText);
+  return payload;
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || response.statusText);
+  return payload;
+}
+
+function setBusy(nextBusy) {
+  busy = nextBusy;
+  for (const button of document.querySelectorAll('button')) {
+    button.disabled = nextBusy;
+  }
+}
+
+function showToast(message, isError = false) {
+  elements.toast.textContent = message;
+  elements.toast.style.background = isError ? 'var(--red)' : 'var(--ink)';
+  elements.toast.classList.add('show');
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => elements.toast.classList.remove('show'), 2800);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/'/g, '&#39;');
+}
