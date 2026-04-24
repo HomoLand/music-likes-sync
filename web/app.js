@@ -25,6 +25,7 @@ const AUTH_QUOTES = [
   '同一首歌可以有很多名字，目标曲库只认清单。',
   '今天少漏一首歌，明天少一次手工补。',
 ];
+const HITOKOTO_URL = 'https://v1.hitokoto.cn/?c=d&c=i&c=j&encode=json&charset=utf-8&max_length=48';
 
 const elements = {
   appleForm: $('#appleForm'),
@@ -64,6 +65,8 @@ const elements = {
   qqCookieStatus: $('#qqCookieStatus'),
   neteaseCookieStatus: $('#neteaseCookieStatus'),
   authQuoteText: $('#authQuoteText'),
+  authQuoteFrom: $('#authQuoteFrom'),
+  authQuoteRefresh: $('#authQuoteRefresh'),
   statusStack: $('#statusStack'),
   reportTime: $('#reportTime'),
   summaryGrid: $('#summaryGrid'),
@@ -96,18 +99,53 @@ let searchTimer = 0;
 init();
 
 function init() {
-  renderAuthQuote();
   bindEvents();
+  fetchAuthQuote();
   refreshState();
 }
 
-function renderAuthQuote() {
+function renderLocalAuthQuote() {
   if (!elements.authQuoteText) return;
   const index = new Date().getDate() % AUTH_QUOTES.length;
   elements.authQuoteText.textContent = AUTH_QUOTES[index];
+  if (elements.authQuoteFrom) {
+    elements.authQuoteFrom.textContent = '本地 fallback / hitokoto.cn 暂不可用';
+  }
+}
+
+async function fetchAuthQuote() {
+  if (!elements.authQuoteText) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4200);
+  if (elements.authQuoteRefresh) elements.authQuoteRefresh.disabled = true;
+  if (elements.authQuoteFrom) elements.authQuoteFrom.textContent = '正在从 hitokoto.cn 取一句';
+
+  try {
+    const response = await fetch(HITOKOTO_URL, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`hitokoto ${response.status}`);
+    const data = await response.json();
+    const text = String(data.hitokoto || '').trim();
+    if (!text) throw new Error('hitokoto empty');
+
+    elements.authQuoteText.textContent = text;
+    if (elements.authQuoteFrom) {
+      const source = [data.from_who, data.from].filter(Boolean).join(' / ');
+      elements.authQuoteFrom.textContent = source ? `来自 ${source}` : '来自 hitokoto.cn';
+    }
+  } catch {
+    renderLocalAuthQuote();
+  } finally {
+    clearTimeout(timer);
+    if (elements.authQuoteRefresh) elements.authQuoteRefresh.disabled = false;
+  }
 }
 
 function bindEvents() {
+  elements.authQuoteRefresh?.addEventListener('click', fetchAuthQuote);
+
   elements.appleFile.addEventListener('change', async () => {
     const file = elements.appleFile.files?.[0];
     if (!file) return;

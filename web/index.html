@@ -157,8 +157,14 @@
             </details>
             <div class="auth-filler">
               <div class="auth-hitokoto">
-                <span>本地一言</span>
+                <div class="quote-topline">
+                  <span>一言 API</span>
+                  <button class="quote-refresh" id="authQuoteRefresh" type="button" aria-label="换一句">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.8 9A7 7 0 0 0 6.2 7.8L4 10m2 5a7 7 0 0 0 11.8 1.2L20 14"/></svg>
+                  </button>
+                </div>
                 <p id="authQuoteText">把歌单先放在同一张桌上，剩下的交给匹配。</p>
+                <small id="authQuoteFrom">正在从 hitokoto.cn 取一句</small>
               </div>
             </div>
           </form>
