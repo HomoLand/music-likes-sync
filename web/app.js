@@ -7,15 +7,10 @@ const PLATFORM_LABELS = {
 };
 
 const FILTER_LABELS = {
-  'all-gaps': '默认待同步',
-  'missing-qq': '缺 QQ',
-  'missing-netease': '缺网易云',
-  'missing-apple': '缺 Apple',
-  conflicts: '版本/冲突',
-  'review-candidates': '低置信',
-  'apple-only': '仅 Apple',
-  'qq-only': '仅 QQ',
-  'netease-only': '仅网易云',
+  'sync-queue': '待同步',
+  'review-queue': '待判断',
+  resolved: '已处理',
+  all: '全部曲库',
 };
 
 const AUTH_QUOTES = [
@@ -98,7 +93,7 @@ let busy = false;
 let neteaseQrKey = '';
 let neteaseQrTimer = 0;
 let currentState = null;
-let activeFilter = 'all-gaps';
+let activeFilter = 'sync-queue';
 let libraryOffset = 0;
 let libraryLimit = 40;
 let searchTimer = 0;
@@ -297,7 +292,7 @@ function bindEvents() {
   });
 
   elements.unifiedButton.addEventListener('click', async () => {
-    activeFilter = 'all-gaps';
+    activeFilter = 'sync-queue';
     await runAction('正在生成统一曲库', () => postJson('/api/unified/generate', {
       threshold: elements.threshold.value.trim(),
       reviewThreshold: elements.reviewThreshold.value.trim(),
@@ -565,10 +560,11 @@ function renderReportSummary(report, unified, decisions) {
   if (!report?.exists && !unified?.exists) {
     elements.reportTime.textContent = '尚未生成';
     for (const item of [
-      ['自动匹配', 0],
-      ['人工确认', 0],
       ['统一曲库', 0],
+      ['待同步曲目', 0],
+      ['待同步动作', 0],
       ['待人工判断', 0],
+      ['已采纳/确认', 0],
     ]) {
       elements.summaryGrid.appendChild(metric(item[0], item[1]));
     }
@@ -577,24 +573,16 @@ function renderReportSummary(report, unified, decisions) {
 
   const latestTime = latestTimestamp(report?.generatedAt, unified?.generatedAt);
   elements.reportTime.textContent = latestTime ? new Date(latestTime).toLocaleString('zh-CN') : '尚未生成';
-  const qq = report?.platforms?.qq;
-  const netease = report?.platforms?.netease;
-  const totalMatched = (qq?.matched || 0) + (netease?.matched || 0);
-  const totalReview = (qq?.review || 0) + (netease?.review || 0);
-  const defaultSyncActions = Object.values(unified?.missingByPlatform || {})
-    .reduce((sum, value) => sum + Number(value || 0), 0);
+  const workflow = unified?.workflow || {};
   const selected = (decisions?.clusters || 0) + (decisions?.candidates || 0);
 
   elements.summaryGrid.append(
-    metric('自动匹配', totalMatched),
-    metric('人工确认', totalReview),
     metric('统一曲库', unified?.totalUnified || 0),
-    metric('默认同步动作', defaultSyncActions),
-    metric('缺 Apple / QQ / 网易云', `${unified?.missingByPlatform?.apple || 0} / ${unified?.missingByPlatform?.qq || qq?.missing || 0} / ${unified?.missingByPlatform?.netease || netease?.missing || 0}`),
-    metric('版本疑点', unified?.versionConflicts || 0),
-    metric('版本/冲突', unified?.conflictClusters || 0),
-    metric('低置信', unified?.reviewCandidates || 0),
-    metric('已人工判断', selected),
+    metric('待同步曲目', workflow.syncableClusters || 0),
+    metric('待同步动作', workflow.syncableActions || 0),
+    metric('待人工判断', workflow.pendingReview ?? 0),
+    metric('已采纳/确认', workflow.handledReview || selected),
+    metric('已排除冲突', workflow.excluded || 0),
   );
 }
 
@@ -705,7 +693,13 @@ function renderClusterActions(item) {
 }
 
 function renderSyncPlan(item) {
-  if (!item.missingPlatforms.length) return '同步计划：三端已经都有，除非版本判断需要拆开。';
+  if (item.needsReview && !item.decision?.reviewAction) {
+    return '同步计划：先判断版本关系，暂不进入补全队列。';
+  }
+  if (item.decision?.reviewAction === 'split') {
+    return '同步计划：已判定存在版本冲突，先从自动补全队列排除。';
+  }
+  if (!item.missingPlatforms.length) return '同步计划：三端已经都有。';
   return `同步计划：默认补到 ${item.missingPlatforms.map(platformLabel).join(' / ')}。`;
 }
 

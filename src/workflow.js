@@ -19,6 +19,7 @@ import {
 } from './utils.js';
 
 const require = createRequire(import.meta.url);
+const PLATFORMS = ['apple', 'qq', 'netease'];
 
 export const FILES = {
   appleJson: path.join(DATA_DIR, 'apple.json'),
@@ -215,9 +216,13 @@ export async function getUnifiedItems(options = {}) {
   const query = normalizeText(options.query || '');
   const offset = Math.max(0, Number(options.offset || 0));
   const limit = Math.min(100, Math.max(1, Number(options.limit || 40)));
-  const source = filter === 'review-candidates'
-    ? buildCandidateItems(unified.reviewCandidates || [], decisions, suggestions)
-    : buildClusterItems(unified.clusters || [], decisions, suggestions);
+  const clusterItems = buildClusterItems(unified.clusters || [], decisions, suggestions);
+  const candidateItems = buildCandidateItems(unified.reviewCandidates || [], decisions, suggestions);
+  const source = reviewFilterUsesCandidates(filter)
+    ? filter === 'review-candidates'
+      ? candidateItems
+      : [...clusterItems, ...candidateItems]
+    : clusterItems;
   const filtered = source.filter((item) => matchesUnifiedFilter(item, filter) && matchesUnifiedQuery(item, query));
   const items = filtered.slice(offset, offset + limit);
 
@@ -476,7 +481,7 @@ export async function getState() {
     qq: summarizeSnapshot(prepareSnapshot(qq)),
     netease: summarizeSnapshot(prepareSnapshot(netease)),
     report: summarizeReport(report),
-    unified: summarizeUnified(unified),
+    unified: summarizeUnified(unified, decisions),
     decisions: summarizeDecisions(decisions),
     ai: {
       hasEnvKey: Boolean(process.env.DEEPSEEK_API_KEY),
@@ -531,7 +536,7 @@ function summarizeReport(report) {
   };
 }
 
-function summarizeUnified(unified) {
+function summarizeUnified(unified, decisions) {
   if (!unified) return { exists: false };
   return {
     exists: true,
@@ -545,6 +550,7 @@ function summarizeUnified(unified) {
       versionConflicts: unified.summary?.versionConflicts || 0,
       reviewCandidates: unified.summary?.reviewCandidates || 0,
       sourceCounts: unified.sourceCounts || {},
+      workflow: summarizeUnifiedWorkflow(unified, decisions),
     };
 }
 
@@ -567,6 +573,46 @@ async function readAiSuggestionState() {
     candidates: data?.candidates || {},
     batches: Array.isArray(data?.batches) ? data.batches : [],
   };
+}
+
+function summarizeUnifiedWorkflow(unified, decisions) {
+  const clusterDecisions = decisions?.clusters || {};
+  const candidateDecisions = decisions?.candidates || {};
+  const reviewActions = countActions(Object.values(clusterDecisions)
+    .map((item) => ({ action: item.reviewAction }))
+    .filter((item) => item.action));
+  const candidateActions = countActions(Object.values(candidateDecisions));
+  const handledReview = (reviewActions.same || 0)
+    + (reviewActions.split || 0)
+    + (candidateActions.merge || 0)
+    + (candidateActions.separate || 0);
+  const totalReview = (unified.summary?.conflictClusters || 0) + (unified.summary?.reviewCandidates || 0);
+  const workflow = {
+    totalReview,
+    handledReview,
+    pendingReview: Math.max(0, totalReview - handledReview),
+    acceptedSame: (reviewActions.same || 0) + (candidateActions.merge || 0),
+    excluded: (reviewActions.split || 0) + (candidateActions.separate || 0),
+    syncableClusters: 0,
+    syncableActions: 0,
+    blockedClusters: 0,
+  };
+
+  for (const cluster of unified.clusters || []) {
+    const missingPlatforms = PLATFORMS.filter((platform) => !cluster.platforms?.includes(platform));
+    if (!missingPlatforms.length) continue;
+    const reviewAction = clusterDecisions[cluster.id]?.reviewAction || '';
+    const unresolved = cluster.needsReview && !reviewAction;
+    const excluded = reviewAction === 'split';
+    if (unresolved || excluded) {
+      workflow.blockedClusters += 1;
+      continue;
+    }
+    workflow.syncableClusters += 1;
+    workflow.syncableActions += missingPlatforms.length;
+  }
+
+  return workflow;
 }
 
 function applyOneAiSuggestion({
@@ -706,18 +752,44 @@ function buildCandidateItems(candidates, decisions, suggestions) {
   });
 }
 
+function reviewFilterUsesCandidates(filter) {
+  return ['review-queue', 'resolved', 'review-candidates'].includes(filter);
+}
+
 function matchesUnifiedFilter(item, filter) {
-  if (filter === 'all') return true;
-  if (filter === 'all-gaps') return item.type === 'cluster' && item.missingPlatforms.length > 0;
-  if (filter === 'missing-apple') return item.type === 'cluster' && item.missingPlatforms.includes('apple');
-  if (filter === 'missing-qq') return item.type === 'cluster' && item.missingPlatforms.includes('qq');
-  if (filter === 'missing-netease') return item.type === 'cluster' && item.missingPlatforms.includes('netease');
-  if (filter === 'conflicts') return item.type === 'cluster' && item.needsReview;
+  if (filter === 'all') return item.type === 'cluster';
+  if (filter === 'sync-queue' || filter === 'all-gaps') {
+    return item.type === 'cluster' && item.missingPlatforms.length > 0 && isSyncableCluster(item);
+  }
+  if (filter === 'review-queue') return isPendingReviewItem(item);
+  if (filter === 'resolved') return isResolvedReviewItem(item);
+  if (filter === 'missing-apple') return item.type === 'cluster' && item.missingPlatforms.includes('apple') && isSyncableCluster(item);
+  if (filter === 'missing-qq') return item.type === 'cluster' && item.missingPlatforms.includes('qq') && isSyncableCluster(item);
+  if (filter === 'missing-netease') return item.type === 'cluster' && item.missingPlatforms.includes('netease') && isSyncableCluster(item);
+  if (filter === 'conflicts') return item.type === 'cluster' && item.needsReview && !item.decision?.reviewAction;
   if (filter === 'apple-only') return item.type === 'cluster' && item.status === 'apple_only';
   if (filter === 'qq-only') return item.type === 'cluster' && item.status === 'qq_only';
   if (filter === 'netease-only') return item.type === 'cluster' && item.status === 'netease_only';
-  if (filter === 'review-candidates') return item.type === 'candidate';
+  if (filter === 'review-candidates') return item.type === 'candidate' && !item.decision?.action;
   return true;
+}
+
+function isSyncableCluster(item) {
+  if (item.type !== 'cluster') return false;
+  if (!item.needsReview) return true;
+  return item.decision?.reviewAction === 'same';
+}
+
+function isPendingReviewItem(item) {
+  if (item.type === 'cluster') return item.needsReview && !item.decision?.reviewAction;
+  if (item.type === 'candidate') return !item.decision?.action;
+  return false;
+}
+
+function isResolvedReviewItem(item) {
+  if (item.type === 'cluster') return item.needsReview && Boolean(item.decision?.reviewAction);
+  if (item.type === 'candidate') return Boolean(item.decision?.action);
+  return false;
 }
 
 function matchesUnifiedQuery(item, query) {
