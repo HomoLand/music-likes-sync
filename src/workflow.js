@@ -373,12 +373,20 @@ export async function saveUnifiedDecision(input = {}) {
   } else if (type === 'cluster-review') {
     const id = String(input.id || '').trim();
     if (!id) throw new Error('缺少条目 ID。');
-    decisions.clusters[id] = {
+    const action = normalizeClusterReviewAction(input.action);
+    const current = {
       ...(decisions.clusters[id] || {}),
       id,
-      reviewAction: normalizeClusterReviewAction(input.action),
+      reviewAction: action,
       updatedAt: now,
     };
+    if (action === 'pick') {
+      current.selectedTrack = String(input.selectedTrack || '').trim();
+      if (!current.selectedTrack) throw new Error('缺少要保留的版本。');
+    } else {
+      delete current.selectedTrack;
+    }
+    decisions.clusters[id] = current;
   } else {
     const id = String(input.id || '').trim();
     const target = String(input.target || '').trim();
@@ -582,17 +590,24 @@ function summarizeUnifiedWorkflow(unified, decisions) {
     .map((item) => ({ action: item.reviewAction }))
     .filter((item) => item.action));
   const candidateActions = countActions(Object.values(candidateDecisions));
-  const handledReview = (reviewActions.same || 0)
-    + (reviewActions.split || 0)
-    + (candidateActions.merge || 0)
-    + (candidateActions.separate || 0);
+  const handledReview = Object.values(reviewActions).reduce((sum, value) => sum + value, 0)
+    + Object.values(candidateActions).reduce((sum, value) => sum + value, 0);
   const totalReview = (unified.summary?.conflictClusters || 0) + (unified.summary?.reviewCandidates || 0);
   const workflow = {
     totalReview,
     handledReview,
     pendingReview: Math.max(0, totalReview - handledReview),
+    keptTogether: (reviewActions.same || 0) + (candidateActions.merge || 0),
+    keptSeparate: (reviewActions.split || 0) + (candidateActions.separate || 0),
+    selectedOne: (reviewActions.pick || 0)
+      + (candidateActions['keep-source'] || 0)
+      + (candidateActions['keep-target'] || 0),
+    dropped: (reviewActions.drop || 0) + (candidateActions.drop || 0),
     acceptedSame: (reviewActions.same || 0) + (candidateActions.merge || 0),
-    excluded: (reviewActions.split || 0) + (candidateActions.separate || 0),
+    excluded: (reviewActions.split || 0)
+      + (candidateActions.separate || 0)
+      + (reviewActions.drop || 0)
+      + (candidateActions.drop || 0),
     syncableClusters: 0,
     syncableActions: 0,
     blockedClusters: 0,
@@ -603,7 +618,7 @@ function summarizeUnifiedWorkflow(unified, decisions) {
     if (!missingPlatforms.length) continue;
     const reviewAction = clusterDecisions[cluster.id]?.reviewAction || '';
     const unresolved = cluster.needsReview && !reviewAction;
-    const excluded = reviewAction === 'split';
+    const excluded = reviewAction === 'split' || reviewAction === 'drop';
     if (unresolved || excluded) {
       workflow.blockedClusters += 1;
       continue;
@@ -777,7 +792,7 @@ function matchesUnifiedFilter(item, filter) {
 function isSyncableCluster(item) {
   if (item.type !== 'cluster') return false;
   if (!item.needsReview) return true;
-  return item.decision?.reviewAction === 'same';
+  return item.decision?.reviewAction === 'same' || item.decision?.reviewAction === 'pick';
 }
 
 function isPendingReviewItem(item) {
@@ -852,13 +867,13 @@ function normalizeTargetAction(action) {
 
 function normalizeCandidateAction(action) {
   const value = String(action || '').trim();
-  if (['merge', 'separate', 'undecided'].includes(value)) return value;
+  if (['merge', 'separate', 'keep-source', 'keep-target', 'drop', 'undecided'].includes(value)) return value;
   throw new Error('未知低置信候选选择。');
 }
 
 function normalizeClusterReviewAction(action) {
   const value = String(action || '').trim();
-  if (['same', 'split', 'undecided'].includes(value)) return value;
+  if (['same', 'split', 'pick', 'drop', 'undecided'].includes(value)) return value;
   throw new Error('未知冲突处理选择。');
 }
 

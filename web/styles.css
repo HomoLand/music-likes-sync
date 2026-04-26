@@ -1151,6 +1151,26 @@ button:disabled {
   color: white;
 }
 
+.choice-button.danger {
+  color: var(--red);
+  border-color: rgba(201, 75, 50, 0.42);
+  background: rgba(201, 75, 50, 0.06);
+}
+
+.choice-button.danger.active {
+  background: var(--red);
+  border-color: var(--red);
+  color: white;
+}
+
+.choice-button.mini {
+  min-height: 28px;
+  justify-self: start;
+  margin-top: 6px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
 .candidate-card {
   position: relative;
   grid-template-columns: 1fr;

@@ -564,7 +564,8 @@ function renderReportSummary(report, unified, decisions) {
       ['待同步曲目', 0],
       ['待同步动作', 0],
       ['待人工判断', 0],
-      ['已采纳/确认', 0],
+      ['合并/同版', 0],
+      ['取一/不要', '0 / 0'],
     ]) {
       elements.summaryGrid.appendChild(metric(item[0], item[1]));
     }
@@ -574,15 +575,15 @@ function renderReportSummary(report, unified, decisions) {
   const latestTime = latestTimestamp(report?.generatedAt, unified?.generatedAt);
   elements.reportTime.textContent = latestTime ? new Date(latestTime).toLocaleString('zh-CN') : '尚未生成';
   const workflow = unified?.workflow || {};
-  const selected = (decisions?.clusters || 0) + (decisions?.candidates || 0);
 
   elements.summaryGrid.append(
     metric('统一曲库', unified?.totalUnified || 0),
     metric('待同步曲目', workflow.syncableClusters || 0),
     metric('待同步动作', workflow.syncableActions || 0),
     metric('待人工判断', workflow.pendingReview ?? 0),
-    metric('已采纳/确认', workflow.handledReview || selected),
-    metric('已排除冲突', workflow.excluded || 0),
+    metric('合并/同版', workflow.keptTogether || 0),
+    metric('分开保留', workflow.keptSeparate || 0),
+    metric('取一/不要', `${workflow.selectedOne || 0} / ${workflow.dropped || 0}`),
   );
 }
 
@@ -657,7 +658,7 @@ function renderClusterItem(item) {
         </div>
       </div>
       <div class="source-list">
-        ${renderSourceRows(item.sources)}
+        ${renderSourceRows(item.sources, item)}
       </div>
       <div class="sync-plan">${renderSyncPlan(item)}</div>
       ${conflictHtml}
@@ -671,7 +672,7 @@ function renderClusterItem(item) {
 function renderClusterActions(item) {
   const reviewButtons = item.needsReview ? [
     decisionButton({
-      label: '同曲同版本',
+      label: '合并保留',
       type: 'cluster-review',
       id: item.id,
       action: 'same',
@@ -679,12 +680,20 @@ function renderClusterActions(item) {
       tone: 'include',
     }),
     decisionButton({
-      label: '不同版本/需拆开',
+      label: '分开保留',
       type: 'cluster-review',
       id: item.id,
       action: 'split',
       active: item.decision?.reviewAction === 'split',
       tone: 'exclude',
+    }),
+    decisionButton({
+      label: '都不要',
+      type: 'cluster-review',
+      id: item.id,
+      action: 'drop',
+      active: item.decision?.reviewAction === 'drop',
+      tone: 'danger',
     }),
   ] : [];
   const buttons = [...reviewButtons];
@@ -696,8 +705,14 @@ function renderSyncPlan(item) {
   if (item.needsReview && !item.decision?.reviewAction) {
     return '同步计划：先判断版本关系，暂不进入补全队列。';
   }
+  if (item.decision?.reviewAction === 'pick') {
+    return '同步计划：只保留选中的版本，再补到缺失平台。';
+  }
   if (item.decision?.reviewAction === 'split') {
-    return '同步计划：已判定存在版本冲突，先从自动补全队列排除。';
+    return '同步计划：已判定分开保留，等待拆分后再补全。';
+  }
+  if (item.decision?.reviewAction === 'drop') {
+    return '同步计划：已从目标统一收藏中排除。';
   }
   if (!item.missingPlatforms.length) return '同步计划：三端已经都有。';
   return `同步计划：默认补到 ${item.missingPlatforms.map(platformLabel).join(' / ')}。`;
@@ -747,7 +762,7 @@ function renderCandidateItem(item) {
       ${renderAiSuggestion(item.aiSuggestion)}
       <div class="choice-row">
         ${decisionButton({
-          label: '同曲同版本合并',
+          label: '合并保留',
           type: 'candidate',
           key: item.key,
           action: 'merge',
@@ -755,12 +770,36 @@ function renderCandidateItem(item) {
           tone: 'include',
         })}
         ${decisionButton({
-          label: '不同曲/版本分开',
+          label: '分开都保留',
           type: 'candidate',
           key: item.key,
           action: 'separate',
           active: item.decision?.action === 'separate',
           tone: 'exclude',
+        })}
+        ${decisionButton({
+          label: '只保留来源',
+          type: 'candidate',
+          key: item.key,
+          action: 'keep-source',
+          active: item.decision?.action === 'keep-source',
+          tone: 'include',
+        })}
+        ${decisionButton({
+          label: '只保留候选',
+          type: 'candidate',
+          key: item.key,
+          action: 'keep-target',
+          active: item.decision?.action === 'keep-target',
+          tone: 'include',
+        })}
+        ${decisionButton({
+          label: '都不要',
+          type: 'candidate',
+          key: item.key,
+          action: 'drop',
+          active: item.decision?.action === 'drop',
+          tone: 'danger',
         })}
       </div>
     </article>
@@ -826,7 +865,7 @@ function relationLabel(relation) {
   return '';
 }
 
-function renderSourceRows(sources = {}) {
+function renderSourceRows(sources = {}, item = null) {
   return Object.entries(sources).map(([platform, tracks]) => {
     const visible = tracks.slice(0, 4);
     const extra = tracks.length - visible.length;
@@ -838,6 +877,7 @@ function renderSourceRows(sources = {}) {
             <div class="source-track">
               <strong>${escapeHtml(track.title || '(无标题)')}</strong>
               <span>${escapeHtml([track.artist, track.album, track.duration].filter(Boolean).join(' / '))}</span>
+              ${renderPickTrackButton(item, platform, track)}
             </div>
           `).join('')}
           ${extra > 0 ? `<div class="source-extra">还有 ${extra} 条同平台记录</div>` : ''}
@@ -847,7 +887,21 @@ function renderSourceRows(sources = {}) {
   }).join('');
 }
 
-function decisionButton({ label, type, id, target, key, action, active, tone }) {
+function renderPickTrackButton(item, platform, track) {
+  if (!item?.needsReview) return '';
+  const key = trackDecisionKey(platform, track);
+  return decisionButton({
+    label: '只保留这个版本',
+    type: 'cluster-review',
+    id: item.id,
+    action: 'pick',
+    selectedTrack: key,
+    active: item.decision?.reviewAction === 'pick' && item.decision?.selectedTrack === key,
+    tone: 'include mini',
+  });
+}
+
+function decisionButton({ label, type, id, target, key, action, selectedTrack, active, tone }) {
   return `
     <button
       class="choice-button ${tone || ''} ${active ? 'active' : ''}"
@@ -856,6 +910,7 @@ function decisionButton({ label, type, id, target, key, action, active, tone }) 
       data-id="${escapeAttr(id || '')}"
       data-target="${escapeAttr(target || '')}"
       data-key="${escapeAttr(key || '')}"
+      data-selected-track="${escapeAttr(selectedTrack || '')}"
       data-action="${escapeAttr(action)}"
     >${escapeHtml(label)}</button>
   `;
@@ -867,6 +922,7 @@ async function saveDecision(button) {
     id: button.dataset.id,
     target: button.dataset.target,
     key: button.dataset.key,
+    selectedTrack: button.dataset.selectedTrack,
     action: button.dataset.action,
   }), async () => loadUnifiedItems({ reset: true }));
 }
@@ -874,18 +930,21 @@ async function saveDecision(button) {
 function renderDecisionSummary(decisions) {
   const candidateMerge = decisions?.candidateActions?.merge || 0;
   const candidateSeparate = decisions?.candidateActions?.separate || 0;
+  const candidatePick = (decisions?.candidateActions?.['keep-source'] || 0)
+    + (decisions?.candidateActions?.['keep-target'] || 0);
+  const candidateDrop = decisions?.candidateActions?.drop || 0;
   const reviewSame = decisions?.reviewActions?.same || 0;
   const reviewSplit = decisions?.reviewActions?.split || 0;
-  elements.decisionSummary.textContent = `同版本 ${reviewSame} / 拆开 ${reviewSplit} / 低置信合并 ${candidateMerge} / 分开 ${candidateSeparate}`;
+  const reviewPick = decisions?.reviewActions?.pick || 0;
+  const reviewDrop = decisions?.reviewActions?.drop || 0;
+  elements.decisionSummary.textContent = `合并 ${reviewSame + candidateMerge} / 分开 ${reviewSplit + candidateSeparate} / 取一 ${reviewPick + candidatePick} / 不要 ${reviewDrop + candidateDrop}`;
 }
 
 function renderAiSummary(ai, decisions = {}) {
   const total = ai?.suggestions?.total || 0;
   const envText = ai?.hasEnvKey ? '环境变量已配置' : '未配置环境变量';
-  const applied = (decisions?.reviewActions?.same || 0)
-    + (decisions?.reviewActions?.split || 0)
-    + (decisions?.candidateActions?.merge || 0)
-    + (decisions?.candidateActions?.separate || 0);
+  const applied = Object.values(decisions?.reviewActions || {}).reduce((sum, value) => sum + value, 0)
+    + Object.values(decisions?.candidateActions || {}).reduce((sum, value) => sum + value, 0);
   elements.aiSummary.textContent = total
     ? `AI 建议 ${total} 条 / 已采纳 ${applied} 条 / ${envText}`
     : `AI 尚未分析 / ${envText}`;
@@ -937,6 +996,16 @@ function emptyState(message) {
 
 function platformLabel(platform) {
   return PLATFORM_LABELS[platform] || platform || '';
+}
+
+function trackDecisionKey(platform, track = {}) {
+  const identity = track.id || track.mid || [
+    track.title,
+    track.artist,
+    track.album,
+    track.duration,
+  ].filter(Boolean).join('|');
+  return `${platform}:${identity}`;
 }
 
 function statusLabel(status) {
