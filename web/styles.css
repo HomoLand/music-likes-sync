@@ -742,10 +742,16 @@ button:disabled {
 }
 
 .metric {
+  width: 100%;
+  min-height: 0;
+  display: block;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
   background: rgba(247, 242, 232, 0.7);
+  color: var(--ink);
+  text-align: left;
+  box-shadow: none;
 }
 
 .metric span {
@@ -756,9 +762,29 @@ button:disabled {
 }
 
 .metric strong {
+  display: block;
   font-size: 26px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.metric-filter {
+  cursor: pointer;
+}
+
+.metric-filter:hover {
+  border-color: rgba(31, 111, 91, 0.42);
+  background: rgba(31, 111, 91, 0.07);
+}
+
+.metric-filter.active {
+  border-color: var(--green);
+  background: var(--green-2);
+}
+
+.metric-filter.active span,
+.metric-filter.active strong {
+  color: var(--green);
 }
 
 .report-actions {
@@ -769,27 +795,6 @@ button:disabled {
   display: grid;
   gap: 12px;
   margin-bottom: 12px;
-}
-
-.filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.filter-chip {
-  min-height: 34px;
-  padding: 0 12px;
-  border-color: var(--line);
-  background: rgba(255, 255, 255, 0.48);
-  color: var(--ink);
-  box-shadow: none;
-}
-
-.filter-chip.active {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
 }
 
 .search-box {

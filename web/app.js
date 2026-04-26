@@ -9,7 +9,7 @@ const PLATFORM_LABELS = {
 const FILTER_LABELS = {
   'sync-queue': '待同步',
   'review-queue': '待判断',
-  resolved: '已处理',
+  resolved: '已判断',
   all: '全部曲库',
 };
 
@@ -68,7 +68,6 @@ const elements = {
   statusStack: $('#statusStack'),
   reportTime: $('#reportTime'),
   summaryGrid: $('#summaryGrid'),
-  libraryFilters: $('#libraryFilters'),
   librarySearch: $('#librarySearch'),
   deepseekApiKey: $('#deepseekApiKey'),
   deepseekModel: $('#deepseekModel'),
@@ -305,7 +304,7 @@ function bindEvents() {
   elements.aiReviewButton.addEventListener('click', runAiReview);
   elements.aiApplyButton.addEventListener('click', applyAiSuggestions);
 
-  elements.libraryFilters.addEventListener('click', (event) => {
+  elements.summaryGrid.addEventListener('click', (event) => {
     const button = event.target.closest('[data-filter]');
     if (!button) return;
     activeFilter = button.dataset.filter;
@@ -560,14 +559,12 @@ function renderReportSummary(report, unified, decisions) {
   if (!report?.exists && !unified?.exists) {
     elements.reportTime.textContent = '尚未生成';
     for (const item of [
-      ['统一曲库', 0],
-      ['待同步曲目', 0],
-      ['待同步动作', 0],
-      ['待人工判断', 0],
-      ['合并/同版', 0],
-      ['取一/不要', '0 / 0'],
+      ['全部曲库', 0, 'all'],
+      ['待同步', 0, 'sync-queue'],
+      ['待判断', 0, 'review-queue'],
+      ['已判断', 0, 'resolved'],
     ]) {
-      elements.summaryGrid.appendChild(metric(item[0], item[1]));
+      elements.summaryGrid.appendChild(metric(item[0], item[1], item[2]));
     }
     return;
   }
@@ -577,14 +574,12 @@ function renderReportSummary(report, unified, decisions) {
   const workflow = unified?.workflow || {};
 
   elements.summaryGrid.append(
-    metric('统一曲库', unified?.totalUnified || 0),
-    metric('待同步曲目', workflow.syncableClusters || 0),
-    metric('待同步动作', workflow.syncableActions || 0),
-    metric('待人工判断', workflow.pendingReview ?? 0),
-    metric('合并/同版', workflow.keptTogether || 0),
-    metric('分开保留', workflow.keptSeparate || 0),
-    metric('取一/不要', `${workflow.selectedOne || 0} / ${workflow.dropped || 0}`),
+    metric('全部曲库', unified?.totalUnified || 0, 'all'),
+    metric('待同步', workflow.syncableClusters || 0, 'sync-queue'),
+    metric('待判断', workflow.pendingReview ?? 0, 'review-queue'),
+    metric('已判断', workflow.handledReview || 0, 'resolved'),
   );
+  updateFilterButtons();
 }
 
 async function loadUnifiedItems(options = {}) {
@@ -978,14 +973,18 @@ function renderApplySummary(result) {
 }
 
 function updateFilterButtons() {
-  for (const button of elements.libraryFilters.querySelectorAll('[data-filter]')) {
+  for (const button of elements.summaryGrid.querySelectorAll('[data-filter]')) {
     button.classList.toggle('active', button.dataset.filter === activeFilter);
   }
 }
 
-function metric(label, value) {
-  const node = document.createElement('div');
-  node.className = 'metric';
+function metric(label, value, filter = '') {
+  const node = document.createElement(filter ? 'button' : 'div');
+  node.className = `metric${filter ? ' metric-filter' : ''}`;
+  if (filter) {
+    node.type = 'button';
+    node.dataset.filter = filter;
+  }
   node.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value || 0)}</strong>`;
   return node;
 }
