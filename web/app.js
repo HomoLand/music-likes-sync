@@ -932,24 +932,26 @@ function renderDecisionSummary(decisions) {
   const reviewSplit = decisions?.reviewActions?.split || 0;
   const reviewPick = decisions?.reviewActions?.pick || 0;
   const reviewDrop = decisions?.reviewActions?.drop || 0;
-  elements.decisionSummary.textContent = `合并 ${reviewSame + candidateMerge} / 分开 ${reviewSplit + candidateSeparate} / 取一 ${reviewPick + candidatePick} / 不要 ${reviewDrop + candidateDrop}`;
+  const aiApplied = decisions?.decisionSources?.aiApplied || 0;
+  const manual = decisions?.decisionSources?.manual || 0;
+  elements.decisionSummary.textContent = `合并 ${reviewSame + candidateMerge} / 分开 ${reviewSplit + candidateSeparate} / 取一 ${reviewPick + candidatePick} / 不要 ${reviewDrop + candidateDrop}；AI ${aiApplied} / 手工 ${manual}`;
 }
 
 function renderAiSummary(ai, decisions = {}) {
   const total = ai?.suggestions?.total || 0;
   const envText = ai?.hasEnvKey ? '环境变量已配置' : '未配置环境变量';
-  const applied = Object.values(decisions?.reviewActions || {}).reduce((sum, value) => sum + value, 0)
-    + Object.values(decisions?.candidateActions || {}).reduce((sum, value) => sum + value, 0);
+  const aiApplied = decisions?.decisionSources?.aiApplied || 0;
+  const manual = decisions?.decisionSources?.manual || 0;
   elements.aiSummary.textContent = total
-    ? `AI 建议 ${total} 条 / 已采纳 ${applied} 条 / ${envText}`
+    ? `AI 建议 ${total} 条 / AI 采纳 ${aiApplied} 条 / 手工 ${manual} 条 / ${envText}`
     : `AI 尚未分析 / ${envText}`;
   if (elements.aiApplySummary) {
     const actions = ai?.suggestions?.actions || {};
     const merge = actions.merge || 0;
     const split = actions.split_versions || 0;
     const separate = actions.keep_separate || 0;
-    elements.aiApplySummary.textContent = applied
-      ? `已采纳 ${applied} 条；可调整阈值，或勾选覆盖后重跑。`
+    elements.aiApplySummary.textContent = aiApplied || manual
+      ? `AI 已采纳 ${aiApplied} 条，手工确认 ${manual} 条；可调整阈值，或勾选覆盖后重跑。`
       : total
         ? `可按阈值采纳：合并 ${merge} / 拆版本 ${split} / 分开 ${separate}`
       : '先跑 AI 全量分析，再批量采纳高置信建议。';

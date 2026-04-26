@@ -368,6 +368,7 @@ export async function saveUnifiedDecision(input = {}) {
     decisions.candidates[key] = {
       key,
       action,
+      manualReviewedAt: now,
       updatedAt: now,
     };
   } else if (type === 'cluster-review') {
@@ -378,8 +379,10 @@ export async function saveUnifiedDecision(input = {}) {
       ...(decisions.clusters[id] || {}),
       id,
       reviewAction: action,
+      manualReviewedAt: now,
       updatedAt: now,
     };
+    delete current.aiAppliedAt;
     if (action === 'pick') {
       current.selectedTrack = String(input.selectedTrack || '').trim();
       if (!current.selectedTrack) throw new Error('缺少要保留的版本。');
@@ -674,6 +677,7 @@ function applyOneAiSuggestion({
         aiAppliedAt: now,
         updatedAt: now,
       };
+      delete decisions.clusters[key].manualReviewedAt;
     }
     return;
   }
@@ -815,6 +819,8 @@ function matchesUnifiedQuery(item, query) {
 function summarizeDecisions(decisions) {
   const clusterValues = Object.values(decisions?.clusters || {});
   const candidateValues = Object.values(decisions?.candidates || {});
+  const reviewValues = clusterValues.filter((item) => item.reviewAction);
+  const allReviewValues = [...reviewValues, ...candidateValues];
   const targetActions = { include: 0, exclude: 0, undecided: 0 };
   for (const cluster of clusterValues) {
     for (const action of Object.values(cluster.targets || {})) {
@@ -829,8 +835,21 @@ function summarizeDecisions(decisions) {
     candidates: candidateValues.length,
     targetActions,
     candidateActions: countActions(candidateValues),
-    reviewActions: countActions(clusterValues.map((item) => ({ action: item.reviewAction })).filter((item) => item.action)),
+    reviewActions: countActions(reviewValues.map((item) => ({ action: item.reviewAction }))),
+    decisionSources: summarizeDecisionSources(allReviewValues),
   };
+}
+
+function summarizeDecisionSources(items) {
+  const sources = {
+    aiApplied: 0,
+    manual: 0,
+  };
+  for (const item of items) {
+    if (item.aiAppliedAt && item.updatedAt === item.aiAppliedAt) sources.aiApplied += 1;
+    else sources.manual += 1;
+  }
+  return sources;
 }
 
 function summarizeAiSuggestions(suggestions) {
