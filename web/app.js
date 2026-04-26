@@ -81,6 +81,10 @@ const elements = {
   aiConsent: $('#aiConsent'),
   aiThinking: $('#aiThinking'),
   aiReviewButton: $('#aiReviewButton'),
+  aiApplyThreshold: $('#aiApplyThreshold'),
+  aiApplyOverwrite: $('#aiApplyOverwrite'),
+  aiApplyButton: $('#aiApplyButton'),
+  aiApplySummary: $('#aiApplySummary'),
   libraryResultCount: $('#libraryResultCount'),
   decisionSummary: $('#decisionSummary'),
   aiSummary: $('#aiSummary'),
@@ -304,6 +308,7 @@ function bindEvents() {
   elements.refreshButton.addEventListener('click', refreshState);
   elements.loadMoreButton.addEventListener('click', () => loadUnifiedItems({ reset: false }));
   elements.aiReviewButton.addEventListener('click', runAiReview);
+  elements.aiApplyButton.addEventListener('click', applyAiSuggestions);
 
   elements.libraryFilters.addEventListener('click', (event) => {
     const button = event.target.closest('[data-filter]');
@@ -402,6 +407,20 @@ async function runAiReview() {
     elements.aiConsent.checked = false;
     setBusy(false);
   }
+}
+
+async function applyAiSuggestions() {
+  if (busy) return;
+  const threshold = elements.aiApplyThreshold.value.trim() || '0.85';
+  const overwrite = elements.aiApplyOverwrite.checked;
+  await runAction('正在采纳高置信 AI 建议', () => postJson('/api/ai/apply', {
+    threshold,
+    overwrite,
+  }), async (payload) => {
+    renderApplySummary(payload.result);
+    elements.aiApplyOverwrite.checked = false;
+    await loadUnifiedItems({ reset: true });
+  });
 }
 
 async function startNeteaseQr() {
@@ -521,7 +540,7 @@ function renderState(state) {
   setCredentialState(elements.neteaseCookieStatus, state.hasNeteaseCookie);
 
   renderReportSummary(state.report, state.unified, state.decisions);
-  renderAiSummary(state.ai);
+  renderAiSummary(state.ai, state.decisions);
 }
 
 function setCredentialState(node, saved) {
@@ -603,7 +622,7 @@ async function loadUnifiedItems(options = {}) {
     hasEnvKey: currentState?.ai?.hasEnvKey,
     model: currentState?.ai?.model,
     suggestions: payload.aiSuggestions || payload.suggestions || currentState?.ai?.suggestions,
-  });
+  }, payload.decisions);
   elements.libraryResultCount.textContent = `${FILTER_LABELS[activeFilter] || '条目'}：${payload.total} 条`;
   renderLibraryItems(payload.items, { append: libraryOffset > 0 });
   libraryOffset += payload.items.length;
@@ -866,16 +885,43 @@ function renderDecisionSummary(decisions) {
   elements.decisionSummary.textContent = `同版本 ${reviewSame} / 拆开 ${reviewSplit} / 低置信合并 ${candidateMerge} / 分开 ${candidateSeparate}`;
 }
 
-function renderAiSummary(ai) {
+function renderAiSummary(ai, decisions = {}) {
   const total = ai?.suggestions?.total || 0;
   const envText = ai?.hasEnvKey ? '环境变量已配置' : '未配置环境变量';
+  const applied = (decisions?.reviewActions?.same || 0)
+    + (decisions?.reviewActions?.split || 0)
+    + (decisions?.candidateActions?.merge || 0)
+    + (decisions?.candidateActions?.separate || 0);
   elements.aiSummary.textContent = total
-    ? `AI 建议 ${total} 条 / ${envText}`
+    ? `AI 建议 ${total} 条 / 已采纳 ${applied} 条 / ${envText}`
     : `AI 尚未分析 / ${envText}`;
+  if (elements.aiApplySummary) {
+    const actions = ai?.suggestions?.actions || {};
+    const merge = actions.merge || 0;
+    const split = actions.split_versions || 0;
+    const separate = actions.keep_separate || 0;
+    elements.aiApplySummary.textContent = applied
+      ? `已采纳 ${applied} 条；可调整阈值，或勾选覆盖后重跑。`
+      : total
+        ? `可按阈值采纳：合并 ${merge} / 拆版本 ${split} / 分开 ${separate}`
+      : '先跑 AI 全量分析，再批量采纳高置信建议。';
+  }
   if (ai?.model && elements.deepseekModel.value !== ai.model) {
     const option = [...elements.deepseekModel.options].find((item) => item.value === ai.model);
     if (option) elements.deepseekModel.value = ai.model;
   }
+}
+
+function renderApplySummary(result) {
+  if (!elements.aiApplySummary || !result) return;
+  const clusterTotal = (result.clusters?.same || 0) + (result.clusters?.split || 0);
+  const candidateTotal = (result.candidates?.merge || 0) + (result.candidates?.separate || 0);
+  const skipped = [
+    result.skippedLowConfidence ? `低置信 ${result.skippedLowConfidence}` : '',
+    result.skippedNeedsHuman ? `需人工 ${result.skippedNeedsHuman}` : '',
+    result.skippedExisting ? `已有选择 ${result.skippedExisting}` : '',
+  ].filter(Boolean).join(' / ');
+  elements.aiApplySummary.textContent = `已采纳 ${result.applied || 0} 条：冲突 ${clusterTotal} / 低置信 ${candidateTotal}${skipped ? `；跳过 ${skipped}` : ''}`;
 }
 
 function updateFilterButtons() {

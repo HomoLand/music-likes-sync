@@ -394,6 +394,68 @@ export async function saveUnifiedDecision(input = {}) {
   };
 }
 
+export async function applyAiSuggestions(options = {}) {
+  await ensureDirs();
+  const suggestions = await readAiSuggestionState();
+  const decisions = await readDecisionState();
+  const threshold = normalizeApplyThreshold(options.threshold);
+  const overwrite = Boolean(options.overwrite);
+  const dryRun = Boolean(options.dryRun);
+  const now = new Date().toISOString();
+  const stats = {
+    threshold,
+    overwrite,
+    dryRun,
+    totalSuggestions: 0,
+    eligible: 0,
+    applied: 0,
+    skippedLowConfidence: 0,
+    skippedNeedsHuman: 0,
+    skippedExisting: 0,
+    skippedUnsupported: 0,
+    clusters: { same: 0, split: 0 },
+    candidates: { merge: 0, separate: 0 },
+  };
+
+  for (const [id, suggestion] of Object.entries(suggestions.clusters || {})) {
+    applyOneAiSuggestion({
+      type: 'cluster',
+      key: id,
+      suggestion,
+      decisions,
+      threshold,
+      overwrite,
+      dryRun,
+      now,
+      stats,
+    });
+  }
+
+  for (const [key, suggestion] of Object.entries(suggestions.candidates || {})) {
+    applyOneAiSuggestion({
+      type: 'candidate',
+      key,
+      suggestion,
+      decisions,
+      threshold,
+      overwrite,
+      dryRun,
+      now,
+      stats,
+    });
+  }
+
+  if (!dryRun && stats.applied > 0) {
+    decisions.updatedAt = now;
+    await writeJson(FILES.unifiedDecisions, decisions);
+  }
+
+  return {
+    ...stats,
+    decisions: summarizeDecisions(decisions),
+  };
+}
+
 export async function getState() {
   await ensureDirs();
   const [apple, qq, netease, report, unified, decisions, suggestions, appleCookie, qqCookie, neteaseCookie] = await Promise.all([
@@ -505,6 +567,89 @@ async function readAiSuggestionState() {
     candidates: data?.candidates || {},
     batches: Array.isArray(data?.batches) ? data.batches : [],
   };
+}
+
+function applyOneAiSuggestion({
+  type,
+  key,
+  suggestion,
+  decisions,
+  threshold,
+  overwrite,
+  dryRun,
+  now,
+  stats,
+}) {
+  stats.totalSuggestions += 1;
+
+  const confidence = Number(suggestion?.confidence || 0);
+  if (!Number.isFinite(confidence) || confidence < threshold) {
+    stats.skippedLowConfidence += 1;
+    return;
+  }
+
+  const action = mapAiActionToDecision(type, suggestion?.recommendedAction);
+  if (!action) {
+    if (suggestion?.recommendedAction === 'needs_human') stats.skippedNeedsHuman += 1;
+    else stats.skippedUnsupported += 1;
+    return;
+  }
+
+  stats.eligible += 1;
+
+  if (type === 'cluster') {
+    const current = decisions.clusters[key] || {};
+    if (current.reviewAction && !overwrite) {
+      stats.skippedExisting += 1;
+      return;
+    }
+    stats.applied += 1;
+    stats.clusters[action] += 1;
+    if (!dryRun) {
+      decisions.clusters[key] = {
+        ...current,
+        id: key,
+        reviewAction: action,
+        aiAppliedAt: now,
+        updatedAt: now,
+      };
+    }
+    return;
+  }
+
+  const current = decisions.candidates[key] || {};
+  if (current.action && !overwrite) {
+    stats.skippedExisting += 1;
+    return;
+  }
+  stats.applied += 1;
+  stats.candidates[action] += 1;
+  if (!dryRun) {
+    decisions.candidates[key] = {
+      key,
+      action,
+      aiAppliedAt: now,
+      updatedAt: now,
+    };
+  }
+}
+
+function mapAiActionToDecision(type, action) {
+  if (type === 'cluster') {
+    if (action === 'merge') return 'same';
+    if (action === 'split_versions' || action === 'keep_separate') return 'split';
+    return '';
+  }
+  if (action === 'merge') return 'merge';
+  if (action === 'split_versions' || action === 'keep_separate') return 'separate';
+  return '';
+}
+
+function normalizeApplyThreshold(value) {
+  const raw = String(value ?? '').trim();
+  const threshold = raw ? Number(raw) : 0.85;
+  if (!Number.isFinite(threshold)) return 0.85;
+  return Math.max(0, Math.min(1, threshold));
 }
 
 function buildClusterItems(clusters, decisions, suggestions) {

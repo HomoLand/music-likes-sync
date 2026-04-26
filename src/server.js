@@ -18,6 +18,7 @@ import {
   generateUnifiedLibrary,
   getUnifiedItems,
   generateAiSuggestions,
+  applyAiSuggestions,
   saveUnifiedDecision,
 } from './workflow.js';
 import { captureAppleMusicPage, openAppleMusicBrowser } from './apple-edge.js';
@@ -301,6 +302,23 @@ async function handleApi(req, res, url) {
         total: result.total || result.batch?.items?.length || 0,
         remaining: result.remaining || 0,
       },
+      state: await getState(),
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/apply') {
+    const body = await readJsonBody(req);
+    const result = await applyAiSuggestions({
+      threshold: body.threshold,
+      overwrite: body.overwrite,
+      dryRun: body.dryRun,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      message: result.dryRun
+        ? `可采纳 ${result.applied} 条高置信 AI 建议`
+        : `已采纳 ${result.applied} 条高置信 AI 建议`,
+      result,
       state: await getState(),
     });
   }

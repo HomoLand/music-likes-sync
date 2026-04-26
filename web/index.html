@@ -286,6 +286,24 @@
                   AI 全量分析
                 </button>
               </div>
+              <div class="ai-apply-panel">
+                <div class="ai-apply-copy">
+                  <strong>采纳 AI 建议</strong>
+                  <span id="aiApplySummary">默认只采纳高置信建议，不覆盖手动选择。</span>
+                </div>
+                <label class="ai-select-field compact-field">
+                  <span>置信阈值</span>
+                  <input id="aiApplyThreshold" value="0.85" inputmode="decimal">
+                </label>
+                <label class="ai-consent compact-consent">
+                  <input id="aiApplyOverwrite" type="checkbox">
+                  <span>覆盖已有选择</span>
+                </label>
+                <button class="primary-button" id="aiApplyButton" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5M15 6h5v5"/></svg>
+                  采纳高置信 AI
+                </button>
+              </div>
             </div>
             <div class="library-meta">
               <span id="libraryResultCount">暂无条目</span>

@@ -857,6 +857,46 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.ai-apply-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 120px 150px auto;
+  gap: 10px;
+  align-items: end;
+  border: 1px solid rgba(31, 111, 91, 0.28);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(135deg, rgba(31, 111, 91, 0.08), rgba(216, 162, 51, 0.08)),
+    rgba(255, 252, 246, 0.68);
+}
+
+.ai-apply-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  align-self: center;
+}
+
+.ai-apply-copy strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.ai-apply-copy span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.compact-field input {
+  height: 42px;
+}
+
+.compact-consent {
+  min-height: 42px;
+  align-self: end;
+}
+
 .library-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1300,6 +1340,7 @@ pre {
   .summary-grid,
   .qr-box,
   .ai-panel,
+  .ai-apply-panel,
   .library-card,
   .candidate-grid,
   .conflict-line,
