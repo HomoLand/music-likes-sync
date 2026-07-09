@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "description": "Offline quality gates for model-assisted ordinary-user sync item explanations.",
+  "cases": [
+    {
+      "id": "explain-tombstone-review",
+      "category": "tombstone_explanation",
+      "output": {
+        "summary": "This is a deletion signal, not proof that every platform should delete the song.",
+        "risk": "high",
+        "recommended_action": "review_tombstone",
+        "rationale": "The evidence only shows that the song disappeared from one source platform since the baseline, so it needs explicit user review before any global delete.",
+        "evidence_refs": ["reason:tombstone_candidate", "tombstone_decision"]
+      },
+      "expected": {
+        "requiredAction": "review_tombstone",
+        "requiredRisk": "high",
+        "minEvidenceRefs": 2,
+        "forbiddenTerms": ["cookie", "api key", "auto delete now"]
+      }
+    },
+    {
+      "id": "explain-ready-add",
+      "category": "addition_explanation",
+      "output": {
+        "summary": "This song can be added to the missing platform through the controlled add path.",
+        "risk": "low",
+        "recommended_action": "execute_addition",
+        "rationale": "The preview marks the operation ready, and execution still goes through a separate write step instead of direct model action.",
+        "evidence_refs": ["algorithm_score", "match_support_signals"]
+      },
+      "expected": {
+        "requiredAction": "execute_addition",
+        "requiredRisk": "low",
+        "minEvidenceRefs": 2,
+        "forbiddenTerms": ["raw playlist", "credential", "bypass confirmation"]
+      }
+    }
+  ]
+}

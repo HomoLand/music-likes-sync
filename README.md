@@ -1,104 +1,257 @@
 # music-likes-sync
 
-个人用音乐收藏对账工具。当前版本只做读取、归一化、匹配、统一曲库和人工确认建议，不会写入 Apple Music、QQ 音乐或网易云音乐。
+[中文说明](README.zh-CN.md)
 
-## 数据源
+`music-likes-sync` is a local-first playlist reconciliation tool for people who want one canonical liked-song list across Apple Music, QQ Music, and NetEase Cloud Music.
 
-- Apple Music：CSV/JSON 导入，或通过本地 Edge 登录窗口抓取页面。
-- QQ 音乐：通过 `qq-music-api` + cookie 拉取。
-- 网易云音乐：通过 `NeteaseCloudMusicApi` + cookie 拉取。
+The open-source direction is simple: Apple Music Favorite Songs / Liked Songs is the source of truth. QQ Music and NetEase Cloud Music are mirrors. The tool snapshots each platform, builds a deterministic mirror plan, resolves target-platform catalog IDs for missing Apple tracks, dry-runs the result, and only then applies additions or confirmed deletions.
 
-## 安装
+## Current Status
+
+Stable today:
+
+- Import Apple Music liked songs from CSV / TSV / TXT / JSON, or capture them from a local Edge session.
+- Fetch QQ Music and NetEase Cloud Music snapshots with local cookies.
+- Normalize and match tracks across Apple Music, QQ Music, and NetEase Cloud Music.
+- Build the legacy unified-library review surface for low-confidence matches and version conflicts.
+- Build a new Apple-source-of-truth mirror plan with `keep`, `add`, `remove`, and `review` operations.
+- Resolve mirror `add` operations against the target platform catalog before execution.
+- Persist manual mirror `review` decisions and rebuild plans from snapshots so decisions remain reversible.
+- Dry-run mirror plans, execute resolved additions, and execute deletions only after explicit confirmation.
+- Track mirror executions with deterministic run IDs and idempotency keys so duplicate or interrupted runs are auditable.
+- Refresh target snapshots and regenerate the mirror plan to produce post-run convergence checks.
+- Run live provider validation with disposable-playlist safeguards that choose a candidate absent from the target playlist and verify snapshots after add and remove.
+- Surface stale snapshots and post-run convergence status in the Web UI.
+- Validate local mirror state with `npm run check:state`.
+- Keep GitHub Actions release gates aligned with `npm run check:ci`.
+- Run local tests and syntax checks with `npm run verify`.
+
+Not release-complete yet:
+
+- Real-platform add/delete verification is still gated to local test playlists.
+- Docker build / run smoke still needs to pass on a Docker-capable release machine.
+- Version 2 state migrations need concrete migration helpers when the next schema is introduced.
+
+## Product Model
+
+- Apple Music Favorite Songs is the only trusted desired state.
+- QQ Music and NetEase Cloud Music are target mirrors.
+- A sync cycle starts by generating an immutable mirror plan.
+- `keep` means the target already has a confident match.
+- `add` means Apple has a track that the target does not have; the target catalog ID must be resolved first.
+- `remove` means the target has a track that Apple does not have.
+- `review` means the matcher found a low-confidence, duplicate, version-sensitive, or reverse-only relationship that should not be mutated automatically.
+- Manual `review` decisions are stored locally. `keep` treats the reviewed target as the Apple match; `separate` rebuilds the plan into add and / or remove operations while preserving the destructive confirmation gate.
+- Deletion is destructive and requires both a dry-run and an explicit confirmation string: `REMOVE QQ` or `REMOVE NETEASE`.
+- Delete operations require a target track `id`; QQ mid-only tracks are blocked instead of being guessed or submitted.
+- Real mirror execution writes a `running` checkpoint before provider mutation. A later retry with the same idempotency key resumes the checkpoint; a completed duplicate is skipped.
+
+## Install
 
 ```powershell
-cd C:\Users\SajoL\Documents\Code\music-likes-sync
+# From a source checkout:
+cd music-likes-sync
 npm install
+npm run verify
 ```
+
+Node.js 20 or newer is required. The Dockerfile currently uses Node 24.
 
 ## Web UI
 
 ```powershell
+# From an npm install / npx workflow:
+npx music-likes-sync web
+
+# From a source checkout:
 npm run web
 ```
 
-默认地址：`http://127.0.0.1:4319`
+Open `http://127.0.0.1:4319`.
 
-页面里可以完成：
+The Web UI port must be an integer from `1` to `65535`; invalid `PORT` or `--port` values fail before runtime state directories are created.
 
-- 上传或粘贴 Apple Music 导出的 CSV / TSV / TXT / JSON。
-- 保存 QQ 音乐和网易云音乐 cookie 到本地 `data/`。
-- 拉取平台快照。
-- 生成 Markdown / JSON 缺口报告和统一曲库。
-- 在统一曲库里按条目处理版本冲突、低置信候选。
-- 可选调用 DeepSeek 生成“同曲同版本 / 同曲不同版本 / 不是同一首”的辅助判断。
+The UI supports:
 
-## Apple Music 导入
+- Apple Music import by file, paste, URL-assisted capture, or local browser capture.
+- Guided QQ / NetEase login flows with local cookie storage under `data/`.
+- Platform snapshot refresh.
+- Legacy unified-library review and AI-assisted review.
+- Apple -> QQ / NetEase mirror plan generation.
+- Mirror add-candidate resolution.
+- Mirror operation workbench with add / remove / review / blocked filters and current-page bulk review actions.
+- Manual mirror review controls for same-track, separate-track, and clear-decision workflows.
+- Snapshot freshness and convergence health for the active mirror plan.
+- Inline add-resolution alternatives for catalog-review cases.
+- Mirror dry-run.
+- Separate mirror-add and mirror-delete execution paths.
+- In-app deletion confirmation with plan target, delete count, and exact confirmation text.
+- Post-run convergence check that can refresh the target snapshot and rebuild the Apple-source-of-truth plan.
 
-把 Apple Music 喜欢歌曲导出为 CSV / TSV / TXT，放到 `data/apple.csv`，或者直接在 Web UI 里上传/粘贴。表头支持常见中英文字段：
-
-- 歌名：`title` / `name` / `song` / `歌曲` / `名称`
-- 歌手：`artist` / `artists` / `singer` / `歌手` / `艺术家`
-- 专辑：`album` / `专辑`
-- 时长：`duration` / `time` / `时长`
-
-也可以提供 JSON 数组，每项包含 `title`、`artists`、`album`、`durationMs`。
-
-如果 Apple Music Windows 导出不方便，也可以在 Web UI 里打开本地 Edge 登录窗口，进入喜欢歌曲页面后抓取当前页面列表。
-
-可选导出路径：
-
-- Apple Music Windows 里，“喜欢”的歌曲会出现在 `Favorite Songs` 歌单。可先选中这个歌单。
-- 如果你的 Windows 版 Apple Music 有导出菜单，选 `File > Library > Export Playlist`，保存为文本文件。
-- 如果新版 Apple Music Windows 没有导出菜单，用 iTunes for Windows 同步资料库后导出：Apple 官方 iTunes 文档支持 `File > Library > Export Playlist`，并可导出 `Text files`。
-- 如果你在 Mac 上，Music app 也有类似的 `File > Library > Export Playlist`；导出的文本通常是制表符分隔，Web UI 已支持。
-
-## Cookie
-
-为了避免把凭据写进命令历史，推荐放到本地忽略文件：
+## CLI
 
 ```powershell
-Set-Content -Encoding UTF8 .\data\qq.cookie "uin=...; qm_keyst=...;"
-Set-Content -Encoding UTF8 .\data\netease.cookie "MUSIC_U=...;"
-```
+# Verify the installed package.
+npx music-likes-sync --version
 
-这两个文件已经被 `.gitignore` 忽略。不要把完整 cookie 发到聊天窗口。
-
-## 常用命令
-
-```powershell
-# 只检查配置和本地导入文件
+# Inspect local state and credential files.
 npm run check
 
-# 拉取三方快照；没配置 cookie 的平台会跳过
-npm run snapshot -- --apple .\data\apple.csv --qq-cookie .\data\qq.cookie --netease-cookie .\data\netease.cookie
+# Import Apple liked songs and optionally fetch QQ / NetEase snapshots.
+npm run snapshot -- --apple .\examples\apple.sample.csv
 
-# 基于快照生成匹配报告
+# Build the legacy comparison report.
 npm run match
+
+# Build an Apple-source-of-truth mirror plan.
+npx music-likes-sync mirror-plan --target qq
+npx music-likes-sync mirror-plan --target netease
+
+# Resolve target catalog IDs for pending additions.
+npx music-likes-sync mirror-resolve --limit 50 --search-limit 12
+
+# Save manual review decisions. Use --items for a JSON batch.
+npx music-likes-sync mirror-decision --action keep --key "<decision-key>"
+npx music-likes-sync mirror-decision --action separate --items decisions.json
+
+# Dry-run the latest mirror plan. This never mutates the target platform.
+npx music-likes-sync mirror-apply
+
+# Execute only resolved additions.
+npx music-likes-sync mirror-apply --add-only --execute --playlist-id <target-playlist-id>
+
+# Execute only deletions. The confirmation string is intentionally explicit.
+npx music-likes-sync mirror-apply --remove-only --execute --confirm "REMOVE QQ" --playlist-id <target-playlist-id>
+
+# Refresh the target snapshot and regenerate the mirror plan to prove convergence.
+npx music-likes-sync mirror-convergence --refresh-target --playlist-id <target-playlist-id>
 ```
 
-也可以先用样例验证：
+Use `--json` with the mirror commands for machine-readable output.
+
+### Optional Agent / MCP
+
+For Hermes or another local MCP client, expose the read-only Agent tools over stdio:
 
 ```powershell
-npm run snapshot -- --apple .\examples\apple.sample.csv
+npx music-likes-sync agent-mcp
 ```
 
-输出：
+The MCP adapter reuses the same permission gate as the Web API. It can read sanitized library summaries, sync previews, per-track sync evidence, baseline diffs, review queues, profiles, similar tracks, recommendations, save local shortlist drafts, and draft operations, but it cannot read cookies, access AI API keys, expose provider track ids in track-evidence results, or directly add/delete provider tracks.
 
-- `data/apple.json`
-- `data/qq.json`
-- `data/netease.json`
-- `reports/missing.md`
-- `reports/matches.json`
+See [docs/AGENT_MCP_SETUP.zh-CN.md](docs/AGENT_MCP_SETUP.zh-CN.md) for Hermes / MCP client configuration and sanitized trace audit details.
 
-## 当前策略
+## Data And Secrets
 
-- 三个平台的收藏取并集，作为目标统一曲库。
-- 某首歌只在一个或两个平台存在时，默认认为应该补到缺失平台，不再逐平台确认“补/不补”。
-- 人工判断重点放在两类问题：低置信候选是否应该合并、已合并条目是否其实是不同版本。
-- 版本疑点会关注 `Live`、`Cover`、`Acoustic`、`Piano`、`Instrumental`、`Remix`、`Remaster`、`Movie Edit`、`TV Size`、`Album Version`、`Single Version`、`Off Vocal` 等标记和时长差。
-- DeepSeek 建议只作为辅助，不会自动替你确认；最终选择保存在本地 `data/unified-decisions.json`。
-- 第一版不处理删除，不自动改收藏状态。
+Runtime files live under `data/` and `reports/` in the current working directory. Set `MUSIC_LIKES_SYNC_HOME` to use a different runtime directory. These folders are intentionally ignored by Git in the source checkout because they can contain private libraries, cookies, generated plans, and run logs.
 
-## Git / 隐私
+Do not paste full cookies into issues, PRs, or chat logs.
 
-仓库可以直接初始化为 git 项目。`.gitignore` 默认排除了 `data/*.cookie`、平台快照、报告、浏览器 profile、日志和 `.env*`，避免把个人曲库、cookie、API key 提交出去。
+Provider-specific cookie fields, playlist id semantics, live validation setup, and troubleshooting notes are in [docs/PROVIDERS.md](docs/PROVIDERS.md). After logging in locally, the Web UI's advanced settings screen can also run the same disposable-playlist live validation with an explicit `DISPOSABLE_PLAYLIST` confirmation; the page only shows the sanitized result.
+
+## Environment
+
+Copy `.env.example` to `.env` if you need optional integrations:
+
+```powershell
+Copy-Item .\.env.example .\.env
+```
+
+DeepSeek is optional and only used for AI-assisted review when explicitly invoked.
+
+## Architecture
+
+- `src/mirror-sync.js`: pure mirror-plan domain model.
+- `src/mirror-resolve.js`: target catalog resolution for mirror additions.
+- `src/mirror-apply.js`: dry-run and mutation contract for additions and deletions.
+- `src/state-schema.js`: versioned local mirror plan, run-log, and review-decision state validation.
+- `src/workflow.js`: file-backed application workflow and run logs.
+- `src/server.js`: local HTTP API and static Web UI server, reachable through `music-likes-sync web`.
+- `src/agent-mcp.js`: optional stdio MCP adapter for Hermes or other local Agent runtimes.
+- `src/providers/qq.js`: QQ Music snapshot, search, add, and delete adapters.
+- `src/providers/netease.js`: NetEase Cloud Music snapshot, search, add, and delete adapters.
+- `web/`: local browser UI.
+- `web-app/`: React + Vite + TypeScript ordinary-user UI served as the default Web entry, currently covering app state, sync mode selection, read-side sync check, sync preview loading, add-candidate lookup / decisions, tombstone deletion-signal review, local AI profile / similar / recommendation actions, natural-language Agent tool chat, consent-gated provider self-test, Agent audit refresh / feedback with local-draft trace labels, advanced settings diagnostics, and controlled write execution controls.
+- `test/`: unit and contract tests.
+
+More detail is in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). State schema details are in [docs/STATE.md](docs/STATE.md). Provider setup details are in [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+## Contributing And Security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. It defines the validation matrix, mutation-safety rules, and privacy requirements for issues and logs.
+
+Do not report security-sensitive problems in public issues. Use [SECURITY.md](SECURITY.md) for the disclosure policy, and never share raw cookies, `.env` files, `data/` snapshots, generated reports, or browser profiles.
+
+## Validation
+
+```powershell
+npm run check:release
+```
+
+Or run individual gates:
+
+```powershell
+npm run check:syntax
+npm run check:web-app
+npm run check:ci
+npm run check:privacy
+npm run check:state
+npm run migrate:state
+npm test
+npm audit --omit=dev
+npm run smoke:http
+npm run smoke:web-app
+npm run smoke:react-ui
+npm run smoke:agent-mcp
+npm run smoke:ui
+npm run smoke:package
+npm run smoke:fresh-install
+npm run smoke:docker
+npm run verify
+```
+
+Current automated coverage includes:
+
+- Mirror plan construction.
+- Low-confidence and duplicate-match safety behavior.
+- Mirror add resolution.
+- Dry-run and destructive-confirmation contracts.
+- Add-only execution separation from delete execution.
+- Mirror run idempotency keys and operation-key propagation.
+- Isolated HTTP smoke coverage for mirror plan generation, batch review decisions, add-only / remove-only dry-runs, blocked QQ mid-only remove dry-runs, and convergence checks.
+- Mirror state schema validation.
+- State migration dry-run and write-with-backup helper for legacy unversioned mirror state.
+- Live validation orchestration tests for disposable-playlist creation, candidate selection, and post-add / post-remove snapshot verification.
+- GitHub Actions workflow checks for Node 20 / 24, package smoke, fresh-install smoke, HTTP smoke, React UI smoke, legacy UI smoke, Docker smoke, audit, and live-validation skip behavior.
+- React + Vite + TypeScript frontend shell type-check and production build through `npm run check:web-app`.
+- React app HTTP smoke for the default `/` React entry, `/app/` compatibility alias, `/workbench/` compatibility workbench, SPA fallback, built assets, read-side app-state / sync-check / sync-preview API wiring, add-candidate lookup / decisions, tombstone deletion-signal decisions, controlled add dry-run / real-write live-validation blocking, delete confirmation / real-delete live-validation blocking, convergence summary checks, local AI profile / similar / recommendation contracts, AI consent guards, Agent session redaction, live-validation / AI-provider advanced diagnostics, missing assets, and path traversal through `npm run smoke:web-app`.
+- React browser UI smoke for the default `/` desktop and mobile ordinary-user entry, sync preview, controlled write guards, local AI profile / similar search, natural-language Agent chat, Agent audit refresh, local-draft shortlist trace display, advanced diagnostics, and horizontal overflow checks through `npm run smoke:react-ui`.
+- Privacy smoke for public Git candidates and npm package contents, including cookie/API-key placeholders and forbidden runtime paths.
+- Desktop and mobile UI smoke coverage for mirror controls, operation filters, manual review controls, stale snapshot / convergence health, convergence control, add alternatives, and executable delete confirmation.
+- npm pack dry-run smoke that enforces the public package whitelist, checks the CLI `bin` target, and excludes local state, reports, cookies, browser profiles, and env files.
+- Fresh-install smoke that copies the npm pack file list into a temporary package directory, installs the generated tarball into a separate temporary project, verifies the installed `music-likes-sync` bin and Web UI entrypoint use the caller working directory for runtime state, runs the installed package's `npm test`, validates empty local state, imports `examples/apple.sample.csv`, and confirms QQ / NetEase skip safely when cookies are absent.
+- Dockerfile packaging smoke with optional build / run validation.
+- Provider delete no-op behavior.
+- Low-cardinality observability route labels.
+
+Before a public release, also run the live-gated provider validation on disposable QQ Music and NetEase Cloud Music test playlists. See [docs/VALIDATION.md](docs/VALIDATION.md).
+
+For an actual release, save Docker and live-provider evidence, then run the strict evidence gate:
+
+```powershell
+npm run smoke:docker -- --require-docker --write-report
+npm run validate:live -- --write-report
+npm run check:release:strict
+```
+
+If the release workstation does not have Docker, fetch the `docker-smoke-report-node-24` GitHub Actions artifact from the Node 24 CI job, then run the strict gate locally with the live-provider reports:
+
+```powershell
+gh workflow run ci.yml --ref <branch>
+npm run fetch:docker-report -- --repo owner/name
+npm run check:release:strict
+```
+
+## License
+
+MIT

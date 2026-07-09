@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "description": "Synthetic music profile model-output fixtures. These validate normalized AI profile summaries without calling an external model.",
+  "cases": [
+    {
+      "id": "profile-japanese-rock",
+      "category": "profile_summary",
+      "output": {
+        "summary": "The library leans toward Japanese rock and night-drive pop, with repeated Alice tracks and mostly medium-length songs.",
+        "taste_tags": ["language:japanese", "artist:Alice", "version:live"],
+        "listening_patterns": ["Medium-length songs dominate the library.", "Several tracks include live-version wording."],
+        "recommendation_angles": ["Recommend energetic Japanese rock adjacent to Alice.", "Prefer full-length versions over short TV edits."],
+        "caveats": ["This is based on liked-song snapshots, not full listening history."],
+        "confidence": 0.78,
+        "evidence_refs": ["top_artists", "languages", "duration_buckets", "version_tags"]
+      },
+      "expected": {
+        "requiredTags": ["language:japanese", "artist:Alice"],
+        "minEvidenceRefs": 2,
+        "minConfidence": 0.6,
+        "forbiddenTerms": ["cookie", "raw snapshot", "data/"]
+      }
+    },
+    {
+      "id": "profile-sparse-cautious",
+      "category": "sparse_profile",
+      "output": {
+        "summary": "The evidence is sparse, so the safest profile is a light preference for Mandarin pop and shorter songs.",
+        "taste_tags": ["language:mandarin", "duration:short"],
+        "listening_patterns": ["Shorter songs appear more often than long tracks."],
+        "recommendation_angles": ["Recommend familiar Mandarin pop before expanding styles."],
+        "caveats": ["The sample is small and should not be treated as complete listening history."],
+        "confidence": 0.52,
+        "evidence_refs": ["languages", "duration_buckets"]
+      },
+      "expected": {
+        "requiredTags": ["language:mandarin"],
+        "minEvidenceRefs": 2,
+        "minConfidence": 0.45,
+        "forbiddenTerms": ["cookie", "playlist id", "provider api"]
+      }
+    }
+  ]
+}

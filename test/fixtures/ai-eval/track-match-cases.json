@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "description": "Human-labeled track identity fixtures for AI and deterministic evidence evaluation. These are synthetic public test records, not user library data.",
+  "cases": [
+    {
+      "id": "same-recording-isrc-musicbrainz",
+      "category": "same_recording",
+      "expected": {
+        "relation": "same_recording"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-love",
+        "title": "Love",
+        "artist": "Keyshia Cole",
+        "artists": ["Keyshia Cole"],
+        "album": "The Way It Is",
+        "durationMs": 258000,
+        "isrc": "USAM10500210",
+        "aliases": {
+          "artists": ["Keyshia Myeshia Cole"]
+        },
+        "metadata": {
+          "musicbrainz": {
+            "isrc": "USAM10500210",
+            "status": "ok",
+            "recordingIds": ["mbid-love"]
+          }
+        }
+      },
+      "target": {
+        "platform": "netease",
+        "id": "netease-love",
+        "title": "Love",
+        "artist": "Keyshia Myeshia Cole",
+        "artists": ["Keyshia Myeshia Cole"],
+        "album": "The Way It Is",
+        "durationMs": 261000,
+        "isrc": "USAM10500210",
+        "metadata": {
+          "musicbrainz": {
+            "isrc": "USAM10500210",
+            "status": "ok",
+            "recordingIds": ["mbid-love"]
+          }
+        }
+      }
+    },
+    {
+      "id": "same-song-live-version",
+      "category": "same_song_different_version",
+      "expected": {
+        "relation": "same_song_different_version"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-blue-bird",
+        "title": "Blue Bird",
+        "artist": "Ikimono-gakari",
+        "artists": ["Ikimono-gakari"],
+        "album": "My Song Your Song",
+        "durationMs": 216000,
+        "isrc": "JPU900800001"
+      },
+      "target": {
+        "platform": "qq",
+        "id": "qq-blue-bird-live",
+        "mid": "mid-blue-bird-live",
+        "title": "Blue Bird (Live)",
+        "artist": "Ikimono-gakari",
+        "artists": ["Ikimono-gakari"],
+        "album": "Live Tour",
+        "durationMs": 276000
+      }
+    },
+    {
+      "id": "different-song-same-title",
+      "category": "different_song_same_title",
+      "expected": {
+        "relation": "different_song"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-home-a",
+        "title": "Home",
+        "artist": "Edward Sharpe & The Magnetic Zeros",
+        "artists": ["Edward Sharpe & The Magnetic Zeros"],
+        "album": "Up From Below",
+        "durationMs": 303000
+      },
+      "target": {
+        "platform": "netease",
+        "id": "netease-home-b",
+        "title": "Home",
+        "artist": "Michael Buble",
+        "artists": ["Michael Buble"],
+        "album": "It's Time",
+        "durationMs": 226000
+      }
+    },
+    {
+      "id": "same-song-remix",
+      "category": "remix",
+      "expected": {
+        "relation": "same_song_different_version"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-midnight-city",
+        "title": "Midnight City",
+        "artist": "M83",
+        "artists": ["M83"],
+        "album": "Hurry Up, We're Dreaming",
+        "durationMs": 244000
+      },
+      "target": {
+        "platform": "qq",
+        "id": "qq-midnight-city-remix",
+        "mid": "mid-midnight-city-remix",
+        "title": "Midnight City - Eric Prydz Remix",
+        "artist": "M83",
+        "artists": ["M83", "Eric Prydz"],
+        "album": "Midnight City Remixes",
+        "durationMs": 394000
+      }
+    },
+    {
+      "id": "same-song-cover",
+      "category": "cover",
+      "expected": {
+        "relation": "same_song_different_version"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-hallelujah",
+        "title": "Hallelujah",
+        "artist": "Leonard Cohen",
+        "artists": ["Leonard Cohen"],
+        "album": "Various Positions",
+        "durationMs": 277000
+      },
+      "target": {
+        "platform": "netease",
+        "id": "netease-hallelujah-cover",
+        "title": "Hallelujah (Cover)",
+        "artist": "Jeff Buckley",
+        "artists": ["Jeff Buckley"],
+        "album": "Grace",
+        "durationMs": 414000
+      }
+    },
+    {
+      "id": "japanese-romanization",
+      "category": "japanese_romanization",
+      "expected": {
+        "relation": "same_recording"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-gunjou",
+        "title": "群青",
+        "artist": "YOASOBI",
+        "artists": ["YOASOBI"],
+        "album": "THE BOOK",
+        "durationMs": 248000,
+        "aliases": {
+          "titles": ["Gunjou", "Gunjo"],
+          "albums": ["The Book"]
+        }
+      },
+      "target": {
+        "platform": "qq",
+        "id": "qq-gunjou",
+        "mid": "mid-gunjou",
+        "title": "Gunjou",
+        "artist": "YOASOBI",
+        "artists": ["YOASOBI"],
+        "album": "The Book",
+        "durationMs": 249000
+      }
+    },
+    {
+      "id": "missing-isrc-duration-conflict",
+      "category": "missing_isrc_duration_conflict",
+      "expected": {
+        "relation": "uncertain"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-stay",
+        "title": "Stay",
+        "artist": "The Kid LAROI",
+        "artists": ["The Kid LAROI", "Justin Bieber"],
+        "album": "F*CK LOVE 3+",
+        "durationMs": 141000
+      },
+      "target": {
+        "platform": "netease",
+        "id": "netease-stay-extended",
+        "title": "Stay",
+        "artist": "The Kid LAROI",
+        "artists": ["The Kid LAROI", "Justin Bieber"],
+        "album": "Unknown Upload",
+        "durationMs": 209000
+      }
+    },
+    {
+      "id": "different-isrc-same-text",
+      "category": "different_isrc",
+      "expected": {
+        "relation": "same_song_different_version"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-yellow",
+        "title": "Yellow",
+        "artist": "Coldplay",
+        "artists": ["Coldplay"],
+        "album": "Parachutes",
+        "durationMs": 267000,
+        "isrc": "GBAYE0000567"
+      },
+      "target": {
+        "platform": "qq",
+        "id": "qq-yellow-alt",
+        "mid": "mid-yellow-alt",
+        "title": "Yellow",
+        "artist": "Coldplay",
+        "artists": ["Coldplay"],
+        "album": "Yellow - Single",
+        "durationMs": 270000,
+        "isrc": "GBAYE9909999"
+      }
+    }
+  ]
+}

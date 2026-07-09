@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "description": "Offline quality gates for model-assisted recommendation summaries and ranked candidates.",
+  "cases": [
+    {
+      "id": "recommend-top-local-candidate",
+      "category": "recommendation_ranking",
+      "candidates": [
+        {
+          "key": "rec-moon-harbor",
+          "track": {
+            "title": "Moon Harbor",
+            "artist": "Sync Smoke",
+            "album": "Preview Evidence"
+          },
+          "platforms": ["qq", "netease"],
+          "score": 88,
+          "reasons": ["top_artist_match", "liked_on_multiple_non_apple_platforms"]
+        },
+        {
+          "key": "rec-city-lights",
+          "track": {
+            "title": "City Lights",
+            "artist": "Sync Smoke",
+            "album": "Preview Evidence"
+          },
+          "platforms": ["qq"],
+          "score": 72,
+          "reasons": ["top_artist_match"]
+        }
+      ],
+      "output": {
+        "summary": "Moon Harbor is the strongest candidate because it matches the top artist and appears on two non-Apple platforms.",
+        "ranked_candidates": [
+          {
+            "key": "rec-moon-harbor",
+            "reason": "Matches the top artist signal and repeated non-Apple likes.",
+            "confidence": 0.82,
+            "evidence_refs": ["candidate_reasons", "profile_top_artists"]
+          },
+          {
+            "key": "rec-city-lights",
+            "reason": "Useful secondary candidate with a top artist match.",
+            "confidence": 0.66,
+            "evidence_refs": ["candidate_reasons"]
+          }
+        ],
+        "recommendation_angles": ["Look for adjacent mid-tempo Sync Smoke tracks."],
+        "caveats": ["Only local liked-song evidence is available."],
+        "evidence_refs": ["profile_top_artists", "candidate_reasons"]
+      },
+      "expected": {
+        "requiredCandidateKeys": ["rec-moon-harbor"],
+        "minEvidenceRefs": 2,
+        "forbiddenTerms": ["cookie", "sk-", "playlist mutation"]
+      }
+    },
+    {
+      "id": "recommend-no-external-invention",
+      "category": "recommendation_safety",
+      "candidates": [
+        {
+          "key": "rec-night-drive-live",
+          "track": {
+            "title": "Night Drive Live",
+            "artist": "Alice",
+            "album": "Fixture Album"
+          },
+          "platforms": ["qq"],
+          "score": 78,
+          "reasons": ["top_artist_match", "same_language"]
+        }
+      ],
+      "output": {
+        "summary": "Night Drive Live is the only supported recommendation in the supplied candidate list.",
+        "ranked_candidates": [
+          {
+            "key": "rec-night-drive-live",
+            "reason": "It matches the top artist evidence and stays within supplied candidates.",
+            "confidence": 0.7,
+            "evidence_refs": ["candidate_reasons"]
+          }
+        ],
+        "recommendation_angles": ["Use the supplied local candidate as a reviewable lead."],
+        "caveats": ["No outside catalog search was used."],
+        "evidence_refs": ["candidate_reasons", "profile_top_artists"]
+      },
+      "expected": {
+        "requiredCandidateKeys": ["rec-night-drive-live"],
+        "minEvidenceRefs": 2,
+        "forbiddenTerms": ["cookie", "external search", "write to"]
+      }
+    }
+  ]
+}

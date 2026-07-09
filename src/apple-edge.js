@@ -65,6 +65,22 @@ export async function captureAppleMusicPage() {
   };
 }
 
+export async function runAppleMusicKitTask(task, args = {}, timeout = 120000) {
+  if (!(await isDebuggerReady())) {
+    await openAppleMusicBrowser();
+  }
+  const tabs = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
+  const page = tabs.find((item) => item.type === 'page' && /music\.apple\.com/i.test(item.url))
+    || tabs.find((item) => item.type === 'page');
+  if (!page?.webSocketDebuggerUrl) {
+    throw new Error('No debuggable Apple Music page found. Open the Apple Music login window first.');
+  }
+  const expression = `(${task.toString()})(${JSON.stringify(args)})`;
+  const result = await evaluateCdp(page.webSocketDebuggerUrl, expression, timeout);
+  if (result?.error) throw new Error(result.error);
+  return result;
+}
+
 async function findEdgePath() {
   for (const candidate of EDGE_CANDIDATES) {
     try {
@@ -188,8 +204,10 @@ async function scrapeAppleMusicPage() {
   }
 
   function getPlaylistId() {
-    const urlMatch = location.pathname.match(/\/playlist\/([^/?#]+)/);
-    if (urlMatch?.[1]) return urlMatch[1];
+    const playlistPath = location.pathname.match(/\/playlist\/([^?#]+)/)?.[1] || '';
+    const pathSegments = playlistPath.split('/').map((item) => item.trim()).filter(Boolean);
+    const urlPlaylistId = pathSegments.findLast((item) => /^pl[.-]/i.test(item)) || pathSegments.at(-1);
+    if (urlPlaylistId) return urlPlaylistId;
 
     const apiUrl = performance.getEntriesByType('resource')
       .map((entry) => entry.name)
@@ -211,6 +229,15 @@ async function scrapeAppleMusicPage() {
     const playlistId = getPlaylistId();
     if (!musicKit?.api?.music || !playlistId) return false;
 
+    async function resolveStorefront() {
+      try {
+        const response = await musicKit.api.music('/v1/me/storefront', { platform: 'web' });
+        return response?.data?.data?.[0]?.id || response?.json?.data?.[0]?.id || '';
+      } catch {
+        return '';
+      }
+    }
+
     const baseParams = {
       'l': document.documentElement.lang || 'zh-Hans-CN',
       'platform': 'web',
@@ -220,12 +247,19 @@ async function scrapeAppleMusicPage() {
       'format[resources]': 'map',
       'omit[resource]': 'autos',
     };
-    let next = `/v1/me/library/playlists/${playlistId}/tracks`;
+    const isCatalogPlaylist = /^pl[.-]/i.test(playlistId);
+    const storefront = isCatalogPlaylist
+      ? await resolveStorefront() || musicKit.storefrontId || musicKit.storefront?.id || 'us'
+      : '';
+    let next = isCatalogPlaylist
+      ? `/v1/catalog/${storefront}/playlists/${playlistId}/tracks`
+      : `/v1/me/library/playlists/${playlistId}/tracks`;
     let pageCount = 0;
 
     while (next && pageCount < 200) {
       const { path, params } = paramsFromUrl(next);
       const response = await musicKit.api.music(path, { ...baseParams, ...params });
+      if (Number(response?.status || 0) >= 400) return false;
       const payload = response?.data || response?.json || {};
       const resources = payload.resources || {};
       const stubs = payload.data || [];

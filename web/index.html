@@ -4,7 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Music Likes Sync</title>
+    <link rel="icon" href="/mark.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/product.css">
   </head>
   <body>
     <div class="app-shell">
@@ -13,7 +15,7 @@
           <img src="/mark.svg" alt="" class="brand-mark">
           <div>
             <div class="brand-title">Likes Sync</div>
-            <div class="brand-subtitle">Apple / QQ / 网易云 并集同步</div>
+            <div class="brand-subtitle">Apple 可信源 / QQ / 网易云</div>
           </div>
         </div>
 
@@ -36,7 +38,7 @@
         </div>
 
         <div class="rail-note">
-          <span>本地只读预检</span>
+          <span>本地凭据与快照</span>
           <span id="cookieState">Cookie 未保存</span>
         </div>
       </aside>
@@ -44,8 +46,8 @@
       <main class="workspace">
         <header class="topbar">
           <div>
-            <h1>收藏对账台</h1>
-            <p>默认用三端并集做目标曲库，人工只处理版本冲突和低置信匹配。</p>
+            <h1>Apple 可信源同步台</h1>
+            <p>以 Apple Music 我喜欢为唯一可信源，先生成 QQ / 网易云镜像计划，再决定新增和删除。</p>
           </div>
           <div class="top-actions">
             <button class="ghost-button" id="refreshButton" type="button">
@@ -110,11 +112,11 @@
             <div class="login-actions">
               <button class="ghost-button" id="qqBrowserOpenButton" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 9h16M8 5v4"/></svg>
-                打开 QQ 登录页
+                QQ 扫码登录
               </button>
               <button class="ghost-button" id="qqBrowserCaptureButton" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg>
-                抓取 QQ Cookie
+                重新抓取 QQ Cookie
               </button>
               <button class="ghost-button" id="neteaseQrButton" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM18 18h3v3h-3zM18 14h3M14 21h3"/></svg>
@@ -131,10 +133,36 @@
                 <strong>未保存</strong>
               </div>
             </div>
+            <div class="playlist-diagnostics" id="qqPlaylistPicker" hidden>
+              <div class="playlist-diagnostics-heading">
+                <div>
+                  <strong>QQ 歌单 ID</strong>
+                  <span id="qqPlaylistHint">读取后可直接选择 dirid。</span>
+                </div>
+                <button class="ghost-button mini-button" id="qqPlaylistRefreshButton" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M18.8 9A7 7 0 0 0 6.2 7.8L4 10m2 5a7 7 0 0 0 11.8 1.2L20 14"/></svg>
+                  读取
+                </button>
+              </div>
+              <div class="playlist-id-list" id="qqPlaylistList"></div>
+            </div>
             <details class="manual-cookie" id="manualCookieDetails">
               <summary>手动粘贴 Cookie（选填）</summary>
             </details>
             <div class="auth-stage quote-mode" id="authStage">
+              <div class="qr-box" id="qqBrowserLoginBox" hidden>
+                <div class="qr-visual">
+                  <div class="qr-placeholder" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M4 5h16v14H4zM4 9h16M8 5v4M9 14h6M9 17h4"/>
+                    </svg>
+                  </div>
+                </div>
+                <div>
+                  <strong id="qqBrowserLoginTitle">等待 QQ 登录</strong>
+                  <span id="qqBrowserLoginHint">会打开 QQ 音乐官方页面；扫码确认后后台自动保存 Cookie。</span>
+                </div>
+              </div>
               <div class="qr-box" id="neteaseQrBox" hidden>
                 <div class="qr-visual">
                   <img id="neteaseQrImage" alt="网易云登录二维码" hidden>
@@ -164,7 +192,7 @@
                 </button>
               </div>
               <div class="auth-filler">
-                <div class="auth-hitokoto">
+                <div class="auth-quote">
                   <div class="quote-topline">
                     <span>一言 API</span>
                     <button class="quote-refresh" id="authQuoteRefresh" type="button" aria-label="换一句">
@@ -172,7 +200,7 @@
                     </button>
                   </div>
                   <p id="authQuoteText">把歌单先放在同一张桌上，剩下的交给匹配。</p>
-                  <small id="authQuoteFrom">正在从 hitokoto.cn 取一句</small>
+                  <small id="authQuoteFrom">本地提示</small>
                 </div>
               </div>
             </div>
@@ -232,9 +260,230 @@
             </div>
           </form>
 
-          <section class="panel library-panel">
+          <section class="panel sync-panel">
             <div class="panel-heading">
               <span class="panel-index">04</span>
+              <div>
+                <h2>同步计划</h2>
+                <p>Apple 作为可信源；删除先进入镜像计划，不会直接执行。</p>
+              </div>
+            </div>
+            <div class="sync-grid">
+              <label class="field">
+                <span>目标平台</span>
+                <select id="syncTarget">
+                  <option value="netease">网易云</option>
+                  <option value="qq">QQ 音乐</option>
+                  <option value="apple">Apple Music</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>目标歌单 ID（选填）</span>
+                <input id="syncPlaylistId" autocomplete="off" placeholder="留空则执行时新建私密歌单">
+              </label>
+              <label class="field">
+                <span>新歌单名</span>
+                <input id="syncPlaylistName" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>最低匹配分</span>
+                <input id="syncMinScore" value="0.82" inputmode="decimal">
+              </label>
+            </div>
+            <div class="sync-actions">
+              <button class="secondary-button" id="mirrorPlanButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7m-7 6h16M4 18h7M15 4l5 5-5 5"/></svg>
+                生成 Apple 镜像计划
+              </button>
+              <button class="secondary-button" id="mirrorResolveButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M4 12h8M4 17h10M17 8l3 3-3 3"/></svg>
+                解析新增候选
+              </button>
+              <button class="ghost-button" id="mirrorDryRunButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg>
+                镜像 Dry-run
+              </button>
+              <button class="primary-button" id="mirrorAddButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                执行镜像新增
+              </button>
+              <button class="danger-button" id="mirrorApplyButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M9 7l1-2h4l1 2M6 7l1 14h10l1-14"/></svg>
+                执行镜像删除
+              </button>
+              <button class="ghost-button" id="mirrorConvergenceButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5M15 6h5v5"/></svg>
+                检查收敛
+              </button>
+              <button class="ghost-button" id="syncPlanButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h8M15 18l2 2 4-4"/></svg>
+                生成写入计划
+              </button>
+              <button class="secondary-button" id="syncDryRunButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg>
+                Dry-run
+              </button>
+              <button class="primary-button" id="syncExecuteButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5M13 6h7v7"/></svg>
+                写入目标歌单
+              </button>
+            </div>
+            <div class="mirror-summary" id="mirrorSummary">Apple 镜像计划尚未生成。</div>
+            <div class="mirror-health" id="mirrorHealth">生成镜像计划后会显示快照新鲜度和收敛状态。</div>
+            <div class="summary-grid mirror-filter-grid" id="mirrorFilters" aria-label="镜像计划筛选">
+              <button class="metric metric-filter active" type="button" data-mirror-filter="all">
+                <span>全部镜像项</span>
+                <strong id="mirrorAllCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-mirror-filter="add">
+                <span>新增</span>
+                <strong id="mirrorAddCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-mirror-filter="remove">
+                <span>删除</span>
+                <strong id="mirrorRemoveCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-mirror-filter="review">
+                <span>待判断</span>
+                <strong id="mirrorReviewCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-mirror-filter="blocked">
+                <span>阻塞</span>
+                <strong id="mirrorBlockedCount">0</strong>
+              </button>
+            </div>
+            <div class="mirror-bulk-actions" id="mirrorBulkActions" hidden>
+              <span id="mirrorBulkSummary">当前页无可批量复核条目</span>
+              <div>
+                <button class="ghost-button compact-link" id="mirrorBulkKeepButton" type="button">本页视为同一首</button>
+                <button class="ghost-button compact-link danger" id="mirrorBulkSeparateButton" type="button">本页视为不同</button>
+                <button class="ghost-button compact-link" id="mirrorBulkClearButton" type="button">清除本页复核</button>
+              </div>
+            </div>
+            <div class="sync-ai-panel mirror-ai-panel">
+              <label class="ai-key-field">
+                <span>DeepSeek Key</span>
+                <input id="mirrorDeepseekApiKey" type="password" autocomplete="off" placeholder="Use env key if empty">
+              </label>
+              <label class="ai-select-field">
+                <span>Model</span>
+                <select id="mirrorDeepseekModel">
+                  <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                  <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                </select>
+              </label>
+              <label class="ai-select-field">
+                <span>Batch</span>
+                <input id="mirrorAiBatchSize" value="12" inputmode="numeric">
+              </label>
+              <label class="ai-select-field">
+                <span>Apply</span>
+                <input id="mirrorAiApplyThreshold" value="0.90" inputmode="decimal">
+              </label>
+              <label class="ai-consent">
+                <input id="mirrorAiConsent" type="checkbox">
+                <span>Send mirror evidence to DeepSeek</span>
+              </label>
+              <label class="ai-consent compact-consent">
+                <input id="mirrorAiApplyOverwrite" type="checkbox">
+                <span>Overwrite reviewed</span>
+              </label>
+              <button class="secondary-button" id="mirrorAiReviewButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/></svg>
+                AI mirror review
+              </button>
+              <button class="primary-button" id="mirrorAiApplyButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                Apply mirror AI
+              </button>
+            </div>
+            <div class="sync-ai-note" id="mirrorAiSummary">Mirror AI has not reviewed candidates.</div>
+            <div class="list-pager mirror-pager" id="mirrorPager" hidden>
+              <span id="mirrorPageInfo">暂无条目</span>
+              <div class="pager-buttons">
+                <button class="ghost-button compact-link" id="mirrorPrevButton" type="button">上一页</button>
+                <button class="ghost-button compact-link" id="mirrorNextButton" type="button">下一页</button>
+              </div>
+            </div>
+            <div class="mirror-plan-list" id="mirrorPlanList"></div>
+            <div class="sync-progress" id="syncProgress" hidden>
+              <div class="sync-progress-head">
+                <strong id="syncProgressTitle">正在处理</strong>
+                <span id="syncProgressTime">00:00</span>
+              </div>
+              <div class="sync-progress-bar" aria-hidden="true"><span></span></div>
+              <p id="syncProgressDetail">准备中</p>
+            </div>
+            <div class="sync-ai-panel">
+              <label class="ai-key-field">
+                <span>DeepSeek Key</span>
+                <input id="syncDeepseekApiKey" type="password" autocomplete="off" placeholder="留空使用环境变量">
+              </label>
+              <label class="ai-select-field">
+                <span>模型</span>
+                <select id="syncDeepseekModel">
+                  <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                  <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                </select>
+              </label>
+              <label class="ai-select-field">
+                <span>AI 批量</span>
+                <input id="syncAiBatchSize" value="12" inputmode="numeric">
+              </label>
+              <label class="ai-select-field">
+                <span>采纳阈值</span>
+                <input id="syncAiApplyThreshold" value="0.85" inputmode="decimal">
+              </label>
+              <label class="ai-consent">
+                <input id="syncAiConsent" type="checkbox">
+                <span>发送低置信候选到 DeepSeek</span>
+              </label>
+              <label class="ai-consent compact-consent">
+                <input id="syncAiApplyOverwrite" type="checkbox">
+                <span>覆盖已有确认</span>
+              </label>
+              <button class="secondary-button" id="syncAiReviewButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/></svg>
+                AI 判断低置信
+              </button>
+              <button class="primary-button" id="syncAiApplyButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                采纳写入 AI
+              </button>
+            </div>
+            <div class="sync-ai-note" id="syncAiSummary">写入候选 AI 尚未分析。</div>
+            <div class="summary-grid sync-summary" id="syncSummary" aria-label="写入计划筛选">
+              <button class="metric metric-filter" type="button" data-sync-filter="all">
+                <span>全部计划</span>
+                <strong id="syncQueueCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-sync-filter="writeable">
+                <span>待写入</span>
+                <strong id="syncReadyCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-sync-filter="review">
+                <span>待判断</span>
+                <strong id="syncProblemCount">0</strong>
+              </button>
+              <button class="metric metric-filter" type="button" data-sync-filter="handled">
+                <span>暂不写入</span>
+                <strong id="syncHandledCount">0</strong>
+              </button>
+            </div>
+            <div class="sync-plan-meta">上次执行：<strong id="syncLastRun">暂无</strong></div>
+            <div class="list-pager sync-pager" id="syncPager" hidden>
+              <span id="syncPageInfo">暂无条目</span>
+              <div class="pager-buttons">
+                <button class="ghost-button compact-link" id="syncPrevButton" type="button">上一页</button>
+                <button class="ghost-button compact-link" id="syncNextButton" type="button">下一页</button>
+              </div>
+            </div>
+            <div class="sync-plan-list" id="syncPlanList"></div>
+          </section>
+
+          <section class="panel library-panel">
+            <div class="panel-heading">
+              <span class="panel-index">05</span>
               <div>
                 <h2>统一曲库</h2>
                 <p id="reportTime">尚未生成</p>
@@ -275,6 +524,14 @@
                   AI 全量分析
                 </button>
               </div>
+              <div class="ai-progress" id="aiProgress" hidden>
+                <div class="ai-progress-head">
+                  <strong id="aiProgressTitle">AI 分析中</strong>
+                  <span id="aiProgressTime">00:00</span>
+                </div>
+                <div class="ai-progress-bar"><span></span></div>
+                <p id="aiProgressDetail">准备发送第一批候选。</p>
+              </div>
               <div class="ai-apply-panel">
                 <div class="ai-apply-copy">
                   <strong>采纳 AI 建议</strong>
@@ -298,6 +555,13 @@
               <span id="libraryResultCount">暂无条目</span>
               <span id="decisionSummary">尚未选择</span>
               <span id="aiSummary">AI 尚未分析</span>
+              <span class="list-pager library-pager" id="libraryPager" hidden>
+                <span id="libraryPageInfo">暂无条目</span>
+                <span class="pager-buttons">
+                  <button class="ghost-button compact-link" id="libraryPrevButton" type="button">上一页</button>
+                  <button class="ghost-button compact-link" id="libraryNextButton" type="button">下一页</button>
+                </span>
+              </span>
               <span class="export-links">
                 <a class="text-link compact-link" href="/api/unified.md" target="_blank" rel="noreferrer">Markdown</a>
                 <a class="text-link compact-link" href="/api/unified.json" target="_blank" rel="noreferrer">JSON</a>
@@ -310,7 +574,37 @@
       </main>
     </div>
 
+    <dialog class="confirm-dialog" id="mirrorDeleteDialog" aria-labelledby="mirrorDeleteTitle">
+      <div class="confirm-card">
+        <div class="confirm-head">
+          <span class="confirm-kicker">Mirror Delete</span>
+          <h2 id="mirrorDeleteTitle">确认镜像删除</h2>
+        </div>
+        <div class="confirm-facts">
+          <div>
+            <span>目标平台</span>
+            <strong id="mirrorDeleteTarget">目标平台</strong>
+          </div>
+          <div>
+            <span>计划删除</span>
+            <strong id="mirrorDeleteCount">0</strong>
+          </div>
+        </div>
+        <p id="mirrorDeleteHint">删除会按当前 Apple 可信源计划执行。</p>
+        <label class="field confirm-field">
+          <span>确认文本</span>
+          <input id="mirrorDeleteConfirmInput" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="confirm-expected">输入 <strong id="mirrorDeleteExpected">REMOVE TARGET</strong> 继续。</p>
+        <div class="confirm-actions">
+          <button class="ghost-button" id="mirrorDeleteCancel" type="button">取消</button>
+          <button class="danger-button" id="mirrorDeleteConfirm" type="button" disabled>确认删除</button>
+        </div>
+      </div>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/product-app.js"></script>
   </body>
 </html>

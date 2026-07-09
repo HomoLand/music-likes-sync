@@ -1,57 +1,30 @@
+import { buildMatchEvidence, compactTrackForAi } from './evidence.js';
+import { requestAiJson, resolveAiProviderConfig } from './ai-provider.js';
+
 const DEFAULT_MODEL = 'deepseek-v4-pro';
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
+const DEFAULT_PROVIDER = 'deepseek';
 
 export async function requestDeepSeekReview({ apiKey, model, items, thinking = true, baseUrl = DEFAULT_BASE_URL }) {
-  const key = String(apiKey || '').trim();
-  if (!key) throw new Error('缺少 DeepSeek API Key。可以在界面临时输入，或用 DEEPSEEK_API_KEY 环境变量启动服务。');
-
   const batch = buildReviewBatch(items);
-  const body = {
-    model: model || DEFAULT_MODEL,
+  const response = await requestAiJson({
+    providerConfig: resolveAiProviderConfig({
+      provider: DEFAULT_PROVIDER,
+      apiKey,
+      model: model || DEFAULT_MODEL,
+      baseUrl,
+    }),
     messages: [
       { role: 'system', content: REVIEW_SYSTEM_PROMPT },
       { role: 'user', content: JSON.stringify(batch, null, 2) },
     ],
-    response_format: { type: 'json_object' },
-    max_tokens: 12000,
-    reasoning_effort: 'high',
-    thinking: { type: thinking ? 'enabled' : 'disabled' },
-  };
-
-  const response = await fetch(`${String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/g, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${key}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
+    maxTokens: 12000,
+    thinking,
   });
 
-  const text = await response.text();
-  let payload = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = null;
-  }
-  if (!response.ok) {
-    const message = payload?.error?.message || payload?.message || response.statusText;
-    throw new Error(`DeepSeek 调用失败：${message}`);
-  }
-
-  const content = payload?.choices?.[0]?.message?.content || '';
-  if (!content.trim()) throw new Error('DeepSeek 返回为空。');
-
-  let result = null;
-  try {
-    result = JSON.parse(content);
-  } catch (error) {
-    throw new Error(`DeepSeek JSON 解析失败：${error.message}`);
-  }
-
-  return normalizeReviewResult(result, batch, {
-    model: body.model,
-    usage: payload?.usage || null,
+  return normalizeReviewResult(response.json, batch, {
+    model: response.model,
+    usage: response.usage,
   });
 }
 
@@ -119,6 +92,7 @@ function compactCandidateItem(item) {
     item_id: item.key,
     type: 'low_confidence_candidate',
     existing_score: item.score || {},
+    match_evidence: buildMatchEvidence(item.source?.track || {}, item.target?.track || {}, item.score || null),
     tracks: [
       compactEndpoint(item.source),
       compactEndpoint(item.target),
@@ -150,16 +124,7 @@ function compactEndpoint(endpoint) {
 }
 
 function compactTrack(platform, track) {
-  return {
-    platform,
-    id: track.id || null,
-    title: track.title || '',
-    artist: track.artist || '',
-    album: track.album || '',
-    duration: track.duration || '',
-    isrc: track.isrc || null,
-    aliases: track.aliases || null,
-  };
+  return compactTrackForAi(platform, track);
 }
 
 function normalizeEnum(value, allowed, fallback) {
@@ -203,6 +168,8 @@ Rules:
 7. The user's target library is the union of all platforms. Missing-platform sync is assumed. Your job is not to decide whether to sync, but whether grouped tracks are the same recording/version.
 8. If tracks are the same song but different versions, set relation to same_song_different_version and recommended_action to split_versions. Prefer the full studio/original/single-or-album canonical release over TV size, off vocal, karaoke, instrumental, live, cover, remix, movie edit, short, or acoustic versions unless the supplied evidence suggests the special version is the intended one.
 9. If evidence is insufficient, output uncertain. Do not force a merge.
+10. external_evidence.musicbrainz comes from a provider-independent MusicBrainz ISRC lookup. Same ISRC or shared MusicBrainz recording IDs are strong positive evidence. Different ISRC or explicit version cue conflicts are risk signals. A missing or not_found MusicBrainz status is neutral, not negative evidence.
+11. match_evidence.support_signals and match_evidence.risk_signals summarize deterministic checks. Use them as evidence, but do not override a large duration mismatch or one-sided version wording.
 
 Output schema:
 {

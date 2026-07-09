@@ -88,6 +88,45 @@ export async function captureQQMusicCookies() {
   };
 }
 
+export async function checkQQMusicBrowserLogin() {
+  if (!(await isDebuggerReady())) {
+    return {
+      done: false,
+      waiting: true,
+      code: 'browser_not_ready',
+      message: 'QQ 登录窗口未启动或已关闭，请重新开始 QQ 扫码登录。',
+    };
+  }
+
+  try {
+    const capture = await captureQQMusicCookies();
+    return {
+      done: true,
+      waiting: false,
+      code: 'cookie_ready',
+      message: 'QQ 登录成功，Cookie 已就绪。',
+      capture,
+    };
+  } catch (error) {
+    const message = error.message || String(error);
+    if (isWaitingForQQLogin(message)) {
+      return {
+        done: false,
+        waiting: true,
+        code: 'waiting_for_login',
+        message: qqLoginWaitingMessage(message),
+      };
+    }
+
+    return {
+      done: false,
+      waiting: false,
+      code: 'login_check_failed',
+      message,
+    };
+  }
+}
+
 async function findEdgePath() {
   for (const candidate of EDGE_CANDIDATES) {
     try {
@@ -193,4 +232,18 @@ function cookiePriority(name) {
   if (name === 'qm_keyst' || name === 'qqmusic_key') return 1;
   if (name === 'p_skey') return 2;
   return 10;
+}
+
+function isWaitingForQQLogin(message) {
+  return /登录窗口|没有找到可抓取|没有在 QQ 登录窗口|缺少 uin\/wxuin|登录 key|完成登录/u.test(message);
+}
+
+function qqLoginWaitingMessage(message) {
+  if (/缺少 uin\/wxuin|登录 key/u.test(message)) {
+    return '已检测到 QQ 页面 Cookie，但还缺少写入所需登录凭据；请确认手机端已允许登录并等待页面完成跳转。';
+  }
+  if (/没有在 QQ 登录窗口/u.test(message)) {
+    return '等待 QQ 音乐登录。请在打开的 QQ 音乐窗口中扫码并确认。';
+  }
+  return message || '等待 QQ 音乐登录。';
 }

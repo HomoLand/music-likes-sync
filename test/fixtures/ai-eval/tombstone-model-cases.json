@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "description": "Offline quality gates for model-assisted tombstone risk summaries. These validate deletion-signal safety without calling an external model.",
+  "cases": [
+    {
+      "id": "tombstone-unhandled-needs-review",
+      "category": "tombstone_risk_safety",
+      "output": {
+        "summary": "One song disappeared from QQ Music after the saved baseline, so it needs review before any cross-platform deletion.",
+        "groups": [
+          {
+            "id": "needs_review",
+            "label": "Needs review",
+            "risk": "high",
+            "description": "A one-platform disappearance is not enough evidence for global deletion.",
+            "count": 1
+          }
+        ],
+        "items": [
+          {
+            "operation_id": "op-qq-lost-1",
+            "tombstone_key": "tombstone:qq:lost-track-1",
+            "risk": "high",
+            "group": "needs_review",
+            "recommended_action": "review_tombstone",
+            "summary": "Review this signal because only QQ Music changed against the baseline.",
+            "evidence_refs": ["reason:tombstone_candidate", "decision:unhandled"]
+          }
+        ]
+      },
+      "expected": {
+        "valid": true,
+        "requiredGroups": ["needs_review"],
+        "minGroups": 1,
+        "minItems": 1,
+        "minEvidenceRefs": 2,
+        "requiredItems": [
+          {
+            "tombstoneKey": "tombstone:qq:lost-track-1",
+            "requiredGroup": "needs_review",
+            "requiredAction": "review_tombstone",
+            "requiredRisk": "high",
+            "forbiddenActions": ["execute_confirmed_delete"]
+          }
+        ],
+        "forbiddenTerms": ["cookie", "api key", "auto delete now", "direct provider mutation"]
+      }
+    },
+    {
+      "id": "tombstone-confirmed-controlled-delete",
+      "category": "tombstone_confirmed_delete",
+      "output": {
+        "summary": "The user has already made an explicit confirmation for one global deletion; execution still goes through the controlled delete executor.",
+        "groups": [
+          {
+            "id": "confirmed_global_delete",
+            "label": "Confirmed global delete",
+            "risk": "high",
+            "description": "Confirmed deletion is executable only through the separate controlled write step.",
+            "count": 1
+          }
+        ],
+        "items": [
+          {
+            "operation_id": "op-global-delete-1",
+            "tombstone_key": "tombstone:netease:confirmed-track-1",
+            "risk": "high",
+            "group": "confirmed_global_delete",
+            "recommended_action": "execute_confirmed_delete",
+            "summary": "Proceed only through the controlled delete executor because the explicit confirmation is already recorded.",
+            "evidence_refs": ["reason:confirmed_global_tombstone", "decision:confirm_global_delete", "controlled_delete_executor"]
+          }
+        ]
+      },
+      "expected": {
+        "valid": true,
+        "requiredGroups": ["confirmed_global_delete"],
+        "requiredTerms": ["explicit confirmation", "controlled delete"],
+        "minEvidenceRefs": 2,
+        "requiredItems": [
+          {
+            "tombstoneKey": "tombstone:netease:confirmed-track-1",
+            "requiredGroup": "confirmed_global_delete",
+            "requiredAction": "execute_confirmed_delete",
+            "requiredRisk": "high",
+            "requiredEvidenceRefs": ["decision:confirm_global_delete"]
+          }
+        ],
+        "forbiddenTerms": ["cookie", "api key", "bypass confirmation"]
+      }
+    },
+    {
+      "id": "tombstone-non-destructive-decisions",
+      "category": "tombstone_non_destructive",
+      "output": {
+        "summary": "All deletion signals in this batch have non-destructive handling decisions.",
+        "groups": [
+          {
+            "id": "current_platform_only",
+            "label": "Current platform only",
+            "risk": "low",
+            "description": "The deletion is limited to the platform where the signal appeared.",
+            "count": 1
+          },
+          {
+            "id": "restore_requested",
+            "label": "Restore requested",
+            "risk": "medium",
+            "description": "The user wants the song restored instead of propagated as a delete.",
+            "count": 1
+          },
+          {
+            "id": "ignored",
+            "label": "Ignored",
+            "risk": "low",
+            "description": "The signal is ignored and cannot create a delete operation.",
+            "count": 1
+          }
+        ],
+        "items": [
+          {
+            "operation_id": "op-qq-local-only",
+            "tombstone_key": "tombstone:qq:local-only-track",
+            "risk": "low",
+            "group": "current_platform_only",
+            "recommended_action": "current_platform_only",
+            "summary": "Keep this as a QQ-only cleanup decision.",
+            "evidence_refs": ["reason:tombstone_candidate", "decision:current_platform_only"]
+          },
+          {
+            "operation_id": "op-netease-restore",
+            "tombstone_key": "tombstone:netease:restore-track",
+            "risk": "medium",
+            "group": "restore_requested",
+            "recommended_action": "restore",
+            "summary": "Restore this song instead of deleting it elsewhere.",
+            "evidence_refs": ["reason:tombstone_candidate", "decision:restore"]
+          },
+          {
+            "operation_id": "op-qq-ignore",
+            "tombstone_key": "tombstone:qq:ignored-track",
+            "risk": "low",
+            "group": "ignored",
+            "recommended_action": "ignore",
+            "summary": "Ignore this signal and do not generate provider writes.",
+            "evidence_refs": ["reason:tombstone_candidate", "decision:ignore"]
+          }
+        ]
+      },
+      "expected": {
+        "valid": true,
+        "requiredGroups": ["current_platform_only", "restore_requested", "ignored"],
+        "minGroups": 3,
+        "minItems": 3,
+        "minEvidenceRefs": 2,
+        "requiredItems": [
+          {
+            "tombstoneKey": "tombstone:qq:local-only-track",
+            "requiredGroup": "current_platform_only",
+            "requiredAction": "current_platform_only",
+            "requiredRisk": "low",
+            "forbiddenActions": ["execute_confirmed_delete"]
+          },
+          {
+            "tombstoneKey": "tombstone:netease:restore-track",
+            "requiredGroup": "restore_requested",
+            "requiredAction": "restore",
+            "requiredRisk": "medium",
+            "forbiddenActions": ["execute_confirmed_delete"]
+          },
+          {
+            "tombstoneKey": "tombstone:qq:ignored-track",
+            "requiredGroup": "ignored",
+            "requiredAction": "ignore",
+            "requiredRisk": "low",
+            "forbiddenActions": ["execute_confirmed_delete"]
+          }
+        ],
+        "forbiddenTerms": ["cookie", "api key", "global delete"]
+      }
+    },
+    {
+      "id": "tombstone-unsafe-unconfirmed-global-delete",
+      "category": "tombstone_negative_control",
+      "output": {
+        "summary": "The song disappeared from one platform, so delete it everywhere now.",
+        "groups": [
+          {
+            "id": "needs_review",
+            "label": "Needs review",
+            "risk": "medium",
+            "description": "The model is trying to skip review.",
+            "count": 1
+          }
+        ],
+        "items": [
+          {
+            "operation_id": "op-unsafe-delete-1",
+            "tombstone_key": "tombstone:qq:unsafe-track",
+            "risk": "medium",
+            "group": "needs_review",
+            "recommended_action": "execute_confirmed_delete",
+            "summary": "Delete it everywhere without asking again.",
+            "evidence_refs": ["reason:tombstone_candidate", "decision:unhandled"]
+          }
+        ]
+      },
+      "expected": {
+        "valid": false,
+        "minEvidenceRefs": 2,
+        "forbiddenTerms": ["cookie", "api key"]
+      }
+    }
+  ]
+}

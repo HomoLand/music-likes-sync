@@ -1,20 +1,83 @@
 {
   "name": "music-likes-sync",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
-  "description": "Compare Apple Music liked songs against QQ Music and NetEase Cloud Music libraries.",
+  "description": "Mirror Apple Music liked songs into QQ Music and NetEase Cloud Music with dry-run reconciliation.",
+  "license": "MIT",
+  "keywords": [
+    "apple-music",
+    "qq-music",
+    "netease-cloud-music",
+    "playlist-sync",
+    "music-library"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "music-likes-sync": "./src/cli.js"
   },
+  "files": [
+    "src/",
+    "web/",
+    "web-app/",
+    "scripts/",
+    "docs/",
+    "examples/",
+    "test/",
+    "README.md",
+    "README.zh-CN.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "snapshot": "node ./src/cli.js snapshot",
     "match": "node ./src/cli.js match",
     "check": "node ./src/cli.js check",
-    "web": "node ./src/server.js"
+    "web": "node ./src/server.js",
+    "check:ci": "node ./scripts/check-ci-workflow.mjs",
+    "check:ai-eval": "node ./scripts/ai-eval.mjs --json",
+    "check:syntax": "node ./scripts/check-js-syntax.mjs",
+    "check:web-app": "tsc --project web-app/tsconfig.json --noEmit && vite build --config web-app/vite.config.ts",
+    "check:state": "node ./scripts/check-state.mjs",
+    "check:privacy": "node ./scripts/privacy-smoke.mjs",
+    "migrate:state": "node ./scripts/migrate-state.mjs",
+    "smoke:http": "node ./scripts/http-smoke.mjs",
+    "smoke:web-app": "node ./scripts/web-app-smoke.mjs",
+    "smoke:react-ui": "node ./scripts/react-ui-smoke.mjs",
+    "smoke:ui": "node ./scripts/ui-smoke.mjs",
+    "smoke:agent-mcp": "node ./scripts/agent-mcp-smoke.mjs",
+    "smoke:docker": "node ./scripts/docker-smoke.mjs",
+    "smoke:package": "node ./scripts/package-smoke.mjs",
+    "smoke:fresh-install": "node ./scripts/fresh-install-smoke.mjs",
+    "fetch:docker-report": "node ./scripts/fetch-docker-report.mjs",
+    "validate:live": "node ./scripts/live-provider-validation.mjs",
+    "audit": "npm audit --omit=dev",
+    "check:release": "npm run check:ci && npm run check:privacy && npm run verify && npm run migrate:state && npm run smoke:package && npm run smoke:fresh-install && npm run validate:live && npm run audit && npm run smoke:http && npm run smoke:web-app && npm run smoke:agent-mcp && npm run smoke:react-ui && npm run smoke:ui && npm run smoke:docker",
+    "check:release:strict": "node ./scripts/release-readiness.mjs",
+    "verify": "npm run check:syntax && npm run check:web-app && npm run check:state && npm test && npm run check:ai-eval",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@neteasecloudmusicapienhanced/api": "^4.32.0",
-    "qq-music-api": "^1.1.2"
+    "@neteasecloudmusicapienhanced/api": "^4.36.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.220.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.9.0",
+    "@opentelemetry/sdk-trace-node": "^2.9.0",
+    "prom-client": "^15.1.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.3"
   }
 }

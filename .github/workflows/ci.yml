@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 20.x
+          - 24.x
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check CI workflow
+        run: npm run check:ci
+
+      - name: Check privacy hygiene
+        run: npm run check:privacy
+
+      - name: Verify source and tests
+        run: npm run verify
+
+      - name: Check state migration
+        run: npm run migrate:state
+
+      - name: Check package contents
+        run: npm run smoke:package
+
+      - name: Fresh install smoke
+        run: npm run smoke:fresh-install
+
+      - name: Check live validation gate
+        run: npm run validate:live
+
+      - name: Audit production dependencies
+        run: npm run audit
+
+      - name: HTTP smoke
+        run: npm run smoke:http
+
+      - name: React app smoke
+        run: npm run smoke:web-app
+
+      - name: Agent MCP smoke
+        run: npm run smoke:agent-mcp
+
+      - name: Install Playwright Chromium
+        if: matrix.node-version == '24.x'
+        run: npx playwright install chromium --with-deps
+
+      - name: React UI smoke
+        if: matrix.node-version == '24.x'
+        run: npm run smoke:react-ui
+
+      - name: UI smoke
+        if: matrix.node-version == '24.x'
+        run: npm run smoke:ui
+
+      - name: Docker smoke
+        if: matrix.node-version == '24.x'
+        run: npm run smoke:docker -- --require-docker --write-report
+
+      - name: Upload Docker smoke report
+        if: matrix.node-version == '24.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-smoke-report-node-24
+          path: reports/docker-smoke.json
+          if-no-files-found: error
