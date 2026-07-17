@@ -22,7 +22,7 @@ export async function resolveMirrorAddOperations(plan, options = {}) {
   const offset = Math.max(0, Number(options.offset || 0));
   const allAddOperations = (plan.operations || [])
     .filter((operation) => operation.action === 'add');
-  const pendingAddOperations = allAddOperations.filter(needsAddResolution);
+  const pendingAddOperations = allAddOperations.filter((operation) => needsAddResolution(operation, options.refresh === true));
   const page = pendingAddOperations.slice(offset, offset + limit);
   const searchCache = new Map();
   const resolved = [];
@@ -71,9 +71,10 @@ export async function resolveMirrorAddOperations(plan, options = {}) {
   };
 }
 
-function needsAddResolution(operation = {}) {
+function needsAddResolution(operation = {}, refresh = false) {
   if (operation.action !== 'add') return false;
   if (operation.resolvedTargetTrack || operation.targetTrack) return false;
+  if (refresh) return true;
   return operation.status !== 'needs_review' && operation.status !== 'not_found';
 }
 

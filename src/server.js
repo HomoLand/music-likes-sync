@@ -344,6 +344,7 @@ async function handleApi(req, res, url) {
       searchLimit: body.searchLimit,
       threshold: body.threshold,
       reviewThreshold: body.reviewThreshold,
+      refresh: body.refresh === true,
       bucket: body.bucket,
       previewLimit: body.previewLimit,
     });

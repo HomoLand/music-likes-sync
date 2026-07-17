@@ -333,6 +333,120 @@ describe('QQ provider playlist metadata', () => {
     assert.equal(legacyWriteCalls, 1);
   });
 
+  it('falls back after verification when musicu accepts an add without persisting it', async () => {
+    let added = false;
+    let legacyWriteCalls = 0;
+    globalThis.fetch = async (url, options = {}) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.includes('fcg_music_add2songdir')) {
+        legacyWriteCalls += 1;
+        added = true;
+        return jsonResponse({ code: 0 });
+      }
+      if (parsed.pathname.includes('musics.fcg')) {
+        return signedJsonResponse({
+          code: 0,
+          req_1: { code: 0, data: { retCode: 0 } },
+        });
+      }
+      assert.equal(parsed.pathname.includes('musicu.fcg'), true);
+      const payload = JSON.parse(options.body);
+      if (payload.req_0.method === 'GetPlaylistByUin') {
+        return jsonResponse({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: {
+              v_playlist: [
+                { dirName: 'Disposable', dirId: 4, tid: 9742477820, songNum: added ? 1 : 0 },
+              ],
+            },
+          },
+        });
+      }
+      if (payload.req_0.method === 'uniform_get_Dissinfo') {
+        return jsonResponse({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: {
+              code: 0,
+              songlist: added ? [qqSong(449205, '003aAYrm3GE0Ac')] : [],
+              total_song_num: added ? 1 : 0,
+              hasmore: 0,
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected QQ musicu method: ${payload.req_0.method}`);
+    };
+
+    const result = await addQQTracksToPlaylist(
+      qqCookie(),
+      '4',
+      [{ id: '449205', mid: '003aAYrm3GE0Ac', songType: 0 }],
+      { batchSize: 1, verifyRetries: 0, verifyDelayMs: 0 },
+    );
+
+    assert.equal(result.accepted, 1);
+    assert.equal(result.added, 1);
+    assert.deepEqual(result.missingIds, []);
+    assert.deepEqual(result.batches.map((batch) => batch.provider), ['musicu', 'legacy-post-verify']);
+    assert.equal(legacyWriteCalls, 1);
+  });
+
+  it('does not report a failed QQ add as accepted', async () => {
+    globalThis.fetch = async (url, options = {}) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.includes('fcg_music_add2songdir')) {
+        return jsonResponse({ code: 1, message: 'invalid request' });
+      }
+      if (parsed.pathname.includes('musics.fcg')) {
+        return signedJsonResponse({
+          code: 0,
+          req_1: { code: 1000, data: { retCode: 0 } },
+        });
+      }
+      assert.equal(parsed.pathname.includes('musicu.fcg'), true);
+      const payload = JSON.parse(options.body);
+      if (payload.req_0.method === 'GetPlaylistByUin') {
+        return jsonResponse({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: {
+              v_playlist: [
+                { dirName: 'Disposable', dirId: 4, tid: 9742477820, songNum: 0 },
+              ],
+            },
+          },
+        });
+      }
+      if (payload.req_0.method === 'uniform_get_Dissinfo') {
+        return jsonResponse({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: { code: 0, songlist: [], total_song_num: 0, hasmore: 0 },
+          },
+        });
+      }
+      throw new Error(`Unexpected QQ musicu method: ${payload.req_0.method}`);
+    };
+
+    const result = await addQQTracksToPlaylist(
+      qqCookie(),
+      '4',
+      [{ id: '449205', mid: '003aAYrm3GE0Ac', songType: 0 }],
+      { batchSize: 1, verifyRetries: 0, verifyDelayMs: 0 },
+    );
+
+    assert.equal(result.accepted, 0);
+    assert.equal(result.added, 0);
+    assert.equal(result.missingIds.length, 1);
+    assert.equal(result.batches.every((batch) => batch.code === 200), true);
+  });
+
   it('removes tracks through the musicu DelSonglist write API', async () => {
     let detailCalls = 0;
     let musicuBody = null;

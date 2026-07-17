@@ -139,6 +139,37 @@ export function guardProductAddTargetConflicts(plan = {}) {
   };
 }
 
+export function mergeProductAddResolution(operation = {}, resolution = {}) {
+  const hasCandidate = Object.prototype.hasOwnProperty.call(resolution, 'candidateTrack');
+  const hasResolved = Object.prototype.hasOwnProperty.call(resolution, 'resolvedTargetTrack');
+  const hasAlternatives = Object.prototype.hasOwnProperty.call(resolution, 'alternatives');
+  const status = normalizeStatus(resolution.status || operation.status);
+  const candidateTrack = status === 'not_found'
+    ? null
+    : hasCandidate ? resolution.candidateTrack : operation.candidateTrack;
+  const resolvedTargetTrack = status === 'not_found'
+    ? null
+    : hasResolved ? resolution.resolvedTargetTrack : operation.resolvedTargetTrack;
+  const previousEvidence = operation.resolvedTargetTrack || operation.candidateTrack || null;
+  const nextEvidence = resolvedTargetTrack || candidateTrack || null;
+  const evidenceChanged = productAddCandidateEvidenceKey(previousEvidence)
+    !== productAddCandidateEvidenceKey(nextEvidence);
+
+  return {
+    ...operation,
+    status,
+    targetTrack: resolution.targetTrack || operation.targetTrack,
+    candidateTrack,
+    resolvedTargetTrack,
+    resolvedScore: resolution.resolvedScore ?? operation.resolvedScore ?? null,
+    resolution: resolution.resolution || operation.resolution,
+    alternatives: hasAlternatives ? resolution.alternatives : operation.alternatives || [],
+    aiReview: evidenceChanged ? null : operation.aiReview,
+    addDecision: evidenceChanged ? null : operation.addDecision,
+    blockedReason: evidenceChanged ? '' : operation.blockedReason || '',
+  };
+}
+
 export function productAddReferencesTarget(plan = {}, targetOperation = {}) {
   const targetKey = productOperationTargetKey(targetOperation, targetOperation.targetTrack);
   if (!targetKey) return false;
@@ -174,6 +205,20 @@ function productOperationTargetKey(operation = {}, track = null) {
   const target = clean(operation.targetPlatform || track.platform, 40).toLowerCase();
   const providerId = clean(track.id || track.mid, 240);
   return target && providerId ? `${target}:${providerId}` : '';
+}
+
+function productAddCandidateEvidenceKey(track) {
+  if (!track || typeof track !== 'object') return '';
+  const platform = clean(track.platform, 40).toLowerCase();
+  const providerId = clean(track.id || track.mid, 240);
+  if (providerId) return `${platform || 'unknown'}:provider:${providerId}`;
+  const text = normalizeText([
+    track.title || track.name || '',
+    track.artist || artistsText(track.artists),
+    track.album || '',
+    durationBucket(track.durationMs),
+  ].join(' '));
+  return text ? `${platform || 'unknown'}:text:${text}` : '';
 }
 
 function compactProductAddStateEntry(operation = {}, options = {}) {

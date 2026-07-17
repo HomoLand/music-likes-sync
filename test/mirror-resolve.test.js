@@ -95,6 +95,33 @@ describe('mirror add resolver', () => {
     assert.equal(resolved.operations[2].status, 'ready');
   });
 
+  it('refreshes reviewed candidates when explicitly requested', async () => {
+    const plan = fixturePlan('New Song', 'Alice');
+    plan.operations[0].status = 'needs_review';
+    plan.operations[0].candidateTrack = normalizeTrack({
+      id: 'stale-candidate',
+      title: 'New Song Cover',
+      artists: ['Alice'],
+      durationMs: 220000,
+    }, 'qq');
+
+    const resolved = await resolveMirrorAddOperations(plan, {
+      refresh: true,
+      searchTracks: async () => [
+        normalizeTrack({
+          id: 'fresh-candidate',
+          title: 'New Song Acoustic',
+          artists: ['Alice'],
+          durationMs: 241000,
+        }, 'qq'),
+      ],
+    });
+
+    assert.equal(resolved.addResolution.processed, 1);
+    assert.equal(resolved.operations[0].status, 'needs_review');
+    assert.equal(resolved.operations[0].candidateTrack.id, 'fresh-candidate');
+  });
+
   it('applies offset to the pending resolution queue only', async () => {
     const plan = fixturePlan('Reviewed Song', 'Alice');
     plan.operations[0].status = 'needs_review';

@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -110,6 +111,7 @@ import {
 import {
   attachProductAddState,
   guardProductAddTargetConflicts,
+  mergeProductAddResolution,
   normalizeProductAddState,
   productAddReferencesTarget,
   upsertProductAddState,
@@ -229,13 +231,13 @@ export async function importAppleRows(rows, source = 'apple-browser', options = 
 export async function saveCookies({ appleCookie, qqCookie, neteaseCookie }) {
   await ensureDirs();
   if (appleCookie !== undefined) {
-    await writeText(FILES.appleCookie, normalizeCookie(appleCookie));
+    await writeTextIfChanged(FILES.appleCookie, normalizeCookie(appleCookie));
   }
   if (qqCookie !== undefined) {
-    await writeText(FILES.qqCookie, normalizeCookie(qqCookie));
+    await writeTextIfChanged(FILES.qqCookie, normalizeCookie(qqCookie));
   }
   if (neteaseCookie !== undefined) {
-    await writeText(FILES.neteaseCookie, normalizeCookie(neteaseCookie));
+    await writeTextIfChanged(FILES.neteaseCookie, normalizeCookie(neteaseCookie));
   }
   return getState();
 }
@@ -293,7 +295,7 @@ export async function fetchPlatformSnapshots(options = {}) {
       const refreshed = await refreshQQMusicBrowserCredential();
       if (refreshed?.cookie) {
         qqCookie = normalizeCookie(refreshed.cookie);
-        await writeText(FILES.qqCookie, qqCookie);
+        await writeTextIfChanged(FILES.qqCookie, qqCookie);
       }
     } catch {
       // Fall back to the last saved credential; the provider request below remains the authority.
@@ -1139,7 +1141,14 @@ async function performProductAutoSync(options = {}, dependencies = {}) {
 
 export async function getProductLiveValidationState(options = {}) {
   await ensureDirs();
-  return getLiveValidationEvidence(options);
+  const targets = normalizeProductTargets(options.targets || ['qq', 'netease'])
+    .filter((target) => target !== 'apple');
+  return getLiveValidationEvidence({
+    ...options,
+    targets,
+    credentialUpdatedAtByTarget: options.credentialUpdatedAtByTarget
+      || await productCredentialUpdatedAtByTarget(targets),
+  });
 }
 
 export async function runProductLiveValidation(options = {}, dependencies = {}) {
@@ -6138,7 +6147,7 @@ async function assertProductLiveValidationReady(targets, options = {}) {
   if (options.dryRun !== false || options.force === true) return null;
   const writableTargets = normalizeProductTargets(targets).filter((target) => target !== 'apple');
   if (!writableTargets.length) return null;
-  const evidence = await getLiveValidationEvidence({ targets: writableTargets });
+  const evidence = await getProductLiveValidationState({ targets: writableTargets });
   const blocked = writableTargets
     .map((target) => evidence.targets?.[target])
     .filter((entry) => !entry?.ok);
@@ -6154,6 +6163,22 @@ async function assertProductLiveValidationReady(targets, options = {}) {
     409,
     `真实写入前需要先完成目标平台 live validation：${detail}。请运行 npm run validate:live 刷新一次性验证证据，或在确认风险后使用 force=true。`,
   );
+}
+
+async function productCredentialUpdatedAtByTarget(targets = []) {
+  const entries = await Promise.all(targets.map(async (target) => {
+    const credentialFile = target === 'qq' ? FILES.qqCookie : FILES.neteaseCookie;
+    const stat = await fs.stat(credentialFile).catch(() => null);
+    return [target, stat?.mtime ? stat.mtime.toISOString() : ''];
+  }));
+  return Object.fromEntries(entries);
+}
+
+async function writeTextIfChanged(filePath, value) {
+  const current = await readTextIfExists(filePath);
+  if (current === value) return false;
+  await writeText(filePath, value);
+  return true;
 }
 
 async function resolveProductExecutionTargets(options = {}) {
@@ -6213,7 +6238,7 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
   for (const target of targets) {
     const operationIds = productPolicyOperationIdsForTarget(options.operationIds, target);
     const selectedOperations = selectProductPolicyAddOperations(operations, target, operationIds)
-      .filter(needsProductPolicyAddResolution);
+      .filter((operation) => needsProductPolicyAddResolution(operation, options.refresh === true));
     if (!selectedOperations.length) {
       resolution.targets[target] = {
         processed: 0,
@@ -6253,6 +6278,7 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
       reviewThreshold: options.reviewThreshold ?? plan.thresholds?.review,
       limit: options.resolveLimit || options.limit,
       searchLimit: options.searchLimit,
+      refresh: options.refresh === true,
       searchTracks: (query, searchOptions) => (
         target === 'qq'
           ? searchQQTracks(cookie, query, searchOptions)
@@ -6264,16 +6290,7 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
       const next = resolvedById.get(operation.id);
       if (!next) return operation;
       changed = true;
-      return {
-        ...operation,
-        status: next.status,
-        targetTrack: next.targetTrack || operation.targetTrack,
-        candidateTrack: next.candidateTrack || operation.candidateTrack,
-        resolvedTargetTrack: next.resolvedTargetTrack || operation.resolvedTargetTrack,
-        resolvedScore: next.resolvedScore ?? operation.resolvedScore ?? null,
-        resolution: next.resolution || operation.resolution,
-        alternatives: next.alternatives || operation.alternatives || [],
-      };
+      return mergeProductAddResolution(operation, next);
     });
     resolution.targets[target] = {
       processed: resolved.addResolution?.processed || 0,
@@ -6313,9 +6330,10 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
   return nextPlan;
 }
 
-function needsProductPolicyAddResolution(operation = {}) {
+function needsProductPolicyAddResolution(operation = {}, refresh = false) {
   if (operation.action !== 'add') return false;
   if (operation.targetTrack || operation.resolvedTargetTrack) return false;
+  if (refresh) return true;
   return operation.status !== 'needs_review' && operation.status !== 'not_found' && operation.status !== 'blocked';
 }
 

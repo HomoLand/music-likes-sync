@@ -5,12 +5,71 @@ import {
   attachProductAddState,
   emptyProductAddState,
   guardProductAddTargetConflicts,
+  mergeProductAddResolution,
   productAddReferencesTarget,
   productAddStateKey,
   upsertProductAddState,
 } from '../src/product-add-state.js';
 
 describe('product add state', () => {
+  it('clears stale AI approval when catalog resolution selects a different candidate', () => {
+    const operation = {
+      id: 'sync-qq-1',
+      action: 'add',
+      status: 'needs_review',
+      candidateTrack: { platform: 'qq', id: 'old-id', title: 'Song' },
+      aiReview: { recommendedAction: 'add', confidence: 0.98 },
+      addDecision: { action: 'accept_candidate', source: 'ai_user_approved' },
+      blockedReason: 'candidate_target_conflict',
+      alternatives: [{ platform: 'qq', id: 'old-alt' }],
+    };
+
+    const merged = mergeProductAddResolution(operation, {
+      status: 'needs_review',
+      candidateTrack: { platform: 'qq', id: 'new-id', title: 'Song' },
+      alternatives: [{ platform: 'qq', id: 'new-alt' }],
+    });
+
+    assert.equal(merged.candidateTrack.id, 'new-id');
+    assert.equal(merged.aiReview, null);
+    assert.equal(merged.addDecision, null);
+    assert.equal(merged.blockedReason, '');
+    assert.equal(merged.alternatives[0].id, 'new-alt');
+  });
+
+  it('keeps review evidence when the provider candidate identity is unchanged', () => {
+    const aiReview = { recommendedAction: 'needs_human', confidence: 0.7 };
+    const operation = {
+      action: 'add',
+      status: 'needs_review',
+      candidateTrack: { platform: 'netease', id: 'same-id', title: 'Old title' },
+      aiReview,
+    };
+
+    const merged = mergeProductAddResolution(operation, {
+      status: 'needs_review',
+      candidateTrack: { platform: 'netease', id: 'same-id', title: 'Updated title' },
+    });
+
+    assert.equal(merged.aiReview, aiReview);
+  });
+
+  it('removes stale candidate evidence when a fresh search finds nothing', () => {
+    const merged = mergeProductAddResolution({
+      action: 'add',
+      status: 'needs_review',
+      candidateTrack: { platform: 'qq', id: 'stale-id' },
+      aiReview: { recommendedAction: 'add', confidence: 0.99 },
+    }, {
+      status: 'not_found',
+      alternatives: [],
+    });
+
+    assert.equal(merged.candidateTrack, null);
+    assert.equal(merged.resolvedTargetTrack, null);
+    assert.equal(merged.aiReview, null);
+  });
+
   it('initializes cleanly when the state file does not exist yet', () => {
     const persisted = upsertProductAddState(null, [{
       ...addOperation(),

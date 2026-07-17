@@ -231,6 +231,8 @@ export async function addQQTracksToPlaylist(cookie, playlistId, tracks, options 
   const playlist = await resolveQQPlaylistInfo(cookie, playlistId);
   const batchSize = Math.min(100, Math.max(1, Number(options.batchSize || 80)));
   const verify = options.verify !== false;
+  const verifyRetries = Math.max(0, Number(options.verifyRetries ?? 4));
+  const verifyDelayMs = Math.max(0, Number(options.verifyDelayMs ?? 1200));
   let beforeIds = emptyQQTrackSet();
   if (verify) {
     beforeIds = await fetchQQPlaylistTrackSet(cookie, playlist);
@@ -286,6 +288,7 @@ export async function addQQTracksToPlaylist(cookie, playlistId, tracks, options 
       batches.push({
         requested: chunk.length,
         code: 100,
+        provider: 'legacy',
       });
     } catch (error) {
       // QQ can return "invalid request" even when the add operation is applied.
@@ -301,20 +304,55 @@ export async function addQQTracksToPlaylist(cookie, playlistId, tracks, options 
   let missingIds = [];
   let playlistTrackCount = null;
   if (verify) {
-    const actualIds = await fetchQQPlaylistTrackSet(cookie, playlist, {
+    let actualIds = await fetchQQPlaylistTrackSet(cookie, playlist, {
       expected: ids,
-      retries: 4,
-      delayMs: 1200,
+      retries: verifyRetries,
+      delayMs: verifyDelayMs,
     });
     missingIds = ids.filter((track) => !hasQQTrack(actualIds, track)).map(qqWriteTrackPublicId);
     playlistTrackCount = actualIds.count;
+
+    const fallbackTracks = idsToAdd.filter((track) => (
+      track.mid && missingIds.includes(qqWriteTrackPublicId(track))
+    ));
+    for (const chunk of chunkArray(fallbackTracks, batchSize)) {
+      try {
+        await addQQSongsByMid(cookie, playlist.dirid, chunk.map((track) => track.mid));
+        batches.push({
+          requested: chunk.length,
+          code: 100,
+          provider: 'legacy-post-verify',
+        });
+      } catch (error) {
+        batches.push({
+          requested: chunk.length,
+          code: 200,
+          provider: 'legacy-post-verify',
+          error: formatErrorMessage(error),
+        });
+      }
+    }
+
+    if (fallbackTracks.length) {
+      actualIds = await fetchQQPlaylistTrackSet(cookie, playlist, {
+        expected: ids,
+        retries: verifyRetries,
+        delayMs: verifyDelayMs,
+      });
+      missingIds = ids.filter((track) => !hasQQTrack(actualIds, track)).map(qqWriteTrackPublicId);
+      playlistTrackCount = actualIds.count;
+    }
   }
+
+  const added = verify
+    ? idsToAdd.filter((track) => !missingIds.includes(qqWriteTrackPublicId(track))).length
+    : idsToAdd.length;
 
   return {
     requested: ids.length,
     submitted: idsToAdd.length,
-    accepted: idsToAdd.length,
-    added: verify ? idsToAdd.filter((track) => !missingIds.includes(qqWriteTrackPublicId(track))).length : idsToAdd.length,
+    accepted: verify ? added : Math.min(idsToAdd.length, acceptedQQBatchCount(batches)),
+    added,
     alreadyPresent: alreadyPresentTracks.length,
     verified: verify,
     playlistTrackCount,
@@ -335,6 +373,8 @@ export async function removeQQTracksFromPlaylist(cookie, playlistId, tracks, opt
   const playlist = await resolveQQPlaylistInfo(cookie, playlistId);
   const batchSize = Math.min(100, Math.max(1, Number(options.batchSize || 80)));
   const verify = options.verify !== false;
+  const verifyRetries = Math.max(0, Number(options.verifyRetries ?? 4));
+  const verifyDelayMs = Math.max(0, Number(options.verifyDelayMs ?? 1200));
   let beforeIds = emptyQQTrackSet();
   if (verify) {
     beforeIds = await fetchQQPlaylistTrackSet(cookie, playlist);
@@ -378,8 +418,8 @@ export async function removeQQTracksFromPlaylist(cookie, playlistId, tracks, opt
   let playlistTrackCount = null;
   if (verify) {
     const actualIds = await fetchQQPlaylistTrackSet(cookie, playlist, {
-      retries: 4,
-      delayMs: 1200,
+      retries: verifyRetries,
+      delayMs: verifyDelayMs,
     });
     stillPresentIds = ids
       .filter((track) => hasQQTrack(actualIds, track))
@@ -388,11 +428,14 @@ export async function removeQQTracksFromPlaylist(cookie, playlistId, tracks, opt
   }
 
   const unsupportedIds = unsupportedTracks.map(qqWriteTrackPublicId);
+  const removed = verify
+    ? idTracks.filter((track) => !stillPresentIds.includes(qqWriteTrackPublicId(track))).length
+    : idTracks.length;
   return {
     requested: ids.length,
     submitted: idTracks.length,
-    accepted: idTracks.length,
-    removed: verify ? idTracks.filter((track) => !stillPresentIds.includes(qqWriteTrackPublicId(track))).length : idTracks.length,
+    accepted: verify ? removed : Math.min(idTracks.length, acceptedQQBatchCount(batches)),
+    removed,
     alreadyAbsent: alreadyAbsentTracks.length,
     verified: verify,
     playlistTrackCount,
@@ -1160,6 +1203,14 @@ function hasQQTrack(set, track = {}) {
 
 function qqWriteTrackPublicId(track = {}) {
   return String(track.mid || track.id || '').trim();
+}
+
+function acceptedQQBatchCount(batches = []) {
+  return batches.reduce((total, batch) => (
+    Number(batch?.code || 0) < 200 && !batch?.error
+      ? total + Math.max(0, Number(batch?.requested || 0))
+      : total
+  ), 0);
 }
 
 function setQQCookieOrThrow(cookie) {
