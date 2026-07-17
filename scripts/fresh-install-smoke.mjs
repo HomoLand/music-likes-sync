@@ -71,7 +71,7 @@ try {
   assert(match.status !== 0, 'match should fail clearly when only skipped target snapshots exist.');
   assertIncludes(match.stderr || match.stdout, '缺少可比较的平台快照', 'match failure should explain missing comparable snapshots.');
 
-  const installed = runTarballInstallSmoke();
+  const installed = await runTarballInstallSmoke();
 
   console.log(JSON.stringify({
     ok: true,
@@ -95,7 +95,7 @@ try {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }
 
-function runTarballInstallSmoke() {
+async function runTarballInstallSmoke() {
   fs.mkdirSync(installRoot, { recursive: true });
   const tarball = npmPackTarball();
   runNpm(['init', '-y'], installRoot);
@@ -128,7 +128,7 @@ function runTarballInstallSmoke() {
   assert(!fs.existsSync(path.join(installedPackageRoot(), 'data')), 'installed CLI check should not create package data/.');
 
   runInstalledPackageTests(bin);
-  runInstalledWebSmoke(bin);
+  await runInstalledWebSmoke(bin);
 
   const sample = path.join(installedPackageRoot(), 'examples', 'apple.sample.csv');
   const snapshot = runCommand(bin, [
@@ -162,7 +162,7 @@ function runInstalledPackageTests(bin) {
   assert(!fs.existsSync(path.join(installedPackageRoot(), 'data')), 'installed package npm test should not create package data/.');
 }
 
-function runInstalledWebSmoke(bin) {
+async function runInstalledWebSmoke(bin) {
   const port = randomPort();
   const command = process.platform === 'win32' ? 'cmd.exe' : bin;
   const args = process.platform === 'win32'
@@ -191,7 +191,11 @@ function runInstalledWebSmoke(bin) {
   });
 
   try {
-    waitForInstalledWeb(port, child, () => ({ stdout, stderr }));
+    await waitForInstalledWeb(port, child, () => ({ stdout, stderr }));
+    const homeResponse = await fetch(`http://127.0.0.1:${port}/`);
+    const home = await homeResponse.text();
+    assert(homeResponse.ok, 'installed Web UI should serve its packaged React entry point.');
+    assertIncludes(home, '<div id="root"></div>', 'installed Web UI should return the React application shell.');
     assert(fs.existsSync(path.join(installRoot, 'data')), 'installed Web UI should create runtime data/ under caller working directory.');
     assert(fs.existsSync(path.join(installRoot, 'reports')), 'installed Web UI should create runtime reports/ under caller working directory.');
     assert(!fs.existsSync(path.join(installedPackageRoot(), 'data')), 'installed Web UI must not create package data/.');
@@ -201,23 +205,23 @@ function runInstalledWebSmoke(bin) {
   }
 }
 
-function waitForInstalledWeb(port, child, output) {
+async function waitForInstalledWeb(port, child, output) {
   const started = Date.now();
   while (Date.now() - started < 15000) {
     if (child.exitCode !== null) {
       const { stdout, stderr } = output();
       throw new Error(`installed Web UI exited early with ${child.exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
     }
-    const probe = spawnSync(process.execPath, [
-      '-e',
-      `fetch('http://127.0.0.1:${port}/api/state').then(async (response) => { const payload = await response.json(); process.exit(response.ok && payload.ok ? 0 : 1); }).catch(() => process.exit(1));`,
-    ], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 5000,
-    });
-    if (probe.status === 0) return;
-    sleepSync(250);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/state`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      const payload = await response.json();
+      if (response.ok && payload.ok) return;
+    } catch {
+      // The server may still be importing dependencies; retry until the deadline.
+    }
+    await delay(250);
   }
   const { stdout, stderr } = output();
   throw new Error(`installed Web UI did not answer /api/state on port ${port}\nstdout:\n${stdout}\nstderr:\n${stderr}`);
@@ -227,8 +231,8 @@ function randomPort() {
   return 5600 + Math.floor(Math.random() * 1000);
 }
 
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function npmPackDryRun() {
