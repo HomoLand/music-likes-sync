@@ -1,18 +1,56 @@
-import { useState } from 'react';
+import {
+  Archive,
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  Headphones,
+  LoaderCircle,
+  Pause,
+  PauseCircle,
+  Play,
+  Plus,
+  RefreshCcw,
+  RotateCcw,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+import { createSyncBackup, fetchSyncBackups, resolveSyncTrackMedia, restoreSyncBackup } from '../api/client';
 
 import type {
   AdditionDecisionAction,
   AddResolutionSummary,
   AppStateSummary,
   ConvergenceSummary,
+  IdentityDecisionAction,
   PlatformKey,
   PreviewBucketId,
   PreviewTrackItem,
   SyncPreviewDetails,
+  SyncBackupRestoreResult,
+  SyncBackupStateResult,
   TombstoneAction,
+  TrackMediaResult,
+  TrackMediaRole,
   TrackSummary,
 } from '../api/types';
 import { PreviewBucketTabs } from '../components/PreviewBucketTabs';
+import {
+  AlbumArtwork,
+  EvidenceChip,
+  evidenceTone,
+  formatCount,
+  platformLabel,
+  PlatformArtwork,
+  scoreTone,
+  StatusPill,
+} from '../components/MusicVisuals';
 
 interface ScreenProps {
   activeBucket: PreviewBucketId;
@@ -21,6 +59,7 @@ interface ScreenProps {
   previewDetails: SyncPreviewDetails | null;
   onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
   onApplyAdditionDecisionBatch: (action: Exclude<AdditionDecisionAction, 'select_alternative'>) => void;
+  onApplyIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
   onApplyTombstoneDecision: (input: {
     tombstoneKey: string;
     operationId?: string;
@@ -34,22 +73,21 @@ interface ScreenProps {
   ) => void;
   onCheckConvergence: () => void;
   onChangeBucket: (bucket: PreviewBucketId) => void;
+  onLoadMore: () => void;
   onConfirmDeletions: (confirmText: string) => Promise<boolean>;
   onExecuteAdditions: (dryRun: boolean) => void;
   onExecuteDeletions: () => void;
   onResolveAdditions: () => void;
+  onReviewItems: (operationIds?: string[]) => void;
   onRunCheck: () => void;
   onSaveBaseline: () => void;
+  onRefreshState: () => Promise<void>;
   syncBusy: boolean;
   syncError: string;
   syncMessage: string;
 }
 
-const PLATFORM_LABELS: Record<PlatformKey, string> = {
-  apple: 'Apple Music',
-  qq: 'QQ 音乐',
-  netease: '网易云音乐',
-};
+type TombstoneFilter = 'undecided' | 'qq' | 'netease' | 'decided' | 'all';
 
 export function SyncPreviewScreen({
   activeBucket,
@@ -58,29 +96,42 @@ export function SyncPreviewScreen({
   previewDetails,
   onApplyAdditionDecision,
   onApplyAdditionDecisionBatch,
+  onApplyIdentityDecision,
   onApplyTombstoneDecision,
   onApplyTombstoneDecisionBatch,
   onCheckConvergence,
   onChangeBucket,
+  onLoadMore,
   onConfirmDeletions,
   onExecuteAdditions,
   onExecuteDeletions,
   onResolveAdditions,
+  onReviewItems,
   onRunCheck,
   onSaveBaseline,
+  onRefreshState,
   syncBusy,
   syncError,
   syncMessage,
 }: ScreenProps) {
   const [tombstoneFilter, setTombstoneFilter] = useState<TombstoneFilter>('undecided');
+  const [selectedId, setSelectedId] = useState<string>('');
   const buckets = previewDetails?.buckets.length ? previewDetails.buckets : appState?.preview.buckets || [];
   const current = buckets.find((bucket) => bucket.id === activeBucket) || buckets[0];
   const items = previewDetails?.items || [];
-  const visibleCandidates = items.filter((item) => item.action === 'add' && item.candidateTarget);
+  const visibleCandidates = items.filter((item) => item.action === 'add' && (item.candidateTarget || item.resolvedTarget));
+  const reviewableItems = items.filter((item) => !item.aiReview && (
+    (item.action === 'add' && Boolean(item.candidateTarget))
+    || (item.action === 'review' && Boolean(item.sourceTrack) && Boolean(item.targetTrack || item.candidateTarget))
+  ));
   const tombstoneItems = items.filter((item) => item.tombstoneKey);
   const displayItems = activeBucket === 'may_delete' && tombstoneItems.length
     ? filterTombstoneItems(tombstoneItems, tombstoneFilter)
     : items;
+  const selectedItem = useMemo(
+    () => displayItems.find((item) => item.id === selectedId) || displayItems[0] || null,
+    [displayItems, selectedId],
+  );
   const batchTombstones = displayItems
     .filter((item) => item.tombstoneKey)
     .map((item) => ({
@@ -90,129 +141,837 @@ export function SyncPreviewScreen({
     }))
     .filter((item) => item.tombstoneKey);
   const writeReadiness = buildWriteReadiness(appState);
+
   return (
-    <section className="surface-band">
-      <div className="section-heading">
-        <h2>先预览，再写入</h2>
-        <p>新增和删除分开执行。可能删除只进入确认区，不会自动全局删除。</p>
+    <section className="preview-screen">
+      <div className="preview-flow-strip">
+        <div className="flow-source">
+          <PlatformArtwork platform="apple" size="md" />
+          <div>
+            <span>源平台（可信源）</span>
+            <strong>Apple Music</strong>
+            <small>{formatCount(platformTracks(appState, 'apple'))} 首喜欢歌曲</small>
+          </div>
+        </div>
+        <ChevronRight size={22} />
+        <div className="flow-targets">
+          <PlatformMini platform="qq" count={platformTracks(appState, 'qq')} />
+          <span className="target-plus"><Plus size={15} /></span>
+          <PlatformMini platform="netease" count={platformTracks(appState, 'netease')} />
+        </div>
+        <StatusPill tone={writeReadiness.ok ? 'success' : 'warning'}>
+          {writeReadiness.ok ? '本地状态已同步' : '写入验证待检查'}
+        </StatusPill>
       </div>
-      <PreviewBucketTabs buckets={buckets} activeBucket={current?.id || activeBucket} onChange={onChangeBucket} />
-      <ResolutionSummary resolution={previewDetails?.addResolution || null} />
-      <WriteExecutionPanel
+
+      <div className="preview-layout">
+        <div className="review-workspace">
+          <div className="section-heading compact">
+            <div>
+              <h2>曲目复核队列</h2>
+              <p>试听跨平台版本并确认匹配关系（当前分类 {formatCount(current?.count || 0)} 首）。</p>
+            </div>
+            <div className="section-heading-actions">
+              <button
+                className="secondary-button"
+                data-testid="react-ai-review-additions"
+                disabled={syncBusy || !reviewableItems.length}
+                onClick={() => onReviewItems(reviewableItems.map((item) => item.id))}
+                title="发送当前版本的最小化歌曲证据进行 AI 草稿复核"
+                type="button"
+              >
+                <Bot size={16} />
+                AI 复核当前页
+              </button>
+              <button className="ghost-button" disabled={syncBusy} onClick={onRunCheck} type="button">
+                <RefreshCcw size={16} />
+                重新生成
+              </button>
+            </div>
+          </div>
+
+          <PreviewBucketTabs buckets={buckets} activeBucket={current?.id || activeBucket} onChange={onChangeBucket} />
+          <ResolutionSummary resolution={previewDetails?.addResolution || null} />
+          <TombstoneToolbar
+            activeBucket={activeBucket}
+            filter={tombstoneFilter}
+            items={tombstoneItems}
+            onBatch={onApplyTombstoneDecisionBatch}
+            onFilter={setTombstoneFilter}
+            selectedItems={batchTombstones}
+            syncBusy={syncBusy}
+          />
+          <SyncStatus error={syncError} message={syncMessage} />
+
+          {displayItems.length ? (
+            <>
+              <div className="track-table" data-testid="react-preview-list">
+                <div className="track-table-head">
+                  <span />
+                  <span>歌曲</span>
+                  <span>源平台</span>
+                  <span>QQ 音乐候选</span>
+                  <span>网易云候选</span>
+                  <span>置信度</span>
+                  <span>证据</span>
+                  <span>操作</span>
+                </div>
+                {displayItems.map((item, index) => (
+                  <PreviewItem
+                    index={index}
+                    item={item}
+                    key={item.id || `${item.title}-${item.artist}`}
+                    onApplyAdditionDecision={onApplyAdditionDecision}
+                    onApplyIdentityDecision={onApplyIdentityDecision}
+                    onApplyTombstoneDecision={onApplyTombstoneDecision}
+                    onReviewItems={onReviewItems}
+                    onSelect={() => setSelectedId(item.id)}
+                    selected={(selectedItem?.id || '') === item.id}
+                    syncBusy={syncBusy}
+                  />
+                ))}
+              </div>
+              <div className="preview-load-more" data-testid="react-preview-pagination">
+                <span>已加载 {formatCount(items.length)} / {formatCount(previewDetails?.total || items.length)} 首</span>
+                {previewDetails?.nextCursor ? (
+                  <button className="secondary-button" data-testid="react-preview-load-more" disabled={syncBusy} onClick={onLoadMore} type="button">
+                    <ChevronDown size={16} />继续加载
+                  </button>
+                ) : <small>已显示全部</small>}
+              </div>
+            </>
+          ) : (
+            <div className="preview-empty">
+              <strong>{current?.label || '暂无预览'}</strong>
+              <p>当前有 {formatCount(current?.count || 0)} 个项目。运行同步检查后，这里会显示真实歌曲、目标平台和匹配证据。</p>
+            </div>
+          )}
+        </div>
+
+        <MatchInspector
+          item={selectedItem}
+          onApplyAdditionDecision={onApplyAdditionDecision}
+          onApplyIdentityDecision={onApplyIdentityDecision}
+          onReviewItems={onReviewItems}
+          previewId={previewDetails?.previewId || ''}
+          syncBusy={syncBusy}
+        />
+      </div>
+
+      <DeletionSafetyPanel
+        hasDeletionSignals={Boolean(buckets.find((bucket) => bucket.id === 'may_delete')?.count)}
+        onRefreshState={onRefreshState}
+        syncBusy={syncBusy}
+        targets={(appState?.platforms || [])
+          .filter((platform) => platform.key !== 'apple' && platform.status !== 'not_connected')
+          .map((platform) => platform.key)}
+      />
+
+      <WriteActionBar
         lastConvergence={lastConvergence}
         onCheckConvergence={onCheckConvergence}
         onConfirmDeletions={onConfirmDeletions}
         onExecuteAdditions={onExecuteAdditions}
         onExecuteDeletions={onExecuteDeletions}
+        onResolveAdditions={onResolveAdditions}
         onSaveBaseline={onSaveBaseline}
         previewDetails={previewDetails}
         syncBusy={syncBusy}
+        visibleCandidates={visibleCandidates.length}
         writeReadiness={writeReadiness}
       />
-      <TombstoneToolbar
-        activeBucket={activeBucket}
-        filter={tombstoneFilter}
-        items={tombstoneItems}
-        onBatch={onApplyTombstoneDecisionBatch}
-        onFilter={setTombstoneFilter}
-        selectedItems={batchTombstones}
-        syncBusy={syncBusy}
-      />
-      <SyncStatus error={syncError} message={syncMessage} />
-      {displayItems.length ? (
-        <div className="preview-list" data-testid="react-preview-list">
-          {displayItems.map((item) => (
-            <PreviewItem
-              item={item}
-              key={item.id || `${item.title}-${item.artist}`}
-              onApplyAdditionDecision={onApplyAdditionDecision}
-              onApplyTombstoneDecision={onApplyTombstoneDecision}
-              syncBusy={syncBusy}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="preview-empty">
-          <strong>{current?.label || '暂无预览'}</strong>
-          <p>
-            当前有 {current?.count || 0} 个项目。运行同步检查后，这里会显示真实歌曲、目标平台和匹配证据。
-          </p>
-        </div>
-      )}
-      <div className="action-row">
-        <button
-          data-testid="react-run-sync-check-preview"
-          disabled={syncBusy}
-          onClick={onRunCheck}
-          type="button"
-        >
-          {syncBusy ? '正在检查' : '重新生成预览'}
-        </button>
-        <button
-          className="secondary"
-          data-testid="react-resolve-additions"
-          disabled={syncBusy || !previewDetails}
-          onClick={onResolveAdditions}
-          type="button"
-        >
-          查找对应歌曲
-        </button>
-        <button
-          className="secondary"
-          data-testid="react-batch-accept-additions"
-          disabled={syncBusy || !visibleCandidates.length}
-          onClick={() => onApplyAdditionDecisionBatch('accept_candidate')}
-          type="button"
-        >
-          批量接受可见候选
-        </button>
-        <button
-          className="secondary"
-          data-testid="react-batch-skip-additions"
-          disabled={syncBusy || !visibleCandidates.length}
-          onClick={() => onApplyAdditionDecisionBatch('skip')}
-          type="button"
-        >
-          批量跳过可见候选
-        </button>
-      </div>
     </section>
   );
 }
 
-function ResolutionSummary({ resolution }: { resolution: AddResolutionSummary | null }) {
-  if (!resolution) return null;
+function DeletionSafetyPanel({
+  hasDeletionSignals,
+  onRefreshState,
+  syncBusy,
+  targets,
+}: {
+  hasDeletionSignals: boolean;
+  onRefreshState: () => Promise<void>;
+  syncBusy: boolean;
+  targets: PlatformKey[];
+}) {
+  const [state, setState] = useState<SyncBackupStateResult | null>(null);
+  const [selectedId, setSelectedId] = useState('');
+  const [restorePreview, setRestorePreview] = useState<SyncBackupRestoreResult | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!syncBusy) void refreshBackups(true);
+  }, [syncBusy]);
+
+  async function refreshBackups(silent = false) {
+    if (!silent) setBusy(true);
+    try {
+      const result = await fetchSyncBackups();
+      setState(result);
+      setSelectedId((current) => result.backups.some((backup) => backup.id === current)
+        ? current
+        : result.backups[0]?.id || '');
+      if (!silent) setError('');
+    } catch (refreshError) {
+      if (!silent) setError(errorMessage(refreshError));
+    } finally {
+      if (!silent) setBusy(false);
+    }
+  }
+
+  async function createBackup() {
+    setBusy(true);
+    setMessage('正在刷新目标平台并创建恢复点...');
+    setError('');
+    try {
+      const result = await createSyncBackup({ targets });
+      await refreshBackups(true);
+      setSelectedId(result.backup.id);
+      setRestorePreview(null);
+      setConfirmText('');
+      setMessage('恢复点已创建并通过完整性校验。');
+    } catch (backupError) {
+      setError(errorMessage(backupError));
+      setMessage('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewRestore() {
+    if (!selectedId) return;
+    setBusy(true);
+    setMessage('正在检查恢复差异...');
+    setError('');
+    try {
+      const result = await restoreSyncBackup({ backupId: selectedId, dryRun: true });
+      setRestorePreview(result);
+      setConfirmText('');
+      setMessage(result.plan.missing ? `发现 ${formatCount(result.plan.missing)} 首可恢复歌曲。` : '当前内容已完整，无需恢复。');
+    } catch (restoreError) {
+      setError(errorMessage(restoreError));
+      setMessage('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeRestore() {
+    if (!restorePreview || !selectedId) return;
+    setBusy(true);
+    setMessage('正在补回缺失歌曲并验证结果...');
+    setError('');
+    try {
+      const result = await restoreSyncBackup({
+        backupId: selectedId,
+        dryRun: false,
+        confirmText,
+      });
+      await onRefreshState();
+      await refreshBackups(true);
+      setRestorePreview(null);
+      setConfirmText('');
+      setMessage(`恢复完成，已补回 ${formatCount(result.plan.missing)} 首歌曲。`);
+    } catch (restoreError) {
+      setError(errorMessage(restoreError));
+      setMessage('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selected = state?.backups.find((backup) => backup.id === selectedId) || null;
+  if (!hasDeletionSignals && !state?.backups.length) return null;
+  const disabled = busy || syncBusy;
+
   return (
-    <div className="resolution-summary" data-testid="react-add-resolution-summary">
-      <strong>候选查找</strong>
-      <span>已查找 {resolution.total} 首</span>
-      <span>确认 {resolution.resolved}</span>
-      <span>需复核 {resolution.review}</span>
-      <span>未找到 {resolution.notFound}</span>
-      {resolution.skipped ? <span>跳过目标 {resolution.skipped}</span> : null}
+    <section className="deletion-safety" data-testid="react-deletion-safety">
+      <header className="deletion-safety-head">
+        <span className="deletion-safety-icon"><ShieldCheck size={19} /></span>
+        <div>
+          <h2>删除保护</h2>
+          <p>真实删除前会自动保存目标平台恢复点。</p>
+        </div>
+        <StatusPill tone={selected?.integrity.ok ? 'success' : 'neutral'}>
+          {selected?.integrity.ok ? '恢复点已校验' : '删除前自动备份'}
+        </StatusPill>
+      </header>
+
+      <div className="deletion-safety-controls">
+        <label>
+          <span>恢复点</span>
+          <select
+            aria-label="选择同步恢复点"
+            disabled={disabled || !state?.backups.length}
+            onChange={(event) => {
+              setSelectedId(event.target.value);
+              setRestorePreview(null);
+              setConfirmText('');
+            }}
+            value={selectedId}
+          >
+            {!state?.backups.length ? <option value="">尚无恢复点</option> : null}
+            {(state?.backups || []).map((backup) => (
+              <option key={backup.id} value={backup.id}>{formatBackupDate(backup.createdAt)}</option>
+            ))}
+          </select>
+        </label>
+        <button className="secondary-button" disabled={disabled || !targets.length} onClick={() => void createBackup()} type="button">
+          <Archive size={16} />立即备份
+        </button>
+        <button className="secondary-button" disabled={disabled || !selected} onClick={() => void previewRestore()} type="button">
+          <RotateCcw size={16} />检查恢复
+        </button>
+      </div>
+
+      {selected ? (
+        <div className="backup-summary">
+          {selected.targets.map((target) => (
+            <span key={target.target}>
+              <PlatformArtwork platform={target.target as PlatformKey} size="sm" />
+              <strong>{platformLabel(target.target)}</strong>
+              <small>{formatCount(target.count)} 首</small>
+              <code>{target.checksum.slice(0, 8)}</code>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {restorePreview ? (
+        <div className="restore-confirm-row">
+          <span>
+            <strong>{restorePreview.plan.missing ? `可补回 ${formatCount(restorePreview.plan.missing)} 首` : '无需恢复'}</strong>
+            <small>仅补回缺失歌曲，现有歌曲保持不变。</small>
+          </span>
+          {restorePreview.plan.missing ? (
+            <>
+              <input
+                aria-label="恢复确认文本"
+                disabled={disabled}
+                onChange={(event) => setConfirmText(event.target.value)}
+                placeholder={restorePreview.confirmationText}
+                value={confirmText}
+              />
+              <button
+                className="danger-outline"
+                disabled={disabled || confirmText.trim() !== restorePreview.confirmationText}
+                onClick={() => void executeRestore()}
+                type="button"
+              >
+                <RotateCcw size={16} />执行恢复
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {message ? <p className="inline-success">{message}</p> : null}
+      {error ? <p className="inline-error">{error}</p> : null}
+    </section>
+  );
+}
+
+function PreviewItem({
+  index,
+  item,
+  onApplyAdditionDecision,
+  onApplyIdentityDecision,
+  onApplyTombstoneDecision,
+  onReviewItems,
+  onSelect,
+  selected,
+  syncBusy,
+}: {
+  index: number;
+  item: PreviewTrackItem;
+  onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
+  onApplyIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
+  onApplyTombstoneDecision: (input: {
+    tombstoneKey: string;
+    operationId?: string;
+    action: TombstoneAction;
+    platform?: string;
+    confirmText?: string;
+  }) => void;
+  onReviewItems: (operationIds?: string[]) => void;
+  onSelect: () => void;
+  selected: boolean;
+  syncBusy: boolean;
+}) {
+  const qqMatch = candidateForPlatform(item, 'qq');
+  const neteaseMatch = candidateForPlatform(item, 'netease');
+  return (
+    <article
+      className={selected ? 'track-row selected' : item.destructive ? 'track-row destructive' : 'track-row'}
+      data-testid="react-preview-item"
+      onClick={onSelect}
+    >
+      <button aria-label="选择歌曲" className="row-check" type="button">
+        {selected ? <Check size={15} /> : <Circle size={15} />}
+      </button>
+      <div className="track-cell">
+        <AlbumArtwork title={item.title} index={index} src={item.artworkUrl || item.sourceTrack?.artworkUrl} />
+        <div>
+          <strong>{item.title || 'Untitled'}</strong>
+          <span>{item.artist || '未知歌手'}{item.album ? ` · ${item.album}` : ''}</span>
+        </div>
+      </div>
+      <PlatformStack platforms={item.sourcePlatforms} />
+      <CandidateCell track={qqMatch} fallback={item.targetPlatforms.includes('qq') ? '待匹配' : '无需写入'} />
+      <CandidateCell track={neteaseMatch} fallback={item.targetPlatforms.includes('netease') ? '待匹配' : '无需写入'} />
+      <span className={`score-pill ${scoreTone(item.score)}`}>
+        {typeof item.score === 'number' ? `${Math.round(item.score * 100)}%` : '-'}
+      </span>
+      <div className="row-evidence">
+        {(item.evidence.length ? item.evidence : item.blockedReason ? [item.blockedReason] : ['本地证据']).slice(0, 3).map((entry) => (
+          <EvidenceChip key={entry} tone={evidenceTone(entry)}>{evidenceLabel(entry)}</EvidenceChip>
+        ))}
+      </div>
+      <RowActions
+        item={item}
+        onApplyAdditionDecision={onApplyAdditionDecision}
+        onApplyIdentityDecision={onApplyIdentityDecision}
+        onApplyTombstoneDecision={onApplyTombstoneDecision}
+        onReviewItems={onReviewItems}
+        syncBusy={syncBusy}
+      />
+    </article>
+  );
+}
+
+function RowActions({
+  item,
+  onApplyAdditionDecision,
+  onApplyIdentityDecision,
+  onApplyTombstoneDecision,
+  onReviewItems,
+  syncBusy,
+}: {
+  item: PreviewTrackItem;
+  onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
+  onApplyIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
+  onApplyTombstoneDecision: (input: {
+    tombstoneKey: string;
+    operationId?: string;
+    action: TombstoneAction;
+    platform?: string;
+    confirmText?: string;
+  }) => void;
+  onReviewItems: (operationIds?: string[]) => void;
+  syncBusy: boolean;
+}) {
+  if (item.tombstoneKey) {
+    const platform = tombstoneSourcePlatform(item);
+    return (
+      <div className="row-actions">
+        <button disabled={syncBusy} onClick={() => onApplyTombstoneDecision({ tombstoneKey: item.tombstoneKey || '', operationId: item.id, platform, action: 'ignore' })} type="button">忽略</button>
+        <button disabled={syncBusy} onClick={() => onApplyTombstoneDecision({ tombstoneKey: item.tombstoneKey || '', operationId: item.id, platform, action: 'restore' })} type="button">恢复</button>
+      </div>
+    );
+  }
+  if (item.action === 'review') {
+    return (
+      <div className="row-actions identity-actions">
+        <button
+          className="accept"
+          disabled={syncBusy}
+          onClick={() => onApplyIdentityDecision(item.id, 'keep')}
+          title="目标平台版本就是 Apple Music 中的同一录音"
+          type="button"
+        >
+          同一版本
+        </button>
+        <button
+          disabled={syncBusy}
+          onClick={() => onApplyIdentityDecision(item.id, 'separate')}
+          title="两个版本不同，生成新增 Apple 版本和目标版本删除草稿"
+          type="button"
+        >
+          不同版本
+        </button>
+        <button disabled={syncBusy || Boolean(item.aiReview)} onClick={() => onReviewItems([item.id])} type="button">
+          {item.aiReview ? 'AI 已分析' : '问 AI'}
+        </button>
+      </div>
+    );
+  }
+  if (item.action === 'remove') {
+    return (
+      <div className="row-actions compact-actions">
+        <span className="row-action-note">待删除确认</span>
+        {item.identityDecision ? (
+          <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'clear')} type="button">撤销判断</button>
+        ) : null}
+      </div>
+    );
+  }
+  if (item.action === 'keep') {
+    return (
+      <div className="row-actions compact-actions">
+        <span className="row-action-note">无需操作</span>
+        {item.identityDecision ? (
+          <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'clear')} type="button">撤销判断</button>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <div className="row-actions">
+      <button
+        className="accept"
+        disabled={syncBusy || !item.candidateTarget}
+        onClick={() => onApplyAdditionDecision(item.id, 'accept_candidate')}
+        type="button"
+      >
+        接受
+      </button>
+      <button disabled={syncBusy || !item.alternatives.length} onClick={() => onApplyAdditionDecision(item.id, 'select_alternative', 0)} type="button">
+        换一个
+      </button>
+      <button disabled={syncBusy} onClick={() => onApplyAdditionDecision(item.id, 'skip')} type="button">跳过</button>
+      {item.identityDecision ? (
+        <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'clear')} type="button">撤销判断</button>
+      ) : (
+        <button disabled={syncBusy || !item.candidateTarget || Boolean(item.aiReview)} onClick={() => onReviewItems([item.id])} type="button">
+          {item.aiReview ? 'AI 已分析' : '问 AI'}
+        </button>
+      )}
     </div>
   );
 }
 
-interface WriteReadiness {
-  ok: boolean;
-  targets: Array<{
-    target: PlatformKey;
-    ok: boolean;
-    status: string;
-    checkedAt?: string;
-  }>;
+function MatchInspector({
+  item,
+  onApplyAdditionDecision,
+  onApplyIdentityDecision,
+  onReviewItems,
+  previewId,
+  syncBusy,
+}: {
+  item: PreviewTrackItem | null;
+  onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
+  onApplyIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
+  onReviewItems: (operationIds?: string[]) => void;
+  previewId: string;
+  syncBusy: boolean;
+}) {
+  const versions = useMemo(() => item ? buildAuditionVersions(item) : [], [item]);
+  if (!item) {
+    return (
+      <aside className="match-inspector empty">
+        <h2>匹配详情</h2>
+        <p>选择一首歌后，这里会显示候选、证据和 AI 说明。</p>
+      </aside>
+    );
+  }
+  return (
+    <aside className="match-inspector">
+      <div className="inspector-head">
+        <h2>匹配详情</h2>
+        <button aria-label="关闭详情" className="icon-button" type="button">
+          <X size={16} />
+        </button>
+      </div>
+      <div className="inspector-track">
+        <AlbumArtwork title={item.title} index={2} src={item.artworkUrl || item.sourceTrack?.artworkUrl} />
+        <div>
+          <strong>{item.title}</strong>
+          <span>{item.artist || '未知歌手'}</span>
+          <small>{item.album || '未知专辑'}</small>
+        </div>
+      </div>
+      <div className="audition-section" data-testid="react-version-audition">
+        <div className="audition-heading">
+          <span><Headphones size={15} />版本试听对比</span>
+          <small>不会自动播放 · 每次最多 30 秒</small>
+        </div>
+        {versions.length ? (
+          <VersionAudition
+            disabled={syncBusy}
+            onChoose={(version) => {
+              if (version.role === 'alternative') {
+                onApplyAdditionDecision(version.operationId, 'select_alternative', version.alternativeIndex);
+              } else {
+                onApplyAdditionDecision(version.operationId, 'accept_candidate');
+              }
+            }}
+            operationId={item.id}
+            preload={item.bucket === 'needs_confirmation'}
+            previewId={previewId}
+            versions={versions}
+          />
+        ) : <p className="muted-line">还没有可试听的平台版本。</p>}
+      </div>
+      <div className="evidence-list">
+        <h3>证据</h3>
+        {(item.evidence.length ? item.evidence : ['本地标题相似', '等待候选查找']).slice(0, 5).map((entry) => (
+          <div key={entry}>
+            <Check size={15} />
+            <span>{evidenceLabel(entry)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="ai-note">
+        <Bot size={18} />
+        <p>{reviewMessage(item)}</p>
+      </div>
+      {item.action === 'review' ? (
+        <div className="identity-decision-panel">
+          <div>
+            <strong>试听后的判断</strong>
+            <span>AI 只提供草稿，最终关系由你决定。</span>
+          </div>
+          <div>
+            <button className="primary-button" disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'keep')} type="button">
+              <Check size={15} />同一版本
+            </button>
+            <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'separate')} type="button">
+              <X size={15} />不同版本
+            </button>
+            <button disabled={syncBusy || Boolean(item.aiReview)} onClick={() => onReviewItems([item.id])} type="button">
+              <Bot size={15} />{item.aiReview ? 'AI 已分析' : '问 AI'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </aside>
+  );
 }
 
-function WriteExecutionPanel({
+interface AuditionVersion {
+  key: string;
+  operationId: string;
+  role: TrackMediaRole;
+  alternativeIndex?: number;
+  label: string;
+  track: TrackSummary;
+  platform: PlatformKey;
+  score?: number | null;
+  selected: boolean;
+  canChoose: boolean;
+}
+
+function VersionAudition({
+  disabled,
+  onChoose,
+  operationId,
+  preload,
+  previewId,
+  versions,
+}: {
+  disabled: boolean;
+  onChoose: (version: AuditionVersion) => void;
+  operationId: string;
+  preload: boolean;
+  previewId: string;
+  versions: AuditionVersion[];
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const activeAlignedRef = useRef(false);
+  const activeLimitRef = useRef(30);
+  const activeOffsetRef = useRef(0);
+  const activeRoleRef = useRef<TrackMediaRole>('source');
+  const segmentStartSourceRef = useRef(0);
+  const [mediaByKey, setMediaByKey] = useState<Record<string, TrackMediaResult>>({});
+  const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [playingKey, setPlayingKey] = useState('');
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    audioRef.current?.pause();
+    if (audioRef.current) audioRef.current.removeAttribute('src');
+    setMediaByKey({});
+    setLoadingKeys(new Set());
+    setErrors({});
+    setPlayingKey('');
+    setProgress(0);
+    activeAlignedRef.current = false;
+    activeLimitRef.current = 30;
+    activeOffsetRef.current = 0;
+    activeRoleRef.current = 'source';
+    segmentStartSourceRef.current = 0;
+  }, [operationId, previewId]);
+
+  useEffect(() => {
+    if (!preload || !previewId || !versions.length) return undefined;
+    let active = true;
+    setLoadingKeys(new Set(versions.map((version) => version.key)));
+    for (const version of versions) {
+      void resolveVersionMedia(previewId, version, false).then((result) => {
+        if (!active) return;
+        setMediaByKey((current) => ({ ...current, [version.key]: result }));
+      }).catch((error) => {
+        if (!active) return;
+        setErrors((current) => ({ ...current, [version.key]: errorMessage(error) }));
+      }).finally(() => {
+        if (!active) return;
+        setLoadingKeys((current) => withoutSetValue(current, version.key));
+      });
+    }
+    return () => { active = false; };
+  }, [operationId, preload, previewId, versions]);
+
+  useEffect(() => () => audioRef.current?.pause(), []);
+
+  async function ensureMedia(version: AuditionVersion, alignWithSource = false): Promise<TrackMediaResult | null> {
+    const existing = mediaByKey[version.key];
+    if (existing && (!alignWithSource || version.role === 'source' || existing.media.alignment)) return existing;
+    setLoadingKeys((current) => new Set(current).add(version.key));
+    setErrors((current) => ({ ...current, [version.key]: '' }));
+    try {
+      const result = await resolveVersionMedia(previewId, version, alignWithSource);
+      setMediaByKey((current) => ({ ...current, [version.key]: result }));
+      return result;
+    } catch (error) {
+      setErrors((current) => ({ ...current, [version.key]: errorMessage(error) }));
+      return null;
+    } finally {
+      setLoadingKeys((current) => withoutSetValue(current, version.key));
+    }
+  }
+
+  async function togglePlayback(version: AuditionVersion) {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playingKey === version.key && !audio.paused) {
+      audio.pause();
+      setPlayingKey('');
+      return;
+    }
+    const result = await ensureMedia(version, version.role !== 'source');
+    if (!result?.media.playable || !result.media.previewUrl) return;
+    const alignment = result.media.alignment;
+    const aligned = alignment?.status === 'aligned';
+    const offset = aligned ? alignment.offsetFromSourceSeconds : 0;
+    const preservePosition = Boolean(playingKey && !audio.paused && (
+      (activeRoleRef.current === 'source' && aligned)
+      || (activeAlignedRef.current && (version.role === 'source' || aligned))
+    ));
+    const sourcePosition = preservePosition
+      ? Math.max(0, audio.currentTime - activeOffsetRef.current)
+      : aligned ? alignment.sourceStartSeconds : 0;
+    const startTime = Math.max(0, sourcePosition + offset);
+    audio.pause();
+    audio.src = result.media.previewUrl;
+    seekAudio(audio, startTime);
+    if (!preservePosition) segmentStartSourceRef.current = sourcePosition;
+    activeAlignedRef.current = aligned;
+    activeLimitRef.current = preservePosition
+      ? Math.min(activeLimitRef.current, result.media.maxPreviewSeconds || 30)
+      : result.media.maxPreviewSeconds || 30;
+    activeOffsetRef.current = offset;
+    activeRoleRef.current = version.role;
+    setProgress(Math.max(0, sourcePosition - segmentStartSourceRef.current));
+    try {
+      await audio.play();
+      setPlayingKey(version.key);
+    } catch {
+      setPlayingKey('');
+      setErrors((current) => ({ ...current, [version.key]: '播放被浏览器拦截，请再点一次。' }));
+    }
+  }
+
+  function handleTimeUpdate() {
+    const audio = audioRef.current;
+    if (!audio || !playingKey) return;
+    const limit = activeLimitRef.current;
+    const sourcePosition = Math.max(0, (audio.currentTime || 0) - activeOffsetRef.current);
+    const elapsed = Math.min(limit, Math.max(0, sourcePosition - segmentStartSourceRef.current));
+    setProgress(elapsed);
+    if (elapsed >= limit) {
+      audio.pause();
+      seekAudio(audio, segmentStartSourceRef.current + activeOffsetRef.current);
+      setPlayingKey('');
+      setProgress(0);
+    }
+  }
+
+  return (
+    <div className="audition-list">
+      {versions.map((version) => {
+        const resolved = mediaByKey[version.key];
+        const loading = loadingKeys.has(version.key);
+        const unavailable = Boolean(resolved && !resolved.media.playable);
+        const issue = errors[version.key] || resolved?.media.reason || '';
+        const alignment = resolved?.media.alignment;
+        const alignmentLabel = alignment?.status === 'aligned'
+          ? `片段已对齐 ${Math.round((alignment.confidence || 0) * 100)}%`
+          : alignment ? '片段未对齐' : '';
+        const active = playingKey === version.key;
+        const duration = formatTrackDuration(version.track.durationMs);
+        return (
+          <div className={active ? 'audition-row playing' : version.selected ? 'audition-row selected' : 'audition-row'} key={version.key}>
+            <AlbumArtwork
+              src={resolved?.media.artworkUrl || resolved?.track.artworkUrl || version.track.artworkUrl}
+              title={version.track.title}
+            />
+            <div className="audition-track-copy">
+              <span className="audition-platform">
+                <PlatformArtwork platform={version.platform} size="sm" />
+                {version.label}
+                {version.selected ? <small>已选择</small> : null}
+              </span>
+              <strong>{version.track.title || '未命名歌曲'}</strong>
+              <span>{[version.track.artist, version.track.album].filter(Boolean).join(' · ') || '未知歌手'}</span>
+              <small>{duration || '时长未知'}{alignmentLabel ? ` · ${alignmentLabel}` : ''}{issue ? ` · ${issue}` : ''}</small>
+              {active ? (
+                <span className="audition-progress" aria-label={`已播放 ${Math.round(progress)} 秒`}>
+                  <i style={{ width: `${Math.min(100, progress / (resolved?.media.maxPreviewSeconds || 30) * 100)}%` }} />
+                </span>
+              ) : null}
+            </div>
+            <div className="audition-actions">
+              {typeof version.score === 'number' ? <small>{Math.round(version.score * 100)}%</small> : null}
+              <button
+                aria-label={active ? `暂停 ${version.track.title}` : `试听 ${version.track.title}`}
+                className="audition-play"
+                disabled={disabled || loading || unavailable}
+                onClick={() => void togglePlayback(version)}
+                title={issue || alignment?.reason || (active ? '暂停' : alignment?.status === 'aligned' ? '试听已对齐片段' : '试听 30 秒')}
+                type="button"
+              >
+                {loading ? <LoaderCircle className="spin" size={16} /> : active ? <Pause size={16} /> : <Play size={16} />}
+              </button>
+              {version.canChoose ? (
+                <button disabled={disabled || version.selected} onClick={() => onChoose(version)} type="button">
+                  {version.selected ? '已选择' : '选此版本'}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+      <audio
+        aria-hidden="true"
+        className="audition-audio"
+        onEnded={() => {
+          setPlayingKey('');
+          setProgress(0);
+        }}
+        onTimeUpdate={handleTimeUpdate}
+        preload="none"
+        ref={audioRef}
+      />
+    </div>
+  );
+}
+
+function WriteActionBar({
   lastConvergence,
   onCheckConvergence,
   onConfirmDeletions,
   onExecuteAdditions,
   onExecuteDeletions,
+  onResolveAdditions,
   onSaveBaseline,
   previewDetails,
   syncBusy,
+  visibleCandidates,
   writeReadiness,
 }: {
   lastConvergence: ConvergenceSummary | null;
@@ -220,97 +979,82 @@ function WriteExecutionPanel({
   onConfirmDeletions: (confirmText: string) => Promise<boolean>;
   onExecuteAdditions: (dryRun: boolean) => void;
   onExecuteDeletions: () => void;
+  onResolveAdditions: () => void;
   onSaveBaseline: () => void;
   previewDetails: SyncPreviewDetails | null;
   syncBusy: boolean;
+  visibleCandidates: number;
   writeReadiness: WriteReadiness;
 }) {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleteConfirmed, setDeleteConfirmed] = useState(false);
   const expectedDelete = 'DELETE FROM SELECTED TARGETS';
-  const deleteTextMatches = deleteConfirmText.trim().toUpperCase() === expectedDelete;
   const hasPreview = Boolean(previewDetails);
   const canSaveBaseline = Boolean(lastConvergence?.converged || lastConvergence?.status === 'converged');
 
-  async function handleConfirmClick() {
+  async function handleConfirmDeletion() {
     const ok = await onConfirmDeletions(deleteConfirmText);
     setDeleteConfirmed(ok);
   }
 
   return (
-    <div className="write-panel" data-testid="react-write-panel">
-      <div className="write-panel-head">
-        <div>
-          <strong>受控写入</strong>
-          <span>新增、删除、收敛检查和保存基线分开执行；真实写入需要 live validation。</span>
-        </div>
-        <span className={writeReadiness.ok ? 'product-state-pill readable' : 'product-state-pill needs_attention'}>
-          {writeReadiness.ok ? '真实写入就绪' : '真实写入受限'}
-        </span>
-      </div>
-
-      <div className="write-readiness-grid">
-        {writeReadiness.targets.map((target) => (
-          <div key={target.target}>
-            <strong>{PLATFORM_LABELS[target.target]}</strong>
-            <span>{target.ok ? 'live validation 已通过' : liveStatusLabel(target.status)}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="write-action-grid">
-        <button data-testid="react-execute-additions-dry-run" disabled={syncBusy || !hasPreview} onClick={() => onExecuteAdditions(true)} type="button">
-          模拟新增
-        </button>
-        <button data-testid="react-execute-additions-write" disabled={syncBusy || !hasPreview || !writeReadiness.ok} onClick={() => onExecuteAdditions(false)} type="button">
-          执行新增
-        </button>
-        <button data-testid="react-check-convergence" disabled={syncBusy || !hasPreview} onClick={onCheckConvergence} type="button">
-          检查一致性
-        </button>
-        <button data-testid="react-save-baseline" disabled={syncBusy || !hasPreview || !canSaveBaseline} onClick={onSaveBaseline} type="button">
-          保存同步基线
-        </button>
-      </div>
-
-      <div className="delete-execution-row">
-        <label>
-          <span>删除确认文本</span>
-          <input
-            data-testid="react-delete-confirm-text"
-            disabled={syncBusy || !hasPreview}
-            onChange={(event) => {
-              setDeleteConfirmText(event.target.value);
-              setDeleteConfirmed(false);
-            }}
-            placeholder={expectedDelete}
-            value={deleteConfirmText}
-          />
-        </label>
-        <button data-testid="react-confirm-deletions" disabled={syncBusy || !hasPreview || !deleteTextMatches} onClick={handleConfirmClick} type="button">
-          保存删除确认
+    <footer className="write-action-bar" data-testid="react-write-panel">
+      <button data-testid="react-execute-additions-dry-run" disabled={syncBusy || !hasPreview} onClick={() => onExecuteAdditions(true)} type="button">
+        <PauseCircle size={20} />
+        <span>模拟写入<small>预演本次新增效果</small></span>
+      </button>
+      <button className="primary-button" data-testid="react-execute-additions-write" disabled={syncBusy || !hasPreview || !writeReadiness.ok} onClick={() => onExecuteAdditions(false)} type="button">
+        <Check size={20} />
+        <span>执行新增<small>写入目标平台</small></span>
+      </button>
+      <button data-testid="react-check-convergence" disabled={syncBusy || !hasPreview} onClick={onCheckConvergence} type="button">
+        <RefreshCcw size={20} />
+        <span>检查一致性<small>执行后验证结果</small></span>
+      </button>
+      <button data-testid="react-save-baseline" disabled={syncBusy || !hasPreview || !canSaveBaseline} onClick={onSaveBaseline} type="button">
+        <ShieldAlert size={20} />
+        <span>保存同步基线<small>用于后续变化对比</small></span>
+      </button>
+      <button disabled={syncBusy || !previewDetails} onClick={onResolveAdditions} type="button">
+        <Search size={20} />
+        <span>查找对应歌曲<small>{visibleCandidates ? `${visibleCandidates} 个可见候选` : '从目标平台查找'}</small></span>
+      </button>
+      <div className="delete-confirm-inline">
+        <input
+          aria-label="删除确认文本"
+          data-testid="react-delete-confirm-text"
+          disabled={syncBusy || !hasPreview}
+          onChange={(event) => {
+            setDeleteConfirmText(event.target.value);
+            setDeleteConfirmed(false);
+          }}
+          placeholder={expectedDelete}
+          value={deleteConfirmText}
+        />
+        <button
+          className="danger-outline"
+          data-testid="react-confirm-deletions"
+          disabled={syncBusy || !hasPreview || deleteConfirmText.trim().toUpperCase() !== expectedDelete}
+          onClick={handleConfirmDeletion}
+          type="button"
+        >
+          <Trash2 size={20} />
+          <span>确认删除项<small>需单独确认</small></span>
         </button>
         <button
-          className="danger"
+          className="danger-outline"
           data-testid="react-execute-deletions"
           disabled={syncBusy || !hasPreview || !writeReadiness.ok || !deleteConfirmed}
           onClick={onExecuteDeletions}
           type="button"
         >
-          执行删除
+          <Trash2 size={20} />
+          <span>执行删除<small>删除前自动备份</small></span>
         </button>
       </div>
-
-      <p className="muted-line">
-        {lastConvergence
-          ? convergenceCopy(lastConvergence)
-          : '执行写入后请检查一致性；只有收敛后才能保存新的同步基线。'}
-      </p>
-    </div>
+    </footer>
   );
 }
-
-type TombstoneFilter = 'undecided' | 'qq' | 'netease' | 'decided' | 'all';
 
 function TombstoneToolbar({
   activeBucket,
@@ -336,9 +1080,9 @@ function TombstoneToolbar({
   const counts = tombstoneCounts(items);
   return (
     <div className="tombstone-toolbar" data-testid="react-tombstone-toolbar">
-      <div className="tombstone-toolbar-copy">
+      <div>
         <strong>删除信号复核</strong>
-        <span>批量操作不会确认全局删除；全局删除必须逐条输入确认文本。</span>
+        <span>批量操作不会确认全局删除；全局删除必须逐条确认。</span>
       </div>
       <div className="tombstone-filters">
         {tombstoneFilterButton('undecided', '未处理', counts.undecided, filter, onFilter)}
@@ -348,18 +1092,247 @@ function TombstoneToolbar({
         {tombstoneFilterButton('all', '全部', counts.all, filter, onFilter)}
       </div>
       <div className="candidate-actions">
-        <button disabled={syncBusy || !selectedItems.length} onClick={() => onBatch('ignore', selectedItems)} type="button">
-          批量忽略
-        </button>
-        <button disabled={syncBusy || !selectedItems.length} onClick={() => onBatch('current_platform_only', selectedItems)} type="button">
-          批量仅当前平台
-        </button>
-        <button disabled={syncBusy || !selectedItems.length} onClick={() => onBatch('restore', selectedItems)} type="button">
-          批量恢复
-        </button>
+        <button disabled={syncBusy || !selectedItems.length} onClick={() => onBatch('ignore', selectedItems)} type="button">批量忽略</button>
+        <button disabled={syncBusy || !selectedItems.length} onClick={() => onBatch('current_platform_only', selectedItems)} type="button">仅当前平台</button>
+        <button disabled={syncBusy || !selectedItems.length} onClick={() => onBatch('restore', selectedItems)} type="button">批量恢复</button>
       </div>
     </div>
   );
+}
+
+function ResolutionSummary({ resolution }: { resolution: AddResolutionSummary | null }) {
+  if (!resolution) return null;
+  return (
+    <div className="resolution-summary" data-testid="react-add-resolution-summary">
+      <strong>候选查找</strong>
+      <span>已查找 {resolution.total} 首</span>
+      <span>确认 {resolution.resolved}</span>
+      <span>需复核 {resolution.review}</span>
+      <span>未找到 {resolution.notFound}</span>
+      {resolution.skipped ? <span>跳过目标 {resolution.skipped}</span> : null}
+    </div>
+  );
+}
+
+function PlatformMini({ platform, count }: { platform: PlatformKey; count: number }) {
+  return (
+    <div className="platform-mini">
+      <PlatformArtwork platform={platform} size="sm" />
+      <div>
+        <strong>{platformLabel(platform)}</strong>
+        <span>{formatCount(count)} 首喜欢</span>
+      </div>
+    </div>
+  );
+}
+
+function PlatformStack({ platforms }: { platforms: PlatformKey[] }) {
+  return (
+    <div className="platform-stack">
+      {platforms.map((platform) => <PlatformArtwork key={platform} platform={platform} size="sm" />)}
+    </div>
+  );
+}
+
+function CandidateCell({ track, fallback }: { track: TrackSummary | null; fallback: string }) {
+  if (!track) return <span className="candidate-cell muted">{fallback}</span>;
+  return (
+    <span className="candidate-cell">
+      <strong>{track.title}</strong>
+      <small>{track.artist || '未知歌手'}</small>
+    </span>
+  );
+}
+
+function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
+  const versions: AuditionVersion[] = [];
+  const sourcePlatform = trackPlatform(item.sourceTrack, item.sourcePlatforms[0] || 'apple');
+  if (item.sourceTrack) {
+    versions.push({
+      key: `${item.id}:source`,
+      operationId: item.id,
+      role: 'source',
+      label: `${platformLabel(sourcePlatform)} 源版本`,
+      track: item.sourceTrack,
+      platform: sourcePlatform,
+      selected: false,
+      canChoose: false,
+    });
+  }
+
+  const matches = [{
+    operationId: item.id,
+    action: item.action,
+    targetPlatform: item.targetPlatforms[0] || 'qq',
+    score: item.score,
+    targetTrack: item.targetTrack,
+    resolvedTarget: item.resolvedTarget,
+    candidateTarget: item.candidateTarget,
+    alternatives: item.alternatives,
+    addDecision: item.addDecision,
+  }, ...item.relatedMatches];
+
+  for (const match of matches) {
+    const targetPlatform = trackPlatform(
+      match.resolvedTarget || match.candidateTarget || match.targetTrack,
+      match.targetPlatform,
+    );
+    const primary = match.resolvedTarget || match.candidateTarget || match.targetTrack || null;
+    const role: TrackMediaRole = match.resolvedTarget ? 'resolved' : match.candidateTarget ? 'candidate' : 'target';
+    if (primary) {
+      const accepted = match.addDecision?.action === 'accept_candidate';
+      versions.push({
+        key: `${match.operationId}:${role}`,
+        operationId: match.operationId,
+        role,
+        label: `${platformLabel(targetPlatform)} ${role === 'target' ? '现有版本' : '当前候选'}`,
+        track: primary,
+        platform: targetPlatform,
+        score: match.score,
+        selected: role === 'resolved' || accepted,
+        canChoose: match.action === 'add' && role === 'candidate',
+      });
+    }
+    for (const [alternativeIndex, track] of (match.alternatives || []).slice(0, 2).entries()) {
+      const selected = match.addDecision?.action === 'select_alternative'
+        && match.addDecision.alternativeIndex === alternativeIndex;
+      versions.push({
+        key: `${match.operationId}:alternative:${alternativeIndex}`,
+        operationId: match.operationId,
+        role: 'alternative',
+        alternativeIndex,
+        label: `${platformLabel(trackPlatform(track, targetPlatform))} 备选 ${alternativeIndex + 1}`,
+        track,
+        platform: trackPlatform(track, targetPlatform),
+        score: match.score,
+        selected,
+        canChoose: match.action === 'add',
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  return versions.filter((version) => {
+    const identity = `${version.platform}:${version.track.id || version.track.mid || `${version.track.title}:${version.track.artist}`}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+function trackPlatform(track: TrackSummary | null | undefined, fallback: PlatformKey): PlatformKey {
+  const platform = track?.platform;
+  return platform === 'apple' || platform === 'qq' || platform === 'netease' ? platform : fallback;
+}
+
+function resolveVersionMedia(
+  previewId: string,
+  version: AuditionVersion,
+  alignWithSource: boolean,
+): Promise<TrackMediaResult> {
+  return resolveSyncTrackMedia({
+    previewId,
+    operationId: version.operationId,
+    role: version.role,
+    alternativeIndex: version.alternativeIndex,
+    alignWithSource,
+  });
+}
+
+function seekAudio(audio: HTMLAudioElement, seconds: number) {
+  const target = Math.max(0, seconds);
+  try {
+    audio.currentTime = target;
+  } catch {
+    audio.addEventListener('loadedmetadata', () => {
+      audio.currentTime = target;
+    }, { once: true });
+  }
+}
+
+function withoutSetValue(values: Set<string>, value: string): Set<string> {
+  const next = new Set(values);
+  next.delete(value);
+  return next;
+}
+
+function formatTrackDuration(durationMs?: number | null): string {
+  if (!durationMs || durationMs < 0) return '';
+  const seconds = Math.round(durationMs / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function SyncStatus({ error, message }: { error: string; message: string }) {
+  if (!error && !message) return null;
+  return (
+    <p className={error ? 'sync-status error' : 'sync-status'} data-testid="react-preview-status" role="status">
+      {error || message}
+    </p>
+  );
+}
+
+interface WriteReadiness {
+  ok: boolean;
+  targets: Array<{
+    target: PlatformKey;
+    ok: boolean;
+    status: string;
+    checkedAt?: string;
+  }>;
+}
+
+function buildWriteReadiness(appState: AppStateSummary | null): WriteReadiness {
+  const targets: PlatformKey[] = ['qq', 'netease'];
+  const rows = targets.map((target) => {
+    const platform = appState?.platforms.find((item) => item.key === target);
+    const live = platform?.liveValidation;
+    return {
+      target,
+      ok: Boolean(live?.ok),
+      status: live?.status || 'missing',
+      checkedAt: live?.checkedAt,
+    };
+  });
+  return {
+    ok: rows.every((row) => row.ok),
+    targets: rows,
+  };
+}
+
+function candidateForPlatform(item: PreviewTrackItem, platform: PlatformKey): TrackSummary | null {
+  const related = item.relatedMatches.find((match) => match.targetPlatform === platform);
+  const candidates = [
+    item.resolvedTarget,
+    item.candidateTarget,
+    item.targetTrack,
+    ...item.alternatives,
+    related?.resolvedTarget,
+    related?.candidateTarget,
+    related?.targetTrack,
+    ...(related?.alternatives || []),
+  ].filter(Boolean) as TrackSummary[];
+  return candidates.find((track) => track.platform === platform) || null;
+}
+
+function filterTombstoneItems(items: PreviewTrackItem[], filter: TombstoneFilter): PreviewTrackItem[] {
+  if (filter === 'all') return items;
+  if (filter === 'decided') return items.filter((item) => Boolean(item.tombstoneAction));
+  if (filter === 'undecided') return items.filter((item) => !item.tombstoneAction);
+  return items.filter((item) => tombstoneSourcePlatform(item) === filter);
+}
+
+function tombstoneSourcePlatform(item: PreviewTrackItem): string {
+  return item.sourcePlatforms[0] || '';
+}
+
+function tombstoneCounts(items: PreviewTrackItem[]) {
+  return {
+    all: items.length,
+    undecided: items.filter((item) => !item.tombstoneAction).length,
+    decided: items.filter((item) => Boolean(item.tombstoneAction)).length,
+    qq: items.filter((item) => tombstoneSourcePlatform(item) === 'qq').length,
+    netease: items.filter((item) => tombstoneSourcePlatform(item) === 'netease').length,
+  };
 }
 
 function tombstoneFilterButton(
@@ -384,313 +1357,64 @@ function tombstoneFilterButton(
   );
 }
 
-function PreviewItem({
-  item,
-  onApplyAdditionDecision,
-  onApplyTombstoneDecision,
-  syncBusy,
-}: {
-  item: PreviewTrackItem;
-  onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
-  onApplyTombstoneDecision: (input: {
-    tombstoneKey: string;
-    operationId?: string;
-    action: TombstoneAction;
-    platform?: string;
-    confirmText?: string;
-  }) => void;
-  syncBusy: boolean;
-}) {
-  return (
-    <article className={item.destructive ? 'preview-item destructive' : 'preview-item'} data-testid="react-preview-item">
-      <div className="preview-item-head">
-        <div>
-          <strong>{item.title}</strong>
-          <span>{[item.artist, item.album].filter(Boolean).join(' / ') || '未知艺人'}</span>
-        </div>
-        <span className={`preview-action ${item.bucket}`}>{actionLabel(item)}</span>
-      </div>
-      <div className="platform-chip-row">
-        {item.sourcePlatforms.map((platform) => (
-          <span className="platform-chip" key={`source-${platform}`}>
-            来源：{PLATFORM_LABELS[platform]}
-          </span>
-        ))}
-        {item.targetPlatforms.map((platform) => (
-          <span className="platform-chip" key={`target-${platform}`}>
-            目标：{PLATFORM_LABELS[platform]}
-          </span>
-        ))}
-      </div>
-      {item.evidence.length || item.score !== null ? (
-        <div className="evidence-row">
-          {typeof item.score === 'number' ? <span className="evidence-chip">匹配 {Math.round(item.score * 100)}%</span> : null}
-          {item.evidence.map((entry) => (
-            <span className="evidence-chip" key={entry}>{entry}</span>
-          ))}
-        </div>
-      ) : null}
-      <CandidatePanel item={item} onApplyAdditionDecision={onApplyAdditionDecision} syncBusy={syncBusy} />
-      <TombstonePanel item={item} onApplyTombstoneDecision={onApplyTombstoneDecision} syncBusy={syncBusy} />
-      {item.blockedReason || item.message || item.reason ? (
-        <p className="muted-line">{item.blockedReason || item.message || item.reason}</p>
-      ) : null}
-    </article>
-  );
+function platformTracks(appState: AppStateSummary | null, platform: PlatformKey): number {
+  return appState?.platforms.find((item) => item.key === platform)?.tracks || 0;
 }
 
-function CandidatePanel({
-  item,
-  onApplyAdditionDecision,
-  syncBusy,
-}: {
-  item: PreviewTrackItem;
-  onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
-  syncBusy: boolean;
-}) {
-  if (item.action !== 'add') return null;
-  const hasCandidate = Boolean(item.candidateTarget);
-  const hasResolved = Boolean(item.resolvedTarget);
-  const hasDecision = Boolean(item.addDecision?.action);
-  if (!hasCandidate && !hasResolved && !hasDecision && !item.alternatives.length && !item.resolution?.message) return null;
-  return (
-    <div className="candidate-panel" data-testid="react-add-candidate">
-      {hasResolved ? (
-        <CandidateTrack label="已确认目标" track={item.resolvedTarget} />
-      ) : null}
-      {hasCandidate ? (
-        <CandidateTrack label="待复核候选" track={item.candidateTarget} />
-      ) : null}
-      {item.resolution?.message ? <p className="muted-line">{item.resolution.message}</p> : null}
-      {hasDecision ? <p className="muted-line">本地决策：{decisionLabel(item.addDecision?.action || '')}</p> : null}
-      {hasCandidate ? (
-        <div className="candidate-actions">
-          <button
-            data-testid="react-accept-addition"
-            disabled={syncBusy}
-            onClick={() => onApplyAdditionDecision(item.id, 'accept_candidate')}
-            type="button"
-          >
-            接受候选
-          </button>
-          <button
-            data-testid="react-skip-addition"
-            disabled={syncBusy}
-            onClick={() => onApplyAdditionDecision(item.id, 'skip')}
-            type="button"
-          >
-            跳过
-          </button>
-        </div>
-      ) : null}
-      {item.alternatives.length ? (
-        <div className="alternative-list">
-          {item.alternatives.map((track, index) => (
-            <div className="alternative-row" key={`${track.id || track.mid || track.title}-${index}`}>
-              <CandidateTrack label={`备选 ${index + 1}`} track={track} />
-              <button
-                disabled={syncBusy}
-                onClick={() => onApplyAdditionDecision(item.id, 'select_alternative', index)}
-                type="button"
-              >
-                选择
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {hasDecision ? (
-        <div className="candidate-actions">
-          <button
-            disabled={syncBusy}
-            onClick={() => onApplyAdditionDecision(item.id, 'clear')}
-            type="button"
-          >
-            清除决策
-          </button>
-        </div>
-      ) : null}
-      <p className="muted-line">候选决策只更新本地预览，仍需后续受控新增执行才会写入平台。</p>
-    </div>
-  );
+function formatBackupDate(value?: string): string {
+  if (!value) return '未知时间';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
-function CandidateTrack({ label, track }: { label: string; track: TrackSummary | null | undefined }) {
-  if (!track) return null;
-  return (
-    <div className="candidate-track">
-      <span>{label}</span>
-      <strong>{track.title}</strong>
-      <small>{[track.artist, track.album].filter(Boolean).join(' / ') || '未知艺人'}</small>
-    </div>
-  );
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || '操作失败');
 }
 
-function TombstonePanel({
-  item,
-  onApplyTombstoneDecision,
-  syncBusy,
-}: {
-  item: PreviewTrackItem;
-  onApplyTombstoneDecision: (input: {
-    tombstoneKey: string;
-    operationId?: string;
-    action: TombstoneAction;
-    platform?: string;
-    confirmText?: string;
-  }) => void;
-  syncBusy: boolean;
-}) {
-  const [confirmText, setConfirmText] = useState('');
-  if (!item.tombstoneKey) return null;
-  const platform = tombstoneSourcePlatform(item);
-  const expected = `CONFIRM GLOBAL DELETE FROM ${String(platform || '').toUpperCase()}`;
-  const canConfirm = Boolean(platform) && confirmText.trim().toUpperCase() === expected;
-  const baseInput = {
-    tombstoneKey: item.tombstoneKey,
-    operationId: item.id,
-    platform,
+function evidenceLabel(entry: string): string {
+  const labels: Record<string, string> = {
+    source_uncertain_match: '来源匹配待确认',
+    target_uncertain_orphan: '目标曲目归属待确认',
+    duplicate_target_match: '目标平台存在多个候选',
+    reverse_only_match: '仅目标平台反向命中',
+    isrc: 'ISRC 证据',
+    musicbrainz: 'MusicBrainz 证据',
+    local_summary: '本地摘要',
   };
-  return (
-    <div className="tombstone-panel" data-testid="react-tombstone-panel">
-      <div className="tombstone-copy">
-        <strong>{tombstoneActionLabel(item.tombstoneAction || '')}</strong>
-        <span>{platform ? `${platformLabel(platform)} 删除信号` : '删除信号'}</span>
-      </div>
-      <div className="candidate-actions">
-        <button disabled={syncBusy} onClick={() => onApplyTombstoneDecision({ ...baseInput, action: 'ignore' })} type="button">
-          忽略
-        </button>
-        <button disabled={syncBusy} onClick={() => onApplyTombstoneDecision({ ...baseInput, action: 'current_platform_only' })} type="button">
-          仅当前平台
-        </button>
-        <button disabled={syncBusy} onClick={() => onApplyTombstoneDecision({ ...baseInput, action: 'restore' })} type="button">
-          恢复
-        </button>
-        {item.tombstoneAction ? (
-          <button disabled={syncBusy} onClick={() => onApplyTombstoneDecision({ ...baseInput, action: 'clear' })} type="button">
-            清除
-          </button>
-        ) : null}
-      </div>
-      <div className="global-delete-confirm">
-        <label>
-          <span>确认全局删除</span>
-          <input
-            data-testid="react-tombstone-confirm-input"
-            onChange={(event) => setConfirmText(event.target.value)}
-            placeholder={expected}
-            value={confirmText}
-          />
-        </label>
-        <button
-          className="danger"
-          data-testid="react-confirm-global-delete"
-          disabled={syncBusy || !canConfirm}
-          onClick={() => onApplyTombstoneDecision({
-            ...baseInput,
-            action: 'confirm_global_delete',
-            confirmText,
-          })}
-          type="button"
-        >
-          确认全局删除
-        </button>
-      </div>
-      <p className="muted-line">这只确认删除意图；真实删除仍需后续受控删除执行。</p>
-    </div>
-  );
+  if (entry.startsWith('score:')) return '综合匹配分';
+  return labels[entry] || entry.replaceAll('_', ' ');
 }
 
-function SyncStatus({ error, message }: { error: string; message: string }) {
-  if (!error && !message) return null;
-  return (
-    <p className={error ? 'sync-status error' : 'sync-status'} data-testid="react-preview-status" role="status">
-      {error || message}
-    </p>
-  );
-}
-
-function filterTombstoneItems(items: PreviewTrackItem[], filter: TombstoneFilter): PreviewTrackItem[] {
-  if (filter === 'all') return items;
-  if (filter === 'decided') return items.filter((item) => Boolean(item.tombstoneAction));
-  if (filter === 'undecided') return items.filter((item) => !item.tombstoneAction);
-  return items.filter((item) => tombstoneSourcePlatform(item) === filter);
-}
-
-function buildWriteReadiness(appState: AppStateSummary | null): WriteReadiness {
-  const targets: PlatformKey[] = ['qq', 'netease'];
-  const rows = targets.map((target) => {
-    const platform = appState?.platforms.find((item) => item.key === target);
-    const live = platform?.liveValidation;
-    return {
-      target,
-      ok: Boolean(live?.ok),
-      status: live?.status || 'missing',
-      checkedAt: live?.checkedAt,
-    };
-  });
-  return {
-    ok: rows.every((row) => row.ok),
-    targets: rows,
+function reviewMessage(item: PreviewTrackItem): string {
+  if (item.aiReview) {
+    const action = item.aiReview.recommendedAction === 'add'
+      ? '建议新增'
+      : item.aiReview.recommendedAction === 'skip'
+        ? '建议跳过'
+        : item.aiReview.recommendedAction === 'keep'
+          ? '建议视为同一版本'
+          : item.aiReview.recommendedAction === 'separate'
+            ? '建议视为不同版本'
+        : '仍需人工确认';
+    const confidence = `${Math.round(item.aiReview.confidence * 100)}%`;
+    const guard = item.aiReview.guarded ? '（安全门禁已降级）' : '';
+    return `AI 草稿：${action}，置信度 ${confidence}${guard}。${item.aiReview.reason || ''}`.trim();
+  }
+  const messages: Record<string, string> = {
+    source_uncertain_match: '目标平台可能已有这首歌，但匹配分低于自动接受阈值，建议核对版本后再决定。',
+    duplicate_target_match: '目标平台存在多个相似候选，请优先核对 ISRC、时长和专辑版本。',
+    target_uncertain_orphan: '这首歌只在目标平台出现，暂时无法确认是否应保留。',
+    reverse_only_match: '目前只有目标平台侧的反向匹配证据，建议人工确认。',
   };
-}
-
-function liveStatusLabel(status: string): string {
-  if (status === 'ready') return 'live validation 已通过';
-  if (status === 'stale') return '验证已过期';
-  if (status === 'failed') return '验证异常';
-  return '缺少验证报告';
-}
-
-function convergenceCopy(convergence: ConvergenceSummary): string {
-  if (convergence.converged || convergence.status === 'converged') return '当前预览已收敛，可以保存同步基线。';
-  const add = convergence.openAdds ?? convergence.add ?? 0;
-  const remove = convergence.openDeletes ?? convergence.remove ?? 0;
-  const review = convergence.openReviews ?? convergence.review ?? 0;
-  return `仍有差异：新增 ${add} / 删除 ${remove} / 复核 ${review}。`;
-}
-
-function tombstoneCounts(items: PreviewTrackItem[]) {
-  return {
-    all: items.length,
-    undecided: items.filter((item) => !item.tombstoneAction).length,
-    decided: items.filter((item) => Boolean(item.tombstoneAction)).length,
-    qq: items.filter((item) => tombstoneSourcePlatform(item) === 'qq').length,
-    netease: items.filter((item) => tombstoneSourcePlatform(item) === 'netease').length,
-  };
-}
-
-function tombstoneSourcePlatform(item: PreviewTrackItem): string {
-  return item.sourcePlatforms[0] || '';
-}
-
-function platformLabel(platform: string): string {
-  if (platform === 'apple' || platform === 'qq' || platform === 'netease') return PLATFORM_LABELS[platform];
-  return platform;
-}
-
-function tombstoneActionLabel(action: string): string {
-  if (action === 'confirm_global_delete') return '已确认全局删除';
-  if (action === 'ignore') return '已忽略';
-  if (action === 'restore') return '已选择恢复';
-  if (action === 'current_platform_only') return '仅当前平台删除';
-  if (action === 'clear') return '已清除';
-  return '未处理';
-}
-
-function actionLabel(item: PreviewTrackItem): string {
-  if (item.bucket === 'will_add') return item.addDecision?.action === 'skip' ? '已跳过' : '新增';
-  if (item.bucket === 'will_keep') return '保留';
-  if (item.bucket === 'needs_confirmation') return '确认';
-  if (item.bucket === 'may_delete') return item.destructive ? '待确认删除' : '删除复核';
-  return item.action || item.status || '预览';
-}
-
-function decisionLabel(action: string): string {
-  if (action === 'accept_candidate') return '接受候选';
-  if (action === 'select_alternative') return '选择备选';
-  if (action === 'skip') return '跳过';
-  if (action === 'clear') return '已清除';
-  return action || '未处理';
+  const reason = item.reason || item.blockedReason || '';
+  if (reason && messages[reason]) return messages[reason];
+  if (item.message && /[\u3400-\u9fff]/u.test(item.message)) return item.message;
+  return '这首歌的候选会依据 ISRC、时长、专辑和歌手信息综合判断。建议先接受高置信度匹配，低置信度留给复核队列。';
 }

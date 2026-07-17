@@ -10,10 +10,12 @@ interface ScreenProps {
 export function SyncModeScreen({ appState, selectedMode, onSelectMode }: ScreenProps) {
   const modes = appState?.modes || [];
   return (
-    <section className="surface-band">
+    <section className="surface-panel">
       <div className="section-heading">
-        <h2>选择喜欢歌曲如何流动</h2>
-        <p>普通用户只看策略含义和风险，不需要看到 policy id。</p>
+        <div>
+          <h2>喜欢歌曲如何流动</h2>
+          <p>普通用户只看策略含义和风险，不需要理解 policy id。</p>
+        </div>
       </div>
       <div className="mode-grid">
         {modes.map((mode) => (

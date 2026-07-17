@@ -6,6 +6,7 @@ import type {
   AiProviderSummary,
   AiProviderTestResult,
   BaselineSaveResult,
+  BrowserConnectionStatus,
   ConvergenceSummary,
   DeleteConfirmationResult,
   ExecutionActionSummary,
@@ -18,23 +19,45 @@ import type {
   SimilarTracksResult,
   AdditionDecisionAction,
   AdditionDecisionResult,
+  IdentityDecisionAction,
+  IdentityDecisionResult,
   AddDecisionSummary,
   AddResolutionSummary,
   AppStateSummary,
+  AutoSyncRunSummary,
+  AutoSyncStateResult,
+  AutoSyncSummary,
+  AppleConnectionResult,
+  ConnectionActionResult,
+  NeteaseQrSession,
+  NeteaseQrStatus,
   PlatformKey,
   PlatformStatus,
   PlatformSummary,
+  QQBrowserLoginResult,
+  QQQrSession,
+  QQPlaylistSummary,
+  QQPlaylistsResult,
+  PreviewBucketId,
   PreviewBucketSummary,
   PreviewTrackItem,
   ResolveAdditionsResult,
+  ReviewAdditionsResult,
+  ReviewIdentityResult,
   SyncConvergenceResult,
   SyncExecutionResult,
   SyncCheckResult,
+  SyncBackupCreateResult,
+  SyncBackupRestoreResult,
+  SyncBackupStateResult,
+  SyncBackupSummary,
   SyncModeId,
   SyncModeSummary,
   SyncPreviewDetails,
   TombstoneAction,
   TombstoneDecisionResult,
+  TrackMediaResult,
+  TrackMediaRole,
   TrackSummary,
 } from './types';
 
@@ -55,6 +78,7 @@ interface RawAppStateResponse {
       };
     };
     nextAction?: string;
+    autoSync?: Record<string, unknown>;
   };
 }
 
@@ -87,6 +111,160 @@ export async function fetchAppState(): Promise<AppStateSummary> {
   }
   const payload = (await response.json()) as RawAppStateResponse;
   return normalizeAppState(payload);
+}
+
+export async function fetchAutoSyncState(): Promise<AutoSyncStateResult> {
+  const response = await fetch('/api/auto-sync', { cache: 'no-store' });
+  const payload = await readConnectionResponse(response, '读取自动同步状态失败');
+  return normalizeAutoSyncStateResult(isRecord(payload.data) ? payload.data : {});
+}
+
+export async function saveAutoSyncSettings(options: {
+  enabled: boolean;
+  intervalMinutes: number;
+  targets: PlatformKey[];
+  autoExecuteAdditions: boolean;
+}): Promise<AutoSyncStateResult> {
+  const payload = await connectionRequest('/api/auto-sync', {
+    ...options,
+    refreshApple: true,
+    refreshTargets: true,
+    requireBaseline: true,
+  });
+  return normalizeAutoSyncStateResult(isRecord(payload.data) ? payload.data : {});
+}
+
+export async function runAutoSync(options: {
+  executeAdditions?: boolean;
+} = {}): Promise<AutoSyncStateResult> {
+  const executeAdditions = Boolean(options.executeAdditions);
+  const payload = await connectionRequest('/api/auto-sync/run', {
+    dryRun: !executeAdditions,
+    executeAdditions,
+  });
+  return normalizeAutoSyncStateResult(isRecord(payload.data) ? payload.data : {});
+}
+
+export async function importAppleLibrary(input: {
+  content: string;
+  filename: string;
+}): Promise<ConnectionActionResult> {
+  const payload = await connectionRequest('/api/apple', input);
+  return { message: stringValue(payload.message) || 'Apple Music 已导入。' };
+}
+
+export async function startAppleConnection(): Promise<AppleConnectionResult> {
+  const payload = await connectionRequest('/api/apple/connect/start', {});
+  return normalizeAppleConnectionResult(payload);
+}
+
+export async function checkAppleConnection(): Promise<AppleConnectionResult> {
+  const payload = await connectionRequest('/api/apple/connect/check', {});
+  return normalizeAppleConnectionResult(payload);
+}
+
+export async function openAppleBrowser(url = ''): Promise<ConnectionActionResult> {
+  const payload = await connectionRequest('/api/apple/browser/open', { url });
+  return { message: stringValue(payload.message) || 'Apple Music 登录窗口已打开。' };
+}
+
+export async function captureAppleBrowser(): Promise<ConnectionActionResult> {
+  const payload = await connectionRequest('/api/apple/browser/capture', {});
+  return { message: stringValue(payload.message) || 'Apple Music 页面已读取。' };
+}
+
+export async function openQQBrowserLogin(): Promise<QQBrowserLoginResult> {
+  const payload = await connectionRequest('/api/qq/browser/open', {});
+  return { message: stringValue(payload.message) || 'QQ 音乐登录窗口已打开。' };
+}
+
+export async function startQQQrLogin(options: { force?: boolean } = {}): Promise<QQQrSession> {
+  const payload = await connectionRequest('/api/qq/qr/start', { force: Boolean(options.force) });
+  const qr = isRecord(payload.qr) ? payload.qr : {};
+  const images = isRecord(qr.images) ? qr.images : {};
+  const status = normalizeBrowserConnectionStatus(payload.status, payload.message);
+  return {
+    key: stringValue(qr.key),
+    images: {
+      qq: imageDataValue(images.qq),
+      wechat: imageDataValue(images.wechat),
+    },
+    expiresAt: stringValue(qr.expiresAt),
+    message: stringValue(payload.message) || status.message,
+    status,
+  };
+}
+
+export async function checkQQQrLogin(key: string): Promise<QQBrowserLoginResult> {
+  const payload = await connectionRequest('/api/qq/qr/check', { key });
+  return {
+    message: stringValue(payload.message) || '正在等待 QQ 音乐登录。',
+    status: normalizeBrowserConnectionStatus(payload.status, payload.message),
+  };
+}
+
+export async function checkQQBrowserLogin(): Promise<QQBrowserLoginResult> {
+  const payload = await connectionRequest('/api/qq/browser/check', {});
+  const status = isRecord(payload.status) ? payload.status : {};
+  const credential = isRecord(payload.qqCookie) ? payload.qqCookie : null;
+  return {
+    message: stringValue(payload.message || status.message) || '正在等待 QQ 音乐登录。',
+    status: {
+      code: stringValue(status.code),
+      message: stringValue(status.message),
+      done: Boolean(status.done),
+      waiting: Boolean(status.waiting),
+    },
+    credential: credential
+      ? {
+        fieldCount: numberValue(credential.count),
+        hasAccount: Boolean(credential.hasUin),
+        writeReady: Boolean(credential.hasKey),
+      }
+      : null,
+  };
+}
+
+export async function fetchQQPlaylists(): Promise<QQPlaylistsResult> {
+  const response = await fetch('/api/qq/playlists', { cache: 'no-store' });
+  const payload = await readConnectionResponse(response, '读取 QQ 音乐歌单失败');
+  return {
+    message: stringValue(payload.message) || 'QQ 音乐歌单已读取。',
+    playlists: arrayValue(payload.playlists).filter(isRecord).map(normalizeQQPlaylist),
+  };
+}
+
+export async function startNeteaseQrLogin(): Promise<NeteaseQrSession> {
+  const payload = await connectionRequest('/api/netease/qr/start', {});
+  const qr = isRecord(payload.qr) ? payload.qr : {};
+  const key = stringValue(qr.key);
+  const image = stringValue(qr.qrimg);
+  if (!key || !image) throw new Error('网易云二维码生成失败，请重试。');
+  return {
+    key,
+    image,
+    loginUrl: stringValue(qr.qrurl),
+    message: stringValue(payload.message) || '网易云二维码已生成。',
+  };
+}
+
+export async function checkNeteaseQrLogin(key: string): Promise<NeteaseQrStatus> {
+  const payload = await connectionRequest('/api/netease/qr/check', { key });
+  const status = isRecord(payload.status) ? payload.status : {};
+  return {
+    code: numberValue(status.code),
+    done: Boolean(status.done),
+    waiting: Boolean(status.waiting),
+    message: stringValue(status.message || payload.message) || '正在等待网易云扫码。',
+  };
+}
+
+export async function refreshPlatformSnapshot(platform: 'qq' | 'netease'): Promise<ConnectionActionResult> {
+  const payload = await connectionRequest('/api/snapshot', {
+    qq: platform === 'qq',
+    netease: platform === 'netease',
+  });
+  return { message: stringValue(payload.message) || `${PLATFORM_LABELS[platform]} 快照已更新。` };
 }
 
 export async function runSyncCheck(options: {
@@ -124,17 +302,64 @@ export async function runSyncCheck(options: {
 export async function fetchSyncPreview(options: {
   bucket?: SyncPreviewDetails['bucket'];
   limit?: number;
+  cursor?: string | null;
 } = {}): Promise<SyncPreviewDetails> {
   const params = new URLSearchParams({
     bucket: options.bucket || 'all',
     limit: String(options.limit || 30),
   });
+  if (options.cursor) params.set('cursor', options.cursor);
   const response = await fetch(`/api/sync/preview?${params}`, { cache: 'no-store' });
   const payload = (await response.json()) as RawApiResponse;
   if (!response.ok || payload.ok === false) {
     throw new Error(apiErrorMessage(payload, `Failed to load sync preview: ${response.status}`));
   }
   return normalizePreviewDetails(payload.data || {}, options.bucket || 'all');
+}
+
+export async function resolveSyncTrackMedia(input: {
+  previewId: string;
+  operationId: string;
+  role: TrackMediaRole;
+  alternativeIndex?: number;
+  alignWithSource?: boolean;
+}): Promise<TrackMediaResult> {
+  const payload = await connectionRequest('/api/sync/media', input);
+  const data = isRecord(payload.data) ? payload.data : {};
+  const media = isRecord(data.media) ? data.media : {};
+  const alignment = isRecord(media.alignment) ? media.alignment : null;
+  const track = normalizeTrackSummary(data.track);
+  if (!track) throw new Error('平台没有返回可识别的歌曲版本。');
+  return {
+    previewId: stringValue(data.previewId),
+    operationId: stringValue(data.operationId),
+    role: stringValue(data.role || input.role) as TrackMediaRole,
+    alternativeIndex: data.alternativeIndex === null || data.alternativeIndex === undefined
+      ? null
+      : numberValue(data.alternativeIndex),
+    track,
+    media: {
+      artworkUrl: stringValue(media.artworkUrl),
+      previewUrl: stringValue(media.previewUrl),
+      playable: Boolean(media.playable),
+      reason: stringValue(media.reason),
+      expiresAt: stringValue(media.expiresAt),
+      maxPreviewSeconds: Math.min(30, Math.max(1, numberValue(media.maxPreviewSeconds) || 30)),
+      alignment: alignment ? {
+        status: stringValue(alignment.status) as 'aligned' | 'not_aligned' | 'unavailable',
+        method: stringValue(alignment.method),
+        confidence: alignment.confidence === null || alignment.confidence === undefined
+          ? null
+          : numberValue(alignment.confidence),
+        offsetFromSourceSeconds: numberValue(alignment.offsetFromSourceSeconds),
+        sourceStartSeconds: Math.max(0, numberValue(alignment.sourceStartSeconds)),
+        targetStartSeconds: Math.max(0, numberValue(alignment.targetStartSeconds)),
+        overlapSeconds: Math.max(0, numberValue(alignment.overlapSeconds)),
+        maxPreviewSeconds: Math.min(30, Math.max(1, numberValue(alignment.maxPreviewSeconds) || 30)),
+        reason: stringValue(alignment.reason),
+      } : null,
+    },
+  };
 }
 
 export async function resolveAdditions(options: {
@@ -164,6 +389,115 @@ export async function resolveAdditions(options: {
   return {
     preview: normalizePreviewDetails(data, options.bucket || 'will_add'),
     addResolution: normalizeAddResolution(data.addResolution),
+  };
+}
+
+export async function reviewAdditionCandidates(options: {
+  operationIds?: string[];
+  targets?: PlatformKey[];
+  limit?: number;
+  bucket?: PreviewBucketId | 'all';
+  refresh?: boolean;
+} = {}): Promise<ReviewAdditionsResult> {
+  const response = await fetch('/api/ai/additions/review', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      consent: true,
+      operationIds: options.operationIds,
+      targets: options.targets || ['qq', 'netease'],
+      limit: options.limit || 12,
+      bucket: options.bucket || 'needs_confirmation',
+      previewLimit: 30,
+      refresh: Boolean(options.refresh),
+    }),
+  });
+  const payload = (await response.json()) as RawApiResponse;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, `Failed to review addition candidates: ${response.status}`));
+  }
+  const data = payload.data || {};
+  const summary = isRecord(data.summary) ? data.summary : {};
+  return {
+    batchId: stringValue(data.batchId),
+    model: stringValue(data.model),
+    changed: numberValue(data.changed),
+    summary: {
+      total: numberValue(summary.total),
+      add: numberValue(summary.add),
+      skip: numberValue(summary.skip),
+      needsHuman: numberValue(summary.needsHuman),
+      guarded: numberValue(summary.guarded),
+    },
+    preview: normalizePreviewDetails(data, stringValue(options.bucket || 'needs_confirmation') as PreviewBucketId | 'all'),
+  };
+}
+
+export async function reviewIdentityCandidates(options: {
+  operationIds?: string[];
+  targets?: PlatformKey[];
+  limit?: number;
+  bucket?: PreviewBucketId | 'all';
+  refresh?: boolean;
+} = {}): Promise<ReviewIdentityResult> {
+  const response = await fetch('/api/ai/identity/review', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      consent: true,
+      operationIds: options.operationIds,
+      targets: options.targets || ['qq', 'netease'],
+      limit: options.limit || 12,
+      bucket: options.bucket || 'needs_confirmation',
+      previewLimit: 30,
+      refresh: Boolean(options.refresh),
+    }),
+  });
+  const payload = (await response.json()) as RawApiResponse;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, `Failed to review identity conflicts: ${response.status}`));
+  }
+  const data = payload.data || {};
+  const summary = isRecord(data.summary) ? data.summary : {};
+  return {
+    batchId: stringValue(data.batchId),
+    model: stringValue(data.model),
+    changed: numberValue(data.changed),
+    summary: {
+      total: numberValue(summary.total),
+      keep: numberValue(summary.keep),
+      separate: numberValue(summary.separate),
+      needsHuman: numberValue(summary.needsHuman),
+      guarded: numberValue(summary.guarded),
+    },
+    preview: normalizePreviewDetails(data, stringValue(options.bucket || 'needs_confirmation') as PreviewBucketId | 'all'),
+  };
+}
+
+export async function applyIdentityDecision(options: {
+  operationId: string;
+  action: IdentityDecisionAction;
+  bucket?: PreviewBucketId | 'all';
+  note?: string;
+}): Promise<IdentityDecisionResult> {
+  const response = await fetch('/api/sync/identity-decision', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      ...options,
+      previewLimit: 30,
+    }),
+  });
+  const payload = (await response.json()) as RawApiResponse;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, `Failed to update identity decision: ${response.status}`));
+  }
+  const data = payload.data || {};
+  return {
+    previewId: stringValue(data.previewId),
+    action: stringValue(data.action),
+    decisionKey: stringValue(data.decisionKey),
+    preview: normalizePreviewDetails(data, options.bucket || 'needs_confirmation'),
   };
 }
 
@@ -306,6 +640,64 @@ export async function executeDeletions(options: {
     throw new Error(apiErrorMessage(payload, `Failed to execute deletions: ${response.status}`));
   }
   return normalizeSyncExecution(payload.data || {});
+}
+
+export async function fetchSyncBackups(): Promise<SyncBackupStateResult> {
+  const response = await fetch('/api/sync/backups', { cache: 'no-store' });
+  const payload = (await response.json()) as RawApiResponse;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, `Failed to load sync backups: ${response.status}`));
+  }
+  return normalizeSyncBackupState(payload.data || {});
+}
+
+export async function createSyncBackup(options: {
+  targets?: PlatformKey[];
+} = {}): Promise<SyncBackupCreateResult> {
+  const response = await fetch('/api/sync/backups', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      targets: options.targets || ['qq', 'netease'],
+      refresh: true,
+      reason: 'manual',
+    }),
+  });
+  const payload = (await response.json()) as RawApiResponse;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, `Failed to create sync backup: ${response.status}`));
+  }
+  const data = isRecord(payload.data) ? payload.data : {};
+  return {
+    backup: normalizeSyncBackup(data.backup),
+    updatedAt: stringValue(data.updatedAt),
+    retained: numberValue(data.retained),
+  };
+}
+
+export async function restoreSyncBackup(options: {
+  backupId: string;
+  targets?: PlatformKey[];
+  dryRun: boolean;
+  confirmText?: string;
+}): Promise<SyncBackupRestoreResult> {
+  const response = await fetch('/api/sync/backups/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      backupId: options.backupId,
+      targets: options.targets,
+      dryRun: options.dryRun,
+      confirmText: options.confirmText || '',
+      refresh: true,
+      force: false,
+    }),
+  });
+  const payload = (await response.json()) as RawApiResponse;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, `Failed to restore sync backup: ${response.status}`));
+  }
+  return normalizeSyncBackupRestore(payload.data || {});
 }
 
 export async function checkConvergence(options: {
@@ -535,6 +927,37 @@ export async function saveAgentTraceFeedback(options: {
   return normalizeAgentFeedback(payload.data || {});
 }
 
+async function connectionRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return readConnectionResponse(response, `连接操作失败：${response.status}`);
+}
+
+async function readConnectionResponse(response: Response, fallback: string): Promise<Record<string, unknown>> {
+  const payload = (await response.json()) as RawApiResponse & Record<string, unknown>;
+  if (!response.ok || payload.ok === false) {
+    throw new Error(apiErrorMessage(payload, fallback));
+  }
+  return payload;
+}
+
+function normalizeQQPlaylist(raw: Record<string, unknown>): QQPlaylistSummary {
+  return {
+    index: numberValue(raw.index),
+    name: stringValue(raw.name) || '未命名歌单',
+    dirid: stringValue(raw.dirid),
+    tid: stringValue(raw.tid),
+    dissid: stringValue(raw.dissid),
+    id: stringValue(raw.id),
+    songCount: numberValue(raw.songCount),
+    listenCount: numberValue(raw.listenCount),
+    isLiked: Boolean(raw.isLiked),
+  };
+}
+
 function normalizeAppState(payload: RawAppStateResponse): AppStateSummary {
   const data = payload.data || {};
   const latestPreview = data.latestPreview || data.preview || {};
@@ -561,7 +984,113 @@ function normalizeAppState(payload: RawAppStateResponse): AppStateSummary {
       added: numberValue(data.baseline?.diffAdded ?? data.baseline?.added),
       deleted: numberValue(data.baseline?.diffDeleted ?? data.baseline?.deleted),
     },
+    autoSync: normalizeAutoSyncSummary(data.autoSync || {}),
   };
+}
+
+function normalizeAutoSyncStateResult(raw: Record<string, unknown>): AutoSyncStateResult {
+  const automation = isRecord(raw.automation) ? raw.automation : {};
+  const readiness = isRecord(raw.readiness) ? raw.readiness : {};
+  const policy = isRecord(readiness.policy) ? readiness.policy : {};
+  const baseline = isRecord(readiness.baseline) ? readiness.baseline : {};
+  const liveValidation = isRecord(readiness.liveValidation) ? readiness.liveValidation : {};
+  const history = arrayValue(raw.history).filter(isRecord).map(normalizeAutoSyncRun);
+  return {
+    automation: normalizeAutoSyncSummary(automation),
+    readiness: {
+      ok: Boolean(readiness.ok),
+      reasons: arrayValue(readiness.reasons).filter(isRecord).map((reason) => ({
+        code: stringValue(reason.code),
+        platform: stringValue(reason.platform),
+        message: stringValue(reason.message),
+      })),
+      policy: {
+        id: stringValue(policy.id || 'canonical_mirror'),
+        label: stringValue(policy.label || '以 Apple Music 为准'),
+      },
+      baseline: {
+        exists: Boolean(baseline.exists),
+        savedAt: stringValue(baseline.savedAt),
+      },
+      snapshots: normalizeAutoSyncSnapshots(readiness.snapshots),
+      liveValidation: {
+        ok: Boolean(liveValidation.ok),
+        targets: isRecord(liveValidation.targets) ? liveValidation.targets as AutoSyncStateResult['readiness']['liveValidation']['targets'] : {},
+      },
+    },
+    history,
+    run: isRecord(raw.run) ? normalizeAutoSyncRun(raw.run) : null,
+  };
+}
+
+function normalizeAutoSyncSummary(raw: Record<string, unknown>): AutoSyncSummary {
+  return {
+    enabled: Boolean(raw.enabled),
+    running: Boolean(raw.running),
+    intervalMinutes: numberValue(raw.intervalMinutes) || 60,
+    targets: arrayValue(raw.targets).filter(isPlatformKey),
+    refreshApple: raw.refreshApple !== false,
+    refreshTargets: raw.refreshTargets !== false,
+    autoExecuteAdditions: raw.autoExecuteAdditions !== false,
+    requireBaseline: raw.requireBaseline !== false,
+    maxSourceAgeMinutes: numberValue(raw.maxSourceAgeMinutes) || 1440,
+    nextRunAt: stringValue(raw.nextRunAt),
+    lastRunAt: stringValue(raw.lastRunAt),
+    lastStatus: stringValue(raw.lastStatus || 'never') as AutoSyncSummary['lastStatus'],
+    lastMessage: stringValue(raw.lastMessage),
+    lastRunId: stringValue(raw.lastRunId),
+    historyCount: numberValue(raw.historyCount),
+  };
+}
+
+function normalizeAutoSyncRun(raw: Record<string, unknown>): AutoSyncRunSummary {
+  const preview = isRecord(raw.preview) ? raw.preview : {};
+  const additions = isRecord(raw.additions) ? raw.additions : {};
+  return {
+    id: stringValue(raw.id),
+    trigger: stringValue(raw.trigger),
+    status: stringValue(raw.status || 'never') as AutoSyncRunSummary['status'],
+    startedAt: stringValue(raw.startedAt),
+    completedAt: stringValue(raw.completedAt),
+    policy: stringValue(raw.policy || 'canonical_mirror'),
+    targets: arrayValue(raw.targets).filter(isPlatformKey),
+    dryRun: Boolean(raw.dryRun),
+    message: stringValue(raw.message),
+    snapshotRefresh: isRecord(raw.snapshotRefresh) ? raw.snapshotRefresh : {},
+    preview: {
+      previewId: stringValue(preview.previewId),
+      generatedAt: stringValue(preview.generatedAt),
+      willAdd: numberValue(preview.willAdd),
+      needsConfirmation: numberValue(preview.needsConfirmation),
+      mayDelete: numberValue(preview.mayDelete),
+    },
+    additions: {
+      requested: numberValue(additions.requested),
+      succeeded: numberValue(additions.succeeded),
+      failed: numberValue(additions.failed),
+      blocked: numberValue(additions.blocked),
+    },
+    deletionSignals: numberValue(raw.deletionSignals),
+    convergence: isRecord(raw.convergence) ? raw.convergence : null,
+    error: stringValue(raw.error),
+  };
+}
+
+function normalizeAutoSyncSnapshots(raw: unknown): AutoSyncStateResult['readiness']['snapshots'] {
+  if (!isRecord(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key, value]) => isPlatformKey(key) && isRecord(value))
+      .map(([key, rawValue]) => {
+        const value = rawValue as Record<string, unknown>;
+        return [key, {
+          available: Boolean(value.available),
+          fetchedAt: stringValue(value.fetchedAt),
+          ageMinutes: value.ageMinutes === null ? null : numberValue(value.ageMinutes),
+          tracks: numberValue(value.tracks),
+        }];
+      }),
+  );
 }
 
 function normalizePlatforms(rawPlatforms: unknown, rawLiveTargets: unknown): PlatformSummary[] {
@@ -576,6 +1105,9 @@ function normalizePlatforms(rawPlatforms: unknown, rawLiveTargets: unknown): Pla
     return {
       key,
       label: stringValue(raw.label) || PLATFORM_LABELS[key],
+      credentialPresent: typeof raw.credentialPresent === 'boolean'
+        ? raw.credentialPresent
+        : Boolean(capabilities.write || (key === 'apple' && capabilities.read)),
       status: normalizePlatformStatus({
         key,
         status: raw.status || raw.state,
@@ -697,11 +1229,12 @@ function bucketsFromCounts(rawCounts: unknown): PreviewBucketSummary[] {
   ];
 }
 
-function normalizePreviewItem(raw: Record<string, unknown>): PreviewTrackItem {
-  const sourcePlatforms = arrayValue(raw.sourcePlatforms).filter(isPlatformKey);
-  const targetPlatforms = arrayValue(raw.targetPlatforms).filter(isPlatformKey);
-  const sourcePlatform = stringValue(raw.sourcePlatform);
-  const targetPlatform = stringValue(raw.targetPlatform);
+  function normalizePreviewItem(raw: Record<string, unknown>): PreviewTrackItem {
+    const sourcePlatforms = arrayValue(raw.sourcePlatforms).filter(isPlatformKey);
+    const targetPlatforms = arrayValue(raw.targetPlatforms).filter(isPlatformKey);
+    const sourcePlatform = stringValue(raw.sourcePlatform);
+    const targetPlatform = stringValue(raw.targetPlatform);
+    const scoreValue = isRecord(raw.score) ? raw.score.total ?? raw.score.score : raw.score;
   return {
     id: stringValue(raw.id),
     bucket: stringValue(raw.bucket || 'will_keep') as PreviewTrackItem['bucket'],
@@ -711,6 +1244,9 @@ function normalizePreviewItem(raw: Record<string, unknown>): PreviewTrackItem {
     title: stringValue(raw.title) || '未命名歌曲',
     artist: stringValue(raw.artist),
     album: stringValue(raw.album),
+    artworkUrl: stringValue(raw.artworkUrl),
+    sourceTrack: normalizeTrackSummary(raw.sourceTrack),
+    targetTrack: normalizeTrackSummary(raw.targetTrack),
     sourcePlatforms: sourcePlatforms.length
       ? sourcePlatforms
       : isPlatformKey(sourcePlatform)
@@ -725,14 +1261,41 @@ function normalizePreviewItem(raw: Record<string, unknown>): PreviewTrackItem {
     message: stringValue(raw.message),
     blockedReason: stringValue(raw.blockedReason),
     evidence: arrayValue(raw.evidence).map((item) => stringValue(item)).filter(Boolean).slice(0, 8),
-    score: raw.score === null || raw.score === undefined ? null : numberValue(raw.score),
+      score: scoreValue === null || scoreValue === undefined ? null : numberValue(scoreValue),
     resolvedTarget: normalizeTrackSummary(raw.resolvedTarget),
     candidateTarget: normalizeTrackSummary(raw.candidateTarget),
     alternatives: arrayValue(raw.alternatives).map(normalizeTrackSummary).filter((item): item is TrackSummary => Boolean(item)),
+    relatedMatches: arrayValue(raw.relatedMatches).filter(isRecord).map((match) => ({
+      operationId: stringValue(match.operationId),
+      action: stringValue(match.action),
+      targetPlatform: stringValue(match.targetPlatform) as PlatformKey,
+      score: match.score === null || match.score === undefined ? null : numberValue(match.score),
+      targetTrack: normalizeTrackSummary(match.targetTrack),
+      resolvedTarget: normalizeTrackSummary(match.resolvedTarget),
+      candidateTarget: normalizeTrackSummary(match.candidateTarget),
+      alternatives: arrayValue(match.alternatives).map(normalizeTrackSummary).filter((item): item is TrackSummary => Boolean(item)),
+      addDecision: normalizeAddDecision(match.addDecision),
+    })).filter((match) => isPlatformKey(match.targetPlatform)),
     resolution: normalizeResolution(raw.resolution),
     addDecision: normalizeAddDecision(raw.addDecision),
+    identityDecision: normalizeIdentityDecision(raw.identityDecision),
+    aiReview: normalizeAddAiReview(raw.aiReview),
     tombstoneKey: stringValue(raw.tombstoneKey),
     tombstoneAction: stringValue(raw.tombstoneAction),
+  };
+}
+
+function normalizeAddAiReview(raw: unknown): PreviewTrackItem['aiReview'] {
+  if (!isRecord(raw)) return null;
+  return {
+    batchId: stringValue(raw.batchId),
+    model: stringValue(raw.model),
+    reviewedAt: stringValue(raw.reviewedAt),
+    recommendedAction: stringValue(raw.recommendedAction || 'needs_human'),
+    relation: stringValue(raw.relation || 'uncertain'),
+    confidence: numberValue(raw.confidence),
+    reason: stringValue(raw.reason),
+    guarded: Boolean(raw.guarded),
   };
 }
 
@@ -748,6 +1311,8 @@ function normalizeTrackSummary(raw: unknown): TrackSummary | null {
     album: stringValue(raw.album),
     durationMs: raw.durationMs === null || raw.durationMs === undefined ? null : numberValue(raw.durationMs),
     isrc: raw.isrc === null || raw.isrc === undefined ? null : stringValue(raw.isrc),
+    songType: raw.songType === null || raw.songType === undefined ? null : numberValue(raw.songType),
+    artworkUrl: stringValue(raw.artworkUrl),
   };
 }
 
@@ -766,6 +1331,15 @@ function normalizeAddDecision(raw: unknown): AddDecisionSummary | null {
     alternativeIndex: raw.alternativeIndex === null || raw.alternativeIndex === undefined ? null : numberValue(raw.alternativeIndex),
     batchId: stringValue(raw.batchId),
     decidedAt: stringValue(raw.decidedAt),
+  };
+}
+
+function normalizeIdentityDecision(raw: unknown): PreviewTrackItem['identityDecision'] {
+  if (!isRecord(raw)) return null;
+  return {
+    action: stringValue(raw.action),
+    decidedAt: stringValue(raw.decidedAt),
+    originalReason: stringValue(raw.originalReason),
   };
 }
 
@@ -853,6 +1427,106 @@ function normalizeSyncExecution(raw: unknown): SyncExecutionResult {
     add: normalizeExecutionAction(data.add),
     remove: normalizeExecutionAction(data.remove),
     convergence: normalizeConvergence(data.convergence),
+    backup: isRecord(data.backup) ? normalizeSyncBackup(data.backup) : null,
+  };
+}
+
+function normalizeSyncBackupState(raw: unknown): SyncBackupStateResult {
+  const data = isRecord(raw) ? raw : {};
+  return {
+    version: numberValue(data.version),
+    updatedAt: stringValue(data.updatedAt),
+    backups: arrayValue(data.backups).map(normalizeSyncBackup),
+    restoreRuns: arrayValue(data.restoreRuns).map(normalizeSyncRestoreRun),
+  };
+}
+
+function normalizeSyncBackup(raw: unknown): SyncBackupSummary {
+  const data = isRecord(raw) ? raw : {};
+  const integrity = isRecord(data.integrity) ? data.integrity : {};
+  return {
+    id: stringValue(data.id),
+    createdAt: stringValue(data.createdAt),
+    previewId: stringValue(data.previewId),
+    policy: stringValue(data.policy),
+    reason: stringValue(data.reason),
+    targets: arrayValue(data.targets).map((entry) => {
+      const target = isRecord(entry) ? entry : {};
+      return {
+        target: stringValue(target.target),
+        fetchedAt: stringValue(target.fetchedAt),
+        count: numberValue(target.count),
+        restorable: numberValue(target.restorable),
+        checksum: stringValue(target.checksum),
+      };
+    }),
+    integrity: {
+      ok: Boolean(integrity.ok),
+      targets: arrayValue(integrity.targets).map(stringValue).filter(Boolean),
+      errors: arrayValue(integrity.errors).map(stringValue).filter(Boolean),
+    },
+  };
+}
+
+function normalizeSyncRestoreRun(raw: unknown) {
+  const data = isRecord(raw) ? raw : {};
+  return {
+    id: stringValue(data.id),
+    backupId: stringValue(data.backupId),
+    startedAt: stringValue(data.startedAt),
+    completedAt: stringValue(data.completedAt),
+    status: stringValue(data.status),
+    dryRun: Boolean(data.dryRun),
+    targets: arrayValue(data.targets).map(stringValue).filter(Boolean),
+    summary: normalizeSyncRestorePlan(data.summary),
+    error: stringValue(data.error),
+  };
+}
+
+function normalizeSyncRestorePlan(raw: unknown) {
+  const data = isRecord(raw) ? raw : {};
+  const rawTargets = isRecord(data.targets) ? data.targets : {};
+  const targets = Object.fromEntries(Object.entries(rawTargets).map(([key, value]) => {
+    const item = isRecord(value) ? value : {};
+    return [key, {
+      backupCount: numberValue(item.backupCount),
+      currentCount: numberValue(item.currentCount),
+      missing: numberValue(item.missing),
+      unrestorable: numberValue(item.unrestorable),
+    }];
+  }));
+  return {
+    targets,
+    targetCount: numberValue(data.targetCount),
+    backupTracks: numberValue(data.backupTracks),
+    missing: numberValue(data.missing),
+    unrestorable: numberValue(data.unrestorable),
+    remainingMissing: data.remainingMissing === undefined ? undefined : numberValue(data.remainingMissing),
+  };
+}
+
+function normalizeSyncBackupRestore(raw: unknown): SyncBackupRestoreResult {
+  const data = isRecord(raw) ? raw : {};
+  const rawWrites = isRecord(data.writes) ? data.writes : {};
+  const writes = Object.fromEntries(Object.entries(rawWrites).map(([key, value]) => {
+    const item = isRecord(value) ? value : {};
+    return [key, {
+      requested: numberValue(item.requested),
+      submitted: numberValue(item.submitted),
+      accepted: numberValue(item.accepted),
+      added: numberValue(item.added),
+      alreadyPresent: numberValue(item.alreadyPresent),
+      verified: Boolean(item.verified),
+      missing: numberValue(item.missing),
+    }];
+  }));
+  return {
+    dryRun: Boolean(data.dryRun),
+    backup: normalizeSyncBackup(data.backup),
+    confirmationText: stringValue(data.confirmationText),
+    plan: normalizeSyncRestorePlan(data.plan),
+    writes,
+    restoreRun: normalizeSyncRestoreRun(data.restoreRun),
   };
 }
 
@@ -1369,6 +2043,30 @@ function nextActionForBuckets(buckets: PreviewBucketSummary[]): string {
   if (buckets.some((bucket) => bucket.id === 'may_delete' && bucket.count > 0)) return '查看可能删除的歌曲';
   if (buckets.some((bucket) => bucket.id === 'will_add' && bucket.count > 0)) return '可以先同步新增';
   return '连接平台后开始同步检查';
+}
+
+function normalizeAppleConnectionResult(payload: Record<string, unknown>): AppleConnectionResult {
+  const status = normalizeBrowserConnectionStatus(payload.status, payload.message);
+  return {
+    message: stringValue(payload.message) || status.message || '正在连接 Apple Music。',
+    status,
+  };
+}
+
+function normalizeBrowserConnectionStatus(raw: unknown, fallbackMessage: unknown): BrowserConnectionStatus {
+  const status = isRecord(raw) ? raw : {};
+  return {
+    code: stringValue(status.code) || 'unknown',
+    message: stringValue(status.message || fallbackMessage),
+    done: Boolean(status.done),
+    waiting: Boolean(status.waiting),
+    count: numberValue(status.count),
+  };
+}
+
+function imageDataValue(value: unknown): string | undefined {
+  const image = stringValue(value);
+  return image.startsWith('data:image/png;base64,') ? image : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

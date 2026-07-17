@@ -140,9 +140,9 @@ try {
   });
   assert(syncCheck.ok, '/api/sync/check should return ok for the React app');
   assert(syncCheck.data?.previewId, '/api/sync/check should return a preview id');
-  assert(Number(syncCheck.data?.counts?.will_add || 0) > 0, '/api/sync/check should produce additions from seeded fixtures');
+  assert(Number(syncCheck.data?.counts?.needs_confirmation || 0) > 0, '/api/sync/check should keep unresolved additions in manual review');
 
-  const preview = await fetchJson('/api/sync/preview?bucket=will_add&limit=30');
+  const preview = await fetchJson('/api/sync/preview?bucket=needs_confirmation&limit=30');
   assert(preview.ok, '/api/sync/preview should return ok for the React app');
   assert(Array.isArray(preview.data?.items), '/api/sync/preview should return preview items');
   assert(preview.data.items.some((item) => item.title === 'New Day'), 'React preview should include the seeded missing Apple track');
@@ -150,7 +150,7 @@ try {
 
   const resolution = await postJson('/api/sync/resolve-additions', {
     targets: ['qq', 'netease'],
-    bucket: 'will_add',
+    bucket: 'needs_confirmation',
     resolveLimit: 10,
     searchLimit: 3,
   });
@@ -181,7 +181,7 @@ try {
   assert(skippedBatch.data?.operations?.[0]?.addDecision?.action === 'skip', 'batch candidate decision should return skip metadata');
 
   const tombstoneIds = await markReactTombstones(tempRoot);
-  const tombstonePreview = await fetchJson('/api/sync/preview?bucket=may_delete&limit=30');
+  const tombstonePreview = await fetchJson('/api/sync/preview?bucket=needs_confirmation&limit=30');
   assert(tombstonePreview.ok, 'tombstone preview should return ok after local fixture marking');
   assert(tombstonePreview.data.items.filter((item) => item.tombstoneKey).length >= 2, 'React preview should expose tombstone keys');
 
@@ -211,7 +211,7 @@ try {
     `/api/sync/tombstones should confirm one global delete with exact text: ${JSON.stringify(confirmedTombstone)}`,
   );
   assert(confirmedTombstone.data?.decision?.action === 'confirm_global_delete', 'global tombstone confirmation should return decision metadata');
-  const decidedTombstonePreview = await fetchJson('/api/sync/preview?bucket=may_delete&limit=30');
+  const decidedTombstonePreview = await fetchJson('/api/sync/preview?bucket=needs_confirmation&limit=30');
   assert(decidedTombstonePreview.data.items.some((item) => item.tombstoneAction === 'confirm_global_delete'), 'React preview should expose confirmed global tombstone decisions');
   assert(decidedTombstonePreview.data.items.some((item) => item.tombstoneAction === 'current_platform_only'), 'React preview should expose batch non-destructive tombstone decisions');
 
@@ -299,7 +299,7 @@ try {
     fallback: '/sync-preview',
     api: {
       previewId: syncCheck.data.previewId,
-      willAdd: syncCheck.data.counts.will_add,
+      needsConfirmation: syncCheck.data.counts.needs_confirmation,
       previewItems: preview.data.items.length,
       candidateDecision: acceptedCandidate.data.operation.addDecision.action,
       batchDecision: skippedBatch.data.operations[0].addDecision.action,

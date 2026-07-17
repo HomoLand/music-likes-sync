@@ -14,6 +14,7 @@ export interface PlatformSummary {
   key: PlatformKey;
   label: string;
   status: PlatformStatus;
+  credentialPresent: boolean;
   tracks: number;
   writable?: boolean;
   liveValidation?: {
@@ -63,6 +64,148 @@ export interface AppStateSummary {
     added?: number;
     deleted?: number;
   };
+  autoSync?: AutoSyncSummary;
+}
+
+export type AutoSyncStatus = 'never' | 'disabled' | 'running' | 'completed' | 'attention' | 'failed' | 'skipped';
+
+export interface AutoSyncSummary {
+  enabled: boolean;
+  running: boolean;
+  intervalMinutes: number;
+  targets: PlatformKey[];
+  refreshApple: boolean;
+  refreshTargets: boolean;
+  autoExecuteAdditions: boolean;
+  requireBaseline: boolean;
+  maxSourceAgeMinutes: number;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastStatus: AutoSyncStatus;
+  lastMessage?: string;
+  lastRunId?: string;
+  historyCount: number;
+}
+
+export interface AutoSyncReadinessReason {
+  code: string;
+  platform?: PlatformKey | string;
+  message: string;
+}
+
+export interface AutoSyncReadiness {
+  ok: boolean;
+  reasons: AutoSyncReadinessReason[];
+  policy: { id: SyncModeId | string; label: string };
+  baseline: { exists: boolean; savedAt?: string };
+  snapshots: Partial<Record<PlatformKey, {
+    available: boolean;
+    fetchedAt?: string;
+    ageMinutes?: number | null;
+    tracks: number;
+  }>>;
+  liveValidation: {
+    ok: boolean;
+    targets: Partial<Record<PlatformKey, { ok: boolean; status: string; validatedAt?: string }>>;
+  };
+}
+
+export interface AutoSyncRunSummary {
+  id: string;
+  trigger: 'manual' | 'scheduled' | 'startup' | string;
+  status: AutoSyncStatus;
+  startedAt?: string;
+  completedAt?: string;
+  policy: SyncModeId | string;
+  targets: PlatformKey[];
+  dryRun: boolean;
+  message?: string;
+  snapshotRefresh: Record<string, unknown>;
+  preview: {
+    previewId?: string;
+    generatedAt?: string;
+    willAdd?: number;
+    needsConfirmation?: number;
+    mayDelete?: number;
+  };
+  additions: {
+    requested?: number;
+    succeeded?: number;
+    failed?: number;
+    blocked?: number;
+  };
+  deletionSignals: number;
+  convergence?: ConvergenceSummary | null;
+  error?: string;
+}
+
+export interface AutoSyncStateResult {
+  automation: AutoSyncSummary;
+  readiness: AutoSyncReadiness;
+  history: AutoSyncRunSummary[];
+  run?: AutoSyncRunSummary | null;
+}
+
+export interface ConnectionActionResult {
+  message: string;
+}
+
+export interface BrowserConnectionStatus extends ConnectionActionResult {
+  code: string;
+  done: boolean;
+  waiting: boolean;
+  count?: number;
+}
+
+export interface AppleConnectionResult extends ConnectionActionResult {
+  status: BrowserConnectionStatus;
+}
+
+export interface QQBrowserLoginResult extends ConnectionActionResult {
+  status?: BrowserConnectionStatus;
+  credential?: {
+    fieldCount: number;
+    hasAccount: boolean;
+    writeReady: boolean;
+  } | null;
+}
+
+export interface QQQrSession extends ConnectionActionResult {
+  key: string;
+  images: {
+    qq?: string;
+    wechat?: string;
+  };
+  expiresAt: string;
+  status: BrowserConnectionStatus;
+}
+
+export interface NeteaseQrSession extends ConnectionActionResult {
+  key: string;
+  image: string;
+  loginUrl?: string;
+}
+
+export interface NeteaseQrStatus extends ConnectionActionResult {
+  code: number;
+  done: boolean;
+  waiting: boolean;
+}
+
+export interface QQPlaylistSummary {
+  index: number;
+  name: string;
+  dirid: string;
+  tid: string;
+  dissid: string;
+  id: string;
+  songCount: number;
+  listenCount: number;
+  isLiked: boolean;
+}
+
+export interface QQPlaylistsResult extends ConnectionActionResult {
+  playlists: QQPlaylistSummary[];
 }
 
 export interface SyncCheckResult {
@@ -82,6 +225,39 @@ export interface TrackSummary {
   album?: string;
   durationMs?: number | null;
   isrc?: string | null;
+  songType?: number | null;
+  artworkUrl?: string;
+}
+
+export type TrackMediaRole = 'source' | 'target' | 'candidate' | 'resolved' | 'alternative';
+
+export interface TrackMediaAlignment {
+  status: 'aligned' | 'not_aligned' | 'unavailable';
+  method: 'chromaprint' | string;
+  confidence: number | null;
+  offsetFromSourceSeconds: number;
+  sourceStartSeconds: number;
+  targetStartSeconds: number;
+  overlapSeconds: number;
+  maxPreviewSeconds: number;
+  reason?: string;
+}
+
+export interface TrackMediaResult {
+  previewId: string;
+  operationId: string;
+  role: TrackMediaRole;
+  alternativeIndex?: number | null;
+  track: TrackSummary;
+  media: {
+    artworkUrl: string;
+    previewUrl: string;
+    playable: boolean;
+    reason?: string;
+    expiresAt?: string;
+    maxPreviewSeconds: number;
+    alignment?: TrackMediaAlignment | null;
+  };
 }
 
 export interface AddDecisionSummary {
@@ -89,6 +265,25 @@ export interface AddDecisionSummary {
   alternativeIndex?: number | null;
   batchId?: string;
   decidedAt?: string;
+}
+
+export type IdentityDecisionAction = 'keep' | 'separate' | 'clear';
+
+export interface IdentityDecisionSummary {
+  action: IdentityDecisionAction | string;
+  decidedAt?: string;
+  originalReason?: string;
+}
+
+export interface AddAiReviewSummary {
+  batchId?: string;
+  model?: string;
+  reviewedAt?: string;
+  recommendedAction: 'add' | 'skip' | 'needs_human' | string;
+  relation: 'same_recording' | 'same_song_different_version' | 'different_song' | 'uncertain' | string;
+  confidence: number;
+  reason?: string;
+  guarded: boolean;
 }
 
 export interface PreviewTrackItem {
@@ -100,6 +295,9 @@ export interface PreviewTrackItem {
   title: string;
   artist: string;
   album?: string;
+  artworkUrl?: string;
+  sourceTrack?: TrackSummary | null;
+  targetTrack?: TrackSummary | null;
   sourcePlatforms: PlatformKey[];
   targetPlatforms: PlatformKey[];
   reason?: string;
@@ -110,11 +308,24 @@ export interface PreviewTrackItem {
   resolvedTarget?: TrackSummary | null;
   candidateTarget?: TrackSummary | null;
   alternatives: TrackSummary[];
+  relatedMatches: Array<{
+    operationId: string;
+    action: string;
+    targetPlatform: PlatformKey;
+    score?: number | null;
+    targetTrack?: TrackSummary | null;
+    resolvedTarget?: TrackSummary | null;
+    candidateTarget?: TrackSummary | null;
+    alternatives: TrackSummary[];
+    addDecision?: Pick<AddDecisionSummary, 'action' | 'alternativeIndex'> | null;
+  }>;
   resolution?: {
     reason?: string;
     message?: string;
   } | null;
   addDecision?: AddDecisionSummary | null;
+  identityDecision?: IdentityDecisionSummary | null;
+  aiReview?: AddAiReviewSummary | null;
   tombstoneKey?: string;
   tombstoneAction?: string;
 }
@@ -154,6 +365,41 @@ export interface SyncPreviewDetails {
 export interface ResolveAdditionsResult {
   preview: SyncPreviewDetails;
   addResolution?: AddResolutionSummary | null;
+}
+
+export interface ReviewAdditionsResult {
+  batchId?: string;
+  model?: string;
+  changed: number;
+  summary: {
+    total: number;
+    add: number;
+    skip: number;
+    needsHuman: number;
+    guarded: number;
+  };
+  preview: SyncPreviewDetails;
+}
+
+export interface ReviewIdentityResult {
+  batchId?: string;
+  model?: string;
+  changed: number;
+  summary: {
+    total: number;
+    keep: number;
+    separate: number;
+    needsHuman: number;
+    guarded: number;
+  };
+  preview: SyncPreviewDetails;
+}
+
+export interface IdentityDecisionResult {
+  previewId: string;
+  action: IdentityDecisionAction | string;
+  decisionKey?: string;
+  preview: SyncPreviewDetails;
 }
 
 export interface AdditionDecisionResult {
@@ -423,6 +669,85 @@ export interface SyncExecutionResult {
   add?: ExecutionActionSummary;
   remove?: ExecutionActionSummary;
   convergence?: ConvergenceSummary | null;
+  backup?: SyncBackupSummary | null;
+}
+
+export interface SyncBackupTargetSummary {
+  target: PlatformKey | string;
+  fetchedAt?: string;
+  count: number;
+  restorable: number;
+  checksum: string;
+}
+
+export interface SyncBackupSummary {
+  id: string;
+  createdAt?: string;
+  previewId?: string;
+  policy?: string;
+  reason?: string;
+  targets: SyncBackupTargetSummary[];
+  integrity: {
+    ok: boolean;
+    targets: string[];
+    errors: string[];
+  };
+}
+
+export interface SyncRestoreRunSummary {
+  id: string;
+  backupId: string;
+  startedAt?: string;
+  completedAt?: string;
+  status: 'preview' | 'completed' | 'failed' | string;
+  dryRun: boolean;
+  targets: string[];
+  summary: SyncRestorePlanSummary;
+  error?: string;
+}
+
+export interface SyncRestorePlanSummary {
+  targets: Partial<Record<PlatformKey, {
+    backupCount: number;
+    currentCount: number;
+    missing: number;
+    unrestorable: number;
+  }>>;
+  targetCount: number;
+  backupTracks: number;
+  missing: number;
+  unrestorable: number;
+  remainingMissing?: number;
+}
+
+export interface SyncBackupStateResult {
+  version: number;
+  updatedAt?: string;
+  backups: SyncBackupSummary[];
+  restoreRuns: SyncRestoreRunSummary[];
+}
+
+export interface SyncBackupCreateResult {
+  backup: SyncBackupSummary;
+  updatedAt?: string;
+  retained: number;
+}
+
+export interface SyncBackupRestoreResult {
+  dryRun: boolean;
+  backup: SyncBackupSummary;
+  confirmationText: string;
+  plan: SyncRestorePlanSummary;
+  writes: Partial<Record<PlatformKey, {
+    requested: number;
+    submitted: number;
+    accepted: number;
+    added: number;
+    alreadyPresent: number;
+    verified: boolean;
+    missing: number;
+  }>>;
+  restoreRun: SyncRestoreRunSummary;
 }
 
 export interface DeleteConfirmationResult {
