@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { AuthSessionStore } from './auth-session.js';
 import { DATA_DIR, ensureDirs } from './utils.js';
 
 const DEFAULT_QQ_URL = 'https://y.qq.com/';
@@ -10,35 +11,141 @@ const EDGE_CANDIDATES = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
+const QR_SESSION_TTL_MS = 2 * 60 * 1000;
 
 let edgeProcess = null;
+const authSessions = new AuthSessionStore();
 
 export async function openQQMusicBrowser(url = DEFAULT_QQ_URL) {
+  return openQQMusicQuickLogin(url);
+}
+
+export async function openQQMusicQuickLogin(url = DEFAULT_QQ_URL) {
+  const browser = await ensureQQMusicBrowser(url, { headless: false, replaceMode: true });
+  const page = await ensureQQMusicPage(browser.url, { reload: true });
+  await openQQLoginPanel(page).catch(() => null);
+  return browser;
+}
+
+export async function startQQMusicQrLogin(options = {}) {
+  const browser = await ensureQQMusicBrowser(DEFAULT_QQ_URL, { headless: true, replaceMode: true });
+  let page = await ensureQQMusicPage(browser.url, { reload: true });
+  if (options.force !== true) {
+    try {
+      const capture = await captureQQMusicCookies();
+      return {
+        done: true,
+        waiting: false,
+        code: 'cookie_ready',
+        message: 'QQ 音乐仍处于登录状态，已自动续用。',
+        capture,
+      };
+    } catch {
+      // Continue into Tencent's official login flow.
+    }
+  } else {
+    await callCdp(page.webSocketDebuggerUrl, 'Network.clearBrowserCookies', {}, 10000);
+    page = await ensureQQMusicPage(browser.url, { reload: true });
+  }
+  await openQQLoginPanel(page);
+
+  const images = await waitForQQQrImages(page, 16000).catch(() => null);
+  if (!images?.qq && !images?.wechat) {
+    try {
+      const capture = await captureQQMusicCookies();
+      return {
+        done: true,
+        waiting: false,
+        code: 'cookie_ready',
+        message: 'QQ 音乐仍处于登录状态，已自动续用。',
+        capture,
+      };
+    } catch {
+      throw new Error('腾讯登录页没有生成二维码，请重新开始或使用本机快捷登录。');
+    }
+  }
+
+  authSessions.clearPlatform('qq');
+  const session = authSessions.create('qq', {
+    methods: Object.keys(images).filter((key) => Boolean(images[key])),
+  }, { ttlMs: QR_SESSION_TTL_MS });
+  return {
+    ...authSessions.toPublic(session),
+    done: false,
+    waiting: true,
+    code: 'waiting_for_scan',
+    message: '请用手机 QQ 或微信扫码，并在手机上确认登录。',
+    images,
+  };
+}
+
+export async function checkQQMusicQrLogin(key) {
+  const session = authSessions.get(key, 'qq');
+  if (!session) {
+    return {
+      done: false,
+      waiting: false,
+      code: 'qr_expired',
+      message: '二维码已过期，请重新生成。',
+    };
+  }
+
+  return checkQQMusicBrowserLogin();
+}
+
+export function completeQQMusicQrLogin(key) {
+  return authSessions.delete(key);
+}
+
+export async function refreshQQMusicBrowserCredential() {
+  try {
+    await fs.access(EDGE_PROFILE_DIR);
+  } catch {
+    return null;
+  }
+
+  const browser = await ensureQQMusicBrowser(DEFAULT_QQ_URL, { headless: true, replaceMode: false });
+  await ensureQQMusicPage(browser.url, { reload: true });
+  await new Promise((resolve) => setTimeout(resolve, 1400));
+  return captureQQMusicCookies();
+}
+
+async function ensureQQMusicBrowser(url, options = {}) {
   await ensureDirs();
   const targetUrl = normalizeQQUrl(url);
+  const requestedHeadless = options.headless === true;
+  if (await isDebuggerReady()) {
+    const currentHeadless = await isHeadlessBrowser();
+    if (currentHeadless !== requestedHeadless && options.replaceMode !== false) {
+      await closeDebuggerBrowser();
+    }
+  }
+
   if (!(await isDebuggerReady())) {
     const edgePath = await findEdgePath();
     await fs.mkdir(EDGE_PROFILE_DIR, { recursive: true });
-    edgeProcess = spawn(edgePath, [
+    const args = [
       `--remote-debugging-port=${DEBUG_PORT}`,
       `--user-data-dir=${EDGE_PROFILE_DIR}`,
+      '--disable-extensions',
       '--no-first-run',
       '--no-default-browser-check',
-      targetUrl,
-    ], {
+    ];
+    if (requestedHeadless) args.push('--headless=new', '--window-size=1280,900');
+    args.push(targetUrl);
+    edgeProcess = spawn(edgePath, args, {
       detached: true,
       stdio: 'ignore',
     });
     edgeProcess.unref();
     await waitForDebugger();
-  } else {
-    await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/new?${encodeURIComponent(targetUrl)}`, { method: 'PUT' }).catch(() => null);
   }
 
   return {
     url: targetUrl,
     port: DEBUG_PORT,
     profileDir: EDGE_PROFILE_DIR,
+    mode: await isHeadlessBrowser() ? 'background' : 'visible',
   };
 }
 
@@ -48,8 +155,7 @@ export async function captureQQMusicCookies() {
   }
 
   const tabs = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
-  const page = tabs.find((item) => item.type === 'page' && /(^|\.)qq\.com/i.test(new URL(item.url || 'about:blank').hostname))
-    || tabs.find((item) => item.type === 'page');
+  const page = findQQPage(tabs) || tabs.find((item) => item.type === 'page');
   if (!page?.webSocketDebuggerUrl) {
     throw new Error('没有找到可抓取的 QQ 音乐页面。请确认专用 Edge 窗口还开着。');
   }
@@ -124,6 +230,164 @@ export async function checkQQMusicBrowserLogin() {
       code: 'login_check_failed',
       message,
     };
+  }
+}
+
+async function ensureQQMusicPage(targetUrl, options = {}) {
+  let tabs = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
+  let page = findQQPage(tabs);
+  if (!page) {
+    await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/new?${encodeURIComponent(targetUrl)}`, { method: 'PUT' });
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 10000) {
+      tabs = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
+      page = findQQPage(tabs);
+      if (page) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  } else if (options.reload) {
+    await callCdp(page.webSocketDebuggerUrl, 'Page.navigate', { url: targetUrl }, 15000);
+  }
+
+  if (!page?.webSocketDebuggerUrl) throw new Error('QQ 音乐页面没有加载成功。');
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15000) {
+    const result = await callCdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', {
+      expression: 'document.readyState',
+      returnByValue: true,
+    }, 5000).catch(() => null);
+    if (result?.result?.value === 'complete' || result?.result?.value === 'interactive') break;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return page;
+}
+
+async function openQQLoginPanel(page) {
+  const expression = `(() => {
+    const trigger = document.querySelector('.top_login__link');
+    if (trigger) {
+      trigger.click();
+      return 'clicked';
+    }
+    return 'already_logged_in';
+  })()`;
+  const result = await callCdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+  }, 10000);
+  if (result?.result?.value === 'already_logged_in') return result.result.value;
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 12000) {
+    const tree = await callCdp(page.webSocketDebuggerUrl, 'Page.getFrameTree', {}, 5000).catch(() => null);
+    const urls = flattenFrameTree(tree?.frameTree).map((frame) => frame.url);
+    if (urls.some((url) => /ptlogin2\.qq\.com|open\.weixin\.qq\.com/i.test(url))) return 'opened';
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  return 'loading';
+}
+
+async function waitForQQQrImages(page, timeout) {
+  const startedAt = Date.now();
+  let last = null;
+  while (Date.now() - startedAt < timeout) {
+    last = await captureQQQrImages(page.webSocketDebuggerUrl).catch(() => null);
+    if (last?.qq || last?.wechat) return last;
+    await new Promise((resolve) => setTimeout(resolve, 450));
+  }
+  return last;
+}
+
+async function captureQQQrImages(webSocketDebuggerUrl) {
+  const session = new CdpSession(webSocketDebuggerUrl);
+  await session.open();
+  try {
+    await session.call('Runtime.enable');
+    await session.call('Page.enable');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const tree = await session.call('Page.getFrameTree');
+    const frames = flattenFrameTree(tree?.frameTree);
+    const contexts = session.events
+      .filter((event) => event.method === 'Runtime.executionContextCreated')
+      .map((event) => event.params?.context)
+      .filter(Boolean);
+    const qq = await captureFrameQr(session, frames, contexts, 'xui.ptlogin2.qq.com', 'img.qrImg');
+    const wechat = await captureFrameQr(session, frames, contexts, 'open.weixin.qq.com', 'img.js_qrcode_img');
+    return { ...(qq ? { qq } : {}), ...(wechat ? { wechat } : {}) };
+  } finally {
+    session.close();
+  }
+}
+
+async function captureFrameQr(session, frames, contexts, hostname, selector) {
+  const frame = frames.find((candidate) => {
+    try {
+      return new URL(candidate.url).hostname === hostname;
+    } catch {
+      return false;
+    }
+  });
+  const context = contexts.find((candidate) => (
+    candidate.auxData?.frameId === frame?.id && candidate.auxData?.isDefault === true
+  ));
+  if (!context) return '';
+
+  const expression = `(() => {
+    const image = document.querySelector(${JSON.stringify(selector)});
+    if (!image?.complete || !image.naturalWidth || !image.naturalHeight) return '';
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    return canvas.toDataURL('image/png');
+  })()`;
+  const result = await session.call('Runtime.evaluate', {
+    expression,
+    contextId: context.id,
+    returnByValue: true,
+  });
+  const image = String(result?.result?.value || '');
+  return image.startsWith('data:image/png;base64,') && image.length > 500 ? image : '';
+}
+
+function flattenFrameTree(frameTree, result = []) {
+  if (!frameTree?.frame) return result;
+  result.push({ id: frameTree.frame.id, url: frameTree.frame.url || '' });
+  for (const child of frameTree.childFrames || []) flattenFrameTree(child, result);
+  return result;
+}
+
+function findQQPage(tabs) {
+  return tabs.find((item) => {
+    if (item.type !== 'page') return false;
+    try {
+      const hostname = new URL(item.url || 'about:blank').hostname;
+      return hostname === 'y.qq.com' || hostname.endsWith('.y.qq.com');
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function closeDebuggerBrowser() {
+  const version = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+  if (version?.webSocketDebuggerUrl) {
+    await callCdp(version.webSocketDebuggerUrl, 'Browser.close', {}, 5000).catch(() => null);
+  }
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 8000) {
+    if (!(await isDebuggerReady())) return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error('QQ 登录会话正在关闭，请稍后重试。');
+}
+
+async function isHeadlessBrowser() {
+  try {
+    const version = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+    return /HeadlessChrome/i.test(String(version?.['User-Agent'] || ''));
+  } catch {
+    return false;
   }
 }
 
@@ -220,6 +484,59 @@ async function callCdp(webSocketUrl, method, params = {}, timeout = 15000) {
 
   ws.close();
   return response;
+}
+
+class CdpSession {
+  constructor(webSocketUrl, timeout = 15000) {
+    this.webSocketUrl = webSocketUrl;
+    this.timeout = timeout;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.events = [];
+  }
+
+  async open() {
+    this.ws = new WebSocket(this.webSocketUrl);
+    this.ws.addEventListener('message', (event) => {
+      const payload = JSON.parse(event.data);
+      if (!payload.id) {
+        this.events.push(payload);
+        return;
+      }
+      const entry = this.pending.get(payload.id);
+      if (!entry) return;
+      this.pending.delete(payload.id);
+      clearTimeout(entry.timer);
+      if (payload.error) entry.reject(new Error(payload.error.message || 'CDP command failed'));
+      else entry.resolve(payload.result);
+    });
+    await new Promise((resolve, reject) => {
+      this.ws.addEventListener('open', resolve, { once: true });
+      this.ws.addEventListener('error', reject, { once: true });
+    });
+  }
+
+  call(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId;
+      this.nextId += 1;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} timeout`));
+      }, this.timeout);
+      this.pending.set(id, { resolve, reject, timer });
+      this.ws.send(JSON.stringify({ id, method, params }));
+    });
+  }
+
+  close() {
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('CDP session closed'));
+    }
+    this.pending.clear();
+    this.ws?.close();
+  }
 }
 
 function isQQCookie(cookie) {

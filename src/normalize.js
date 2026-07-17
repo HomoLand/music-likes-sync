@@ -1,3 +1,5 @@
+import { trackArtworkUrl, trackPreviewUrl } from './track-media.js';
+
 const PUNCT_RE = /[\u200b-\u200f\u202a-\u202e'"`’‘“”()[\]{}【】（）<>《》,，.。!！?？:：;；|/\\_-]+/g;
 const FEAT_RE = /\s*(feat\.?|ft\.?|featuring|with|伴奏|纯音乐|伴唱)\s+/gi;
 const VERSION_RE = /\s*(live|remaster(ed)?|remix|mix|伴奏|instrumental|explicit|clean|radio edit|single version|专辑版|现场版|重制版|混音版)\s*/gi;
@@ -11,6 +13,11 @@ export function normalizeTrack(input, platform = 'unknown') {
   const raw = input.raw ?? input;
   const isrc = normalizeIsrc(input.isrc ?? input.isrcCode ?? raw?.isrc ?? raw?.raw?.isrc ?? raw?.raw?.catalogIsrc);
   const aliases = normalizeAliases(input.aliases, raw, platform);
+  const mediaInput = {
+    ...input,
+    platform,
+    raw,
+  };
 
   return {
     platform,
@@ -22,6 +29,8 @@ export function normalizeTrack(input, platform = 'unknown') {
     album,
     durationMs,
     isrc,
+    artworkUrl: trackArtworkUrl(mediaInput, { platform }),
+    previewUrl: trackPreviewUrl(mediaInput),
     aliases,
     normalized: {
       title: normalizeText(title, { stripVersion: true }),
