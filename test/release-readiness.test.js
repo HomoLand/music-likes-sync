@@ -198,7 +198,8 @@ describe('release readiness metadata', () => {
     assert.match(roadmap, /background cookie polling/);
     assert.match(roadmap, /One-click QQ login flow/);
     assert.match(roadmap, /QQ playlist ID diagnostics/);
-    assert.match(roadmap, /QQ raw QR polling/);
+    assert.match(roadmap, /In-app QQ \/ WeChat QR flow backed by Tencent's official login page/);
+    assert.match(roadmap, /fresh-profile human scan/);
   });
 
   it('documents the ordinary-user redesign, technical decision, and implementation gates', () => {
@@ -394,13 +395,22 @@ describe('release readiness metadata', () => {
     const qqEdge = fs.readFileSync('src/qq-edge.js', 'utf8');
     const webApp = fs.readFileSync('web/app.js', 'utf8');
     const webHtml = fs.readFileSync('web/index.html', 'utf8');
+    const reactClient = fs.readFileSync('web-app/src/api/client.ts', 'utf8');
+    const reactScreen = fs.readFileSync('web-app/src/screens/ConnectPlatformsScreen.tsx', 'utf8');
 
+    assert.match(server, /\/api\/qq\/qr\/start/);
+    assert.match(server, /\/api\/qq\/qr\/check/);
     assert.match(server, /\/api\/qq\/browser\/check/);
     assert.match(server, /\/api\/qq\/playlists/);
     assert.match(server, /checkQQMusicBrowserLogin/);
+    assert.match(server, /completeQQMusicQrLogin/);
+    assert.match(server, /credential_verifying/);
     assert.match(server, /saveCookies\(\{ qqCookie: status\.capture\.cookie \}\)/);
     assert.match(server, /listQQPlaylists/);
     assert.match(qqEdge, /checkQQMusicBrowserLogin/);
+    assert.match(qqEdge, /startQQMusicQrLogin/);
+    assert.match(qqEdge, /open\.weixin\.qq\.com/);
+    assert.match(qqEdge, /canvas\.toDataURL\('image\/png'\)/);
     assert.match(qqEdge, /Network\.getAllCookies/);
     assert.match(qqEdge, /cookie_ready/);
     assert.match(webHtml, /QQ 扫码登录/);
@@ -412,6 +422,21 @@ describe('release readiness metadata', () => {
     assert.match(webApp, /refreshQqPlaylists/);
     assert.match(webApp, /setInterval\(checkQqBrowserLogin, 1800\)/);
     assert.match(webApp, /QQ Cookie 已保存，正在拉取 QQ 快照/);
+    assert.match(reactClient, /\/api\/qq\/browser\/open/);
+    assert.match(reactClient, /\/api\/qq\/qr\/start/);
+    assert.match(reactClient, /\/api\/qq\/qr\/check/);
+    assert.match(reactClient, /\/api\/qq\/browser\/check/);
+    assert.match(reactClient, /\/api\/qq\/playlists/);
+    assert.match(reactClient, /\/api\/netease\/qr\/start/);
+    assert.match(reactClient, /\/api\/netease\/qr\/check/);
+    assert.match(reactScreen, /setQqPolling\(true\)/);
+    assert.match(reactScreen, /window\.setTimeout\(poll, 1800\)/);
+    assert.match(reactScreen, /refreshPlatformSnapshot\(platform\)/);
+    assert.match(reactScreen, /QQ 扫码/);
+    assert.match(reactScreen, /微信扫码/);
+    assert.match(reactScreen, /使用本机快捷登录/);
+    assert.match(reactScreen, /登录凭据只保存在这台电脑/);
+    assert.doesNotMatch(reactScreen, /qqCookie|neteaseCookie|MUSIC_U|qm_keyst/);
   });
 
   it('captures Apple Favorite Songs through the catalog playlist API before DOM fallback', () => {
@@ -423,6 +448,75 @@ describe('release readiness metadata', () => {
     assert.match(appleEdge, /\/v1\/me\/library\/playlists\/\$\{playlistId\}\/tracks/);
     assert.match(appleEdge, /method: 'musickit-api'/);
     assert.match(appleEdge, /method: 'dom-scroll'/);
+  });
+
+  it('keeps automatic sync additions-only, readiness-gated, and cross-process locked', () => {
+    const server = fs.readFileSync('src/server.js', 'utf8');
+    const workflow = fs.readFileSync('src/workflow.js', 'utf8');
+    const autoSync = fs.readFileSync('src/auto-sync.js', 'utf8');
+    const runLock = fs.readFileSync('src/run-lock.js', 'utf8');
+    const reactScreen = fs.readFileSync('web-app/src/screens/AutoSyncScreen.tsx', 'utf8');
+    const apiContract = fs.readFileSync('docs/API_CONTRACT.zh-CN.md', 'utf8');
+    const stateDocs = fs.readFileSync('docs/STATE.md', 'utf8');
+
+    assert.match(server, /GET[^\n]*\/api\/auto-sync|url\.pathname === '\/api\/auto-sync'/);
+    assert.match(server, /\/api\/auto-sync\/run/);
+    assert.match(server, /\/api\/ai\/additions\/review/);
+    assert.match(server, /\/api\/ai\/identity\/review/);
+    assert.match(server, /\/api\/sync\/identity-decision/);
+    assert.match(server, /runProductAutoSync\(\{ trigger: 'scheduled' \}\)/);
+    assert.match(workflow, /acquireRunLock/);
+    assert.match(workflow, /deletionSignals/);
+    assert.match(workflow, /enrichMetadata: true, metadataLimit: 0/);
+    assert.doesNotMatch(workflow.slice(workflow.indexOf('async function performProductAutoSync'), workflow.indexOf('export async function getProductLiveValidationState')), /executeProductSyncDeletions/);
+    assert.match(autoSync, /AUTO_SYNC_MIN_INTERVAL_MINUTES = 15/);
+    assert.match(autoSync, /assessAppleAutoSyncCapture/);
+    assert.match(autoSync, /apple_capture_not_authoritative/);
+    assert.match(autoSync, /apple_capture_large_drop/);
+    assert.match(runLock, /fs\.open\(filePath, 'wx'\)/);
+    assert.match(runLock, /DEFAULT_RUN_LOCK_HEARTBEAT_MS/);
+    assert.match(workflow, /reviewProductAddCandidates/);
+    assert.match(workflow, /reviewProductIdentityCandidates/);
+    assert.match(workflow, /applyProductIdentityDecision/);
+    assert.match(workflow, /requestDeepSeekSyncReview/);
+    assert.match(reactScreen, /react-auto-sync-readiness/);
+    assert.match(reactScreen, /删除保持人工确认/);
+    assert.match(apiContract, /There is no setting that permits scheduled deletion/);
+    assert.match(stateDocs, /data\/auto-sync\.json/);
+    assert.match(stateDocs, /data\/auto-sync-runs\.json/);
+    assert.match(stateDocs, /data\/auto-sync\.lock/);
+  });
+
+  it('requires checksummed recovery points before destructive sync writes', () => {
+    const server = fs.readFileSync('src/server.js', 'utf8');
+    const workflow = fs.readFileSync('src/workflow.js', 'utf8');
+    const backup = fs.readFileSync('src/sync-backup.js', 'utf8');
+    const netease = fs.readFileSync('src/providers/netease.js', 'utf8');
+    const reactScreen = fs.readFileSync('web-app/src/screens/SyncPreviewScreen.tsx', 'utf8');
+    const stateDocs = fs.readFileSync('docs/STATE.md', 'utf8');
+
+    assert.match(server, /\/api\/sync\/backups/);
+    assert.match(server, /\/api\/sync\/backups\/restore/);
+    assert.match(server, /\/api\/sync\/media/);
+    assert.match(workflow, /reason: 'pre_delete'/);
+    assert.match(workflow, /backupResult = await createProductSyncBackup\([\s\S]+executeProductPolicyRemoveMirrorPlan/);
+    assert.match(workflow, /async function executeProductPolicyRemoveMirrorPlan[\s\S]+executeMirrorSyncPlan/);
+    assert.match(workflow, /mirrorPlanExecutesRemovals/);
+    assert.match(backup, /createHash\('sha256'\)/);
+    assert.match(backup, /verifySyncBackup/);
+    assert.match(backup, /RESTORE BACKUP/);
+    assert.match(netease, /user_playlist/);
+    assert.match(netease, /specialType/);
+    assert.match(reactScreen, /react-deletion-safety/);
+    assert.match(reactScreen, /react-preview-pagination/);
+    assert.match(reactScreen, /react-version-audition/);
+    assert.match(reactScreen, /identity-decision-panel/);
+    assert.match(reactScreen, /同一版本/);
+    assert.match(reactScreen, /不同版本/);
+    assert.match(reactScreen, /不会自动播放/);
+    assert.match(reactScreen, /继续加载/);
+    assert.match(reactScreen, /仅补回缺失歌曲/);
+    assert.match(stateDocs, /data\/sync-backups\.json/);
   });
 
   it('exposes repeatable release validation scripts', () => {

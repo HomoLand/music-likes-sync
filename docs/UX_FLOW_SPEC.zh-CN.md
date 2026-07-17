@@ -1,6 +1,6 @@
 # Ordinary User UX Flow Spec
 
-Last updated: 2026-07-08
+Last updated: 2026-07-12
 
 This document defines the ordinary-user product flow for `music-likes-sync`. It is the design contract to confirm before implementation. The goal is to hide implementation concepts such as snapshots, mirror plans, dry-runs, thresholds, cookies, tombstones, and JSON behind clear user-facing workflows.
 
@@ -86,10 +86,17 @@ Primary content:
 
 - Apple Music:
   - Status: `已读取 / 未读取 / 需要更新`
-  - Actions: `导入喜欢歌曲`, `从浏览器读取`
+  - Primary action without a reusable local session: `连接 Apple Music`
+  - Connected action: `刷新喜爱歌曲`; do not keep presenting the refresh as another login.
+  - Flow: open Apple's official page once, wait for sign-in, automatically locate `Favorite Songs`, then silently reuse the local session on later refreshes.
+  - Fallback: `导入文件`
 - QQ 音乐:
   - Status: `已连接 / 需要重新登录 / 只能读取`
-  - Actions: `扫码登录`, `查看我的歌单`
+  - Primary action only when no reusable credential exists: `扫码连接`
+  - Flow: show QQ and WeChat QR choices from Tencent's official page inside the app; poll the same short-lived browser session and continue automatically after confirmation.
+  - Local fallback: `使用本机快捷登录` opens Tencent's official page so its own QQ / WeChat quick-login controls remain available.
+  - Connected action: `查看我的歌单`; the connected dialog shows connection health and playlists, never QR or quick-login controls.
+  - Recovery action: `检查连接` first validates and reuses the saved credential. QR and quick login appear only after the backend determines that no reusable credential is available.
 - 网易云音乐:
   - Status: `已连接 / 等待扫码 / 需要重新登录`
   - Actions: `扫码登录`, `重新生成二维码`
@@ -104,6 +111,7 @@ Secondary content:
   - `真实写入验证已通过`
   - `真实写入验证需更新`
   - `尚未真实写入验证`
+- While local connection state is loading, show `检查中` and no login actions. This prevents a brief false login prompt before saved credentials are discovered.
 
 Advanced disclosure:
 
@@ -112,7 +120,9 @@ Advanced disclosure:
 
 Acceptance criteria:
 
-- The default QQ and NetEase paths do not require manual cookie copy.
+- The default Apple path requires no playlist navigation after sign-in.
+- The default QQ and NetEase paths do not require manual cookie copy or a second capture click.
+- QQ QR image data and session keys expire in memory; provider credentials are never returned to the frontend.
 - Cookie values are never visible unless the user opens advanced settings.
 - The user can tell whether each platform can be read and written.
 - The user can see whether a disposable-playlist add/remove check has recently passed, without seeing playlist ids or raw provider diagnostics.
@@ -229,9 +239,19 @@ Row content:
 
 Row actions:
 
-- `确认为同一首`
-- `不是同一首`
-- `稍后处理`
+- Addition candidate: `接受`, `换一个`, `跳过`, `问 AI`.
+- Existing cross-platform version: `同一版本`, `不同版本`, `问 AI`.
+- A saved version judgment can be undone. `不同版本` creates protected add / delete drafts; it never deletes immediately.
+
+Manual comparison panel:
+
+- Group operations by the same source recording while keeping QQ and NetEase decisions independent.
+- Show real provider artwork, platform, title, artist, album, duration, and confidence for the Apple source, each target candidate / existing version, and alternatives.
+- Resolve playback only after the review item is opened; never autoplay.
+- Use one player, allow only one version at a time, and stop after 30 seconds.
+- If a provider does not return audio because of copyright, membership, or region restrictions, keep the metadata evidence visible and explain that this version cannot be auditioned.
+- Missing artwork uses a neutral placeholder, never an unrelated album cover.
+- The right panel keeps human judgment next to playback: listen first, then choose `同一版本` or `不同版本`; AI remains an optional draft.
 
 Footer actions:
 
@@ -249,6 +269,8 @@ Acceptance criteria:
 
 - Additions and deletions are never mixed into one confirmation.
 - AI can suggest, but the user sees why.
+- AI identity drafts remain separate from durable user decisions and are never auto-applied.
+- A user can compare source and target versions by sight and sound without sending audio to AI.
 - The user can complete safe additions without approving deletions.
 
 ## Screen 5: AI 助手

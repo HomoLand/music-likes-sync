@@ -29,8 +29,8 @@ The product should not behave like an unbounded three-way overwrite. Multi-sourc
 
 ### Current Apple Canonical Flow
 
-1. Import or capture Apple Music liked songs.
-2. Log in to QQ Music and / or NetEase Cloud Music locally.
+1. Sign in to Apple Music once; automatically discover Favorite Songs and reuse the dedicated local browser profile for silent refresh. File import remains a fallback.
+2. Connect QQ Music with an in-app QQ / WeChat QR from Tencent's official page, or its visible local quick-login fallback; connect NetEase Cloud Music by QR.
 3. Snapshot the selected target playlist or liked-song list.
 4. Generate an Apple-source-of-truth mirror plan.
 5. Inspect the plan summary:
@@ -38,6 +38,7 @@ The product should not behave like an unbounded three-way overwrite. Multi-sourc
    - `add`: Apple-only tracks that need target catalog resolution.
    - `remove`: target-only tracks that Apple no longer wants.
    - `review`: uncertain matches, version conflicts, duplicates, or reverse-only matches.
+   - Manual review can compare the Apple source, QQ / NetEase candidates, and alternatives using real covers, duration, metadata, and user-initiated 30-second playback.
 6. Resolve `add` operations against the target catalog.
 7. Run a full mirror dry-run.
 8. Execute resolved additions.
@@ -102,9 +103,10 @@ Safety rules:
 - Delete and add execution paths stay separate in both UI and backend options.
 - Unresolved additions are reported as blocked, not as successful work.
 - `review` items are never mutated automatically.
+- Audio playback is human-only evidence: no autoplay, no persistence of signed QQ / NetEase URLs, and no audio content in AI or Agent requests.
 - Single-platform absence is never enough evidence for global deletion.
 
-Credential acquisition should prefer guided local flows over manual cookie copying. QQ currently uses an official-login browser session plus background cookie polling, while NetEase uses QR login; both should stay hidden behind plain connection states in the ordinary-user UI.
+Credential acquisition should prefer guided local flows over manual cookie copying. Apple now uses one-time official sign-in plus automatic Favorite Songs discovery; QQ shows QQ / WeChat QR images from Tencent's own page, preserves its quick-login fallback, and uses background cookie polling only inside the local backend; NetEase uses its QR API. All three stay hidden behind plain connection states in the ordinary-user UI, and later Apple / QQ refreshes reuse persistent local browser profiles without exposing credentials.
 
 ## AI Capability Strategy
 
@@ -280,11 +282,11 @@ Done:
 
 Next:
 
-- Expand policy execution from controlled ready-add / confirmed-delete handling into a complete ordinary-user workflow, including live provider validation and tuning bulk add review UX against real review volume.
+- Validate the scheduler end to end against a fresh Apple browser capture and a converged baseline, then tune refresh and review behavior against real library changes.
 - Extend AI eval with larger golden sets, live provider output capture, and user-feedback labels before broad auto-apply.
 - Exercise the MCP adapter in a real Hermes client workflow and tune the Agent feedback taxonomy from real usage.
 - Keep live-gated provider tests current against disposable QQ / NetEase playlists and rerun them before public release evidence expires.
-- Validate whether QQ raw QR polling can produce the same write-capable credentials as the browser-capture flow before exposing it as a first-class login mode.
+- Complete a fresh-profile human scan of both QQ and WeChat variants before the public release, then keep the deterministic official-page QR extraction test and write-capable provider validation current.
 - Add concrete v1 -> v2 migration transforms when schema version 2 is introduced.
 - Expand provider troubleshooting when real live validation reveals platform-specific failures.
 
@@ -304,8 +306,13 @@ Done:
 - Manual review controls for mirror `review` operations: mark a review item as the same track, mark it as separate so the next plan adds/removes according to Apple, or clear the saved decision.
 - Current-page bulk review controls for mirror `review` operations.
 - One-click QQ login flow that opens the official QQ Music browser session, polls for write-capable cookies in the background, saves them locally, and refreshes the QQ snapshot without a second capture click.
+- In-app QQ / WeChat QR flow backed by Tencent's official login page: transient QR pixels are copied from the same browser session that handles confirmation, and the visible official page remains available for local quick login.
+- One-time Apple browser connection that detects MusicKit authorization, locates the canonical Favorite Songs library playlist, captures catalog metadata without manual navigation, and reuses the dedicated profile in headless mode for scheduled refreshes.
 - Ordinary-user five-screen bridge in `web/product-app.js`: overview, connect platforms, sync mode, sync preview, and AI assistant, mounted before the legacy workbench.
-- React + Vite + TypeScript is now the default ordinary-user frontend at `/`, with `/app/` kept as a compatibility alias and the legacy workbench moved to `/workbench/`. It provides typed `/api/app/state` normalization, six-screen navigation, real read-side sync check / preview loading, add-candidate lookup, local add-candidate accept / skip / alternative / clear decisions, tombstone deletion-signal filters plus local ignore / current-platform-only / restore / exact-text global-delete confirmation, controlled add dry-run / execution controls, delete confirmation / execution controls, convergence check, convergence-gated baseline save, local AI profile / similar / recommendation actions, natural-language Agent tool chat, consent-gated AI provider self-test, Agent audit refresh / feedback with local-draft trace labels, advanced-settings diagnostics for live validation and AI provider state, `npm run check:web-app` type-check / build gate, Node-server hosting covered by `npm run smoke:web-app`, and real-browser desktop / mobile replacement-path coverage through `npm run smoke:react-ui`.
+- React + Vite + TypeScript is now the default ordinary-user frontend at `/`, with `/app/` kept as a compatibility alias and the legacy workbench moved to `/workbench/`. It provides typed `/api/app/state` normalization, seven-screen navigation, real read-side sync check / preview loading, automatic-sync settings / readiness / history, add-candidate lookup, local add-candidate accept / skip / alternative / clear decisions, tombstone deletion-signal filters plus local ignore / current-platform-only / restore / exact-text global-delete confirmation, controlled add dry-run / execution controls, delete confirmation / execution controls, convergence check, convergence-gated baseline save, local AI profile / similar / recommendation actions, natural-language Agent tool chat, consent-gated AI provider self-test, Agent audit refresh / feedback with local-draft trace labels, advanced-settings diagnostics for live validation and AI provider state, `npm run check:web-app` type-check / build gate, Node-server hosting covered by `npm run smoke:web-app`, and real-browser desktop / mobile replacement-path coverage through `npm run smoke:react-ui`.
+- Automatic sync now has versioned settings and run-history state, readiness gates for baseline / freshness / live validation, a local scheduler, safe automatic additions, manual-only deletion signals, cross-process execution locking, and a dedicated Apple Music-style screen.
+- Low-confidence searched additions now support consent-gated AI batch review drafts. Suggestions persist on `sync-preview` with deterministic safety downgrades, remain non-executable, and are visible through the ordinary-user preview UI; per-track and current-page actions share the same API.
+- Apple-vs-target version conflicts now use the same ordinary-user review queue: real source / target artwork and human-only 30-second audition sit beside durable `同一版本` / `不同版本` decisions. Consent-gated AI identity drafts persist separately by stable decision key, are never auto-applied, and survive full preview regeneration.
 - Product UI smoke coverage for desktop and mobile five-screen navigation, mode selection, preview buckets, AI capability cards, AI provider consent UI, Agent audit display / feedback, `/api/app/state`, `/api/sync/modes`, `/api/sync/check`, `/api/sync/preview`, and React replacement-path controlled write / AI / advanced diagnostics.
 - Ordinary-user preview actions now switch deletion behavior by policy: Apple canonical opens the exact delete-confirmation dialog, while managed bidirectional executes already confirmed global-delete decisions through `/api/sync/execute-deletions`.
 - AI assistant bridge controls for deterministic local profile generation, local recommendations, and similar-track lookup.
@@ -320,6 +327,7 @@ Next:
 - Add model-assisted recommendation / explanation eval comparison before exposing managed bidirectional writes broadly.
 - Move deeper AI provider diagnostics into advanced settings while keeping the consent-gated connection self-test and deterministic local profile / recommendation / similar-track actions in the main flow.
 - Tune bulk-review ergonomics and thresholds after live provider validation reveals the common review volume and mistake patterns.
+- Expand the AI add-review golden set with localized-title / artist-alias cases before allowing any automatic acceptance policy; current model output remains suggestion-only.
 
 ## Validation Gates
 
@@ -336,6 +344,8 @@ Automated:
 - `npm test`
 - `npm run verify`
 - HTTP smoke test with isolated fixture state for `/api/state`, `/api/mirror/plan`, `/api/mirror/decisions`, `/api/mirror/apply` dry-run, blocked QQ mid-only removals, and `/api/mirror/convergence`.
+- HTTP smoke coverage for `/api/auto-sync` enablement guards, settings, due scheduling state, dry-run execution, and sanitized history.
+- Versioned, checksummed pre-delete recovery points, an additions-only restore path, ordinary-user deletion-protection UI, and HTTP / unit coverage for fail-closed backup ordering.
 - `npm run smoke:http`
 - `npm run smoke:web-app`
 - `npm run smoke:agent-mcp`
@@ -364,6 +374,7 @@ Live-gated:
 - Save both reports with `npm run validate:live -- --write-report`.
 - Run `npm run check:release:strict`.
 - Refresh snapshots and verify the next plan has zero unexpected `add` or `remove` operations.
+- Enable automatic sync only after a converged baseline exists, then prove one scheduled additions-only cycle and confirm deletion signals remain pending for manual review.
 
 Release:
 
@@ -384,4 +395,4 @@ Release:
 ## Current Release Blockers
 
 - `npm audit --omit=dev` now reports 0 vulnerabilities after replacing the `qq-music-api` dependency with a local minimal QQ Music Web API adapter and upgrading OpenTelemetry / NetEase dependencies.
-- The remaining release blocker on this workstation is Docker environment validation: QQ and NetEase live-gated add/remove reports can be validated by the strict gate while they remain fresh, but a real Docker run still needs to produce `reports/docker-smoke.json` either from `npm run smoke:docker -- --require-docker --write-report` on a Docker-capable machine or by manually dispatching CI with `gh workflow run ci.yml --ref <branch>` and then running `npm run fetch:docker-report -- --repo owner/name` after the CI `docker-smoke-report-node-24` artifact exists. Future schema version 2 work still needs concrete v1 -> v2 transforms once that schema exists. UI has Playwright smoke coverage for the ordinary-user five-screen bridge, product API wiring, mirror workbench, single and batch review controls, add-resolution alternatives, stale snapshot / convergence health, and executable deletion confirmation. HTTP smoke runs against isolated fixture state and covers mirror plan generation, batch review decisions, product API preview generation, add-only / remove-only dry-runs, managed dry-run convergence status, blocked QQ mid-only removals, and convergence checks. npm package privacy is covered by `npm run smoke:package`; packaged first-run and packaged `npm test` behavior are covered by `npm run smoke:fresh-install`.
+- The remaining release blockers on this workstation are Docker environment validation and one real automatic-sync cycle after refreshing Apple and establishing a converged baseline. QQ and NetEase live-gated add/remove reports can be validated by the strict gate while they remain fresh, but a real Docker run still needs to produce `reports/docker-smoke.json` either from `npm run smoke:docker -- --require-docker --write-report` on a Docker-capable machine or by manually dispatching CI with `gh workflow run ci.yml --ref <branch>` and then running `npm run fetch:docker-report -- --repo owner/name` after the CI `docker-smoke-report-node-24` artifact exists. Future schema version 2 work still needs concrete v1 -> v2 transforms once that schema exists. UI has Playwright smoke coverage for the ordinary-user seven-screen flow, automatic-sync readiness / history, product API wiring, mirror workbench, review controls, add-resolution alternatives, stale snapshot / convergence health, and executable deletion confirmation. npm package privacy is covered by `npm run smoke:package`; packaged first-run and packaged `npm test` behavior are covered by `npm run smoke:fresh-install`.

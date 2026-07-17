@@ -11,6 +11,7 @@ const port = configuredPort || await pickFreePort();
 const requireMirrorPlan = hasFlag('--require-mirror-plan');
 const baseUrl = `http://127.0.0.1:${port}`;
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'music-likes-sync-http-smoke-'));
+const fixtureTimestamp = new Date().toISOString();
 
 await seedMirrorFixtures(tempRoot);
 
@@ -49,6 +50,36 @@ try {
   assert(appState.data?.validation?.live?.targets?.qq?.ok === true, '/api/app/state should summarize QQ live validation evidence');
   assert(appState.data?.validation?.live?.targets?.netease?.ok === true, '/api/app/state should summarize NetEase live validation evidence');
   assert(!JSON.stringify(appState.data?.validation).includes('fixture-playlist'), '/api/app/state live validation summary must not expose playlist ids');
+  assert(appState.data?.autoSync?.enabled === false, '/api/app/state should expose disabled auto-sync defaults');
+  const initialAutoSync = await getJson('/api/auto-sync');
+  assert(initialAutoSync.ok, '/api/auto-sync should return ok');
+  assert(initialAutoSync.data?.automation?.enabled === false, 'auto-sync should default to disabled');
+  assert(initialAutoSync.data?.readiness?.ok === false, 'auto-sync should remain blocked before baseline and fresh-source gates pass');
+  const blockedAutoSyncEnable = await postJsonStatus('/api/auto-sync', {
+    enabled: true,
+    intervalMinutes: 60,
+    targets: ['qq', 'netease'],
+    refreshApple: false,
+    refreshTargets: false,
+    autoExecuteAdditions: false,
+    requireBaseline: true,
+  }, 409);
+  assert(blockedAutoSyncEnable.ok === false, 'auto-sync enable should fail before readiness gates pass');
+  const savedDisabledAutoSync = await postJson('/api/auto-sync', {
+    enabled: false,
+    intervalMinutes: 30,
+    targets: ['qq', 'netease'],
+    refreshApple: false,
+    refreshTargets: false,
+    autoExecuteAdditions: false,
+    requireBaseline: true,
+  });
+  assert(savedDisabledAutoSync.data?.automation?.intervalMinutes === 30, 'disabled auto-sync settings should persist safely');
+  const blockedAutoSyncRun = await postJson('/api/auto-sync/run', { dryRun: true, executeAdditions: false });
+  assert(blockedAutoSyncRun.data?.run?.status === 'attention', 'manual auto-sync check should record readiness blockers without provider writes');
+  assert(blockedAutoSyncRun.data?.run?.dryRun === true, 'manual auto-sync check should default to dry-run');
+  assert(blockedAutoSyncRun.data?.history?.length === 1, 'manual auto-sync check should append scheduler history');
+  assert(!JSON.stringify(blockedAutoSyncRun.data).includes('fixture-playlist'), 'auto-sync API must not expose playlist ids');
   const liveValidation = await getJson('/api/validation/live');
   assert(liveValidation.ok, '/api/validation/live should return ok');
   assert(liveValidation.data?.targets?.qq?.status === 'verified', '/api/validation/live should report verified QQ evidence');
@@ -57,6 +88,35 @@ try {
   const modes = await getJson('/api/sync/modes');
   assert(modes.ok, '/api/sync/modes should return ok');
   assert(modes.data?.modes?.some((mode) => mode.id === 'canonical_mirror'), 'sync modes should include canonical_mirror');
+  const emptyBackups = await getJson('/api/sync/backups');
+  assert(emptyBackups.ok, '/api/sync/backups should return ok');
+  assert(emptyBackups.data?.backups?.length === 0, 'sync backups should start empty in an isolated runtime');
+  const createdBackup = await postJson('/api/sync/backups', {
+    targets: ['qq', 'netease'],
+    refresh: false,
+    reason: 'http_smoke',
+  });
+  assert(createdBackup.ok, 'sync backup creation should return ok');
+  assert(createdBackup.data?.backup?.targets?.length === 2, 'sync backup should include both writable targets');
+  assert(createdBackup.data?.backup?.integrity?.ok === true, 'sync backup should expose a successful integrity result');
+  assert(!JSON.stringify(createdBackup.data).includes('fixture-playlist'), 'sync backup API must not expose playlist ids');
+  assert(!JSON.stringify(createdBackup.data).includes('raw'), 'sync backup API must not expose raw provider payloads');
+  const restorePreview = await postJson('/api/sync/backups/restore', {
+    backupId: createdBackup.data.backup.id,
+    dryRun: true,
+    refresh: false,
+  });
+  assert(restorePreview.ok, 'sync backup restore preview should return ok');
+  assert(restorePreview.data?.dryRun === true, 'sync backup restore should default to a non-writing preview');
+  assert(restorePreview.data?.plan?.missing === 0, 'unchanged fixture snapshots should need no restore additions');
+  assert(!JSON.stringify(restorePreview.data).includes('fixture-playlist'), 'sync restore preview must not expose playlist ids');
+  const badRestoreConfirmation = await postJsonStatus('/api/sync/backups/restore', {
+    backupId: createdBackup.data.backup.id,
+    dryRun: false,
+    refresh: false,
+    confirmText: 'RESTORE',
+  }, 400);
+  assert(badRestoreConfirmation.ok === false, 'real sync restore should require the exact backup confirmation');
   const profile = await postJson('/api/ai/profile', { refresh: true });
   assert(profile.ok, '/api/ai/profile should return ok');
   assert(Number(profile.data?.summary?.trackCount || 0) > 0, 'AI profile should summarize local tracks');
@@ -205,6 +265,10 @@ try {
     mirrorDecision: 'skipped',
     midOnlyRemove: 'skipped',
     productApi: 'skipped',
+    syncBackup: {
+      targets: createdBackup.data.backup.targets.length,
+      restoreMissing: restorePreview.data.plan.missing,
+    },
     musicIntelligence: {
       profileTracks: profile.data.summary.trackCount,
       similar: similar.data.total,
@@ -225,6 +289,92 @@ try {
     assert(productCheck.ok, 'product sync check should return ok');
     assert(productCheck.data?.mode === 'canonical_mirror', 'product sync check should use canonical mirror mode');
     assert(productCheck.data?.counts?.will_add >= 0, 'product sync check should return grouped counts');
+    const addAiReviewGuard = await postJsonStatus('/api/ai/additions/review', {
+      consent: false,
+      targets: ['qq', 'netease'],
+      limit: 2,
+    }, 400);
+    assert(addAiReviewGuard.ok === false, 'product add AI review should require explicit consent');
+    assert(!JSON.stringify(addAiReviewGuard).match(/cookie|apiKey|authorization/i), 'product add AI review guard must stay redacted');
+    const identityAiReviewGuard = await postJsonStatus('/api/ai/identity/review', {
+      consent: false,
+      targets: ['qq', 'netease'],
+      limit: 2,
+    }, 400);
+    assert(identityAiReviewGuard.ok === false, 'product identity AI review should require explicit consent');
+    assert(!JSON.stringify(identityAiReviewGuard).match(/cookie|apiKey|authorization/i), 'product identity AI review guard must stay redacted');
+
+    const identityReviewPreview = await getJson('/api/sync/preview?bucket=needs_confirmation&limit=20');
+    const identityReview = identityReviewPreview.data?.items?.find((item) => item.action === 'review');
+    assert(identityReview?.id, 'canonical preview should expose a durable identity review item');
+    const keptIdentity = await postJson('/api/sync/identity-decision', {
+      operationId: identityReview.id,
+      action: 'keep',
+      bucket: 'will_keep',
+      previewLimit: 20,
+    });
+    assert(keptIdentity.ok, 'product identity decision should persist a keep decision');
+    assert(keptIdentity.data?.action === 'keep', 'identity decision should echo keep');
+    const decidedKeep = keptIdentity.data?.preview?.items?.find((item) => item.identityDecision?.action === 'keep');
+    assert(decidedKeep?.id, 'regenerated preview should expose the durable keep decision');
+    assert(decidedKeep.action === 'keep', 'same-version decision should become a safe keep operation');
+    const clearedIdentity = await postJson('/api/sync/identity-decision', {
+      operationId: decidedKeep.id,
+      action: 'clear',
+      bucket: 'needs_confirmation',
+      previewLimit: 20,
+    });
+    assert(clearedIdentity.ok, 'product identity decision should support undo');
+    assert(clearedIdentity.data?.preview?.items?.some((item) => item.action === 'review'), 'undo should restore the identity review queue');
+    const identityPlan = JSON.parse(await fs.readFile(path.join(tempRoot, 'data', 'sync-preview.json'), 'utf8'));
+    const identityOperation = identityPlan.operations.find((item) => item.id === identityReview.id);
+    assert(identityOperation?.decisionKey, 'identity review operation should retain a stable decision key');
+    await fs.writeFile(path.join(tempRoot, 'data', 'mirror-ai-suggestions.json'), JSON.stringify({
+      version: 1,
+      updatedAt: '2026-07-11T00:00:00.000Z',
+      items: {
+        [identityOperation.decisionKey]: {
+          itemId: identityOperation.decisionKey,
+          decisionKey: identityOperation.decisionKey,
+          operationId: identityOperation.id,
+          target: identityOperation.targetPlatform,
+          decision: 'same',
+          relation: 'same_recording',
+          recommendedAction: 'keep',
+          confidence: 0.99,
+          reason: 'HTTP smoke fixture identity evidence agrees.',
+          batchId: 'identity-http-smoke',
+          model: 'fixture-model',
+          reviewedAt: '2026-07-11T00:00:00.000Z',
+        },
+      },
+      batches: [],
+    }), 'utf8');
+    const aiIdentityConfirmGuard = await postJsonStatus('/api/ai/identity/apply', {
+      confirmText: 'wrong',
+      threshold: 0.9,
+    }, 400);
+    assert(aiIdentityConfirmGuard.ok === false, 'AI identity apply should require exact confirmation');
+    const approvedIdentityAi = await postJson('/api/ai/identity/apply', {
+      confirmText: 'APPLY HIGH CONFIDENCE AI IDENTITY DRAFTS',
+      threshold: 0.9,
+      operationIds: [identityOperation.id],
+      authorizationNote: 'HTTP smoke explicit user approval.',
+      bucket: 'will_keep',
+    });
+    assert(approvedIdentityAi.data?.applied === 1, 'explicit AI identity approval should apply one high-confidence draft');
+    const approvedIdentityItem = approvedIdentityAi.data?.preview?.items?.find((item) => item.identityDecision?.action === 'keep');
+    assert(approvedIdentityItem?.identityDecision?.source === 'ai_user_approved', 'AI-approved identity decision should retain approval provenance');
+    await postJson('/api/sync/identity-decision', {
+      operationId: approvedIdentityItem.id,
+      action: 'clear',
+      bucket: 'needs_confirmation',
+    });
+    const aiAddConfirmGuard = await postJsonStatus('/api/ai/additions/apply', {
+      confirmText: 'wrong',
+      threshold: 0.9,
+    }, 400);
+    assert(aiAddConfirmGuard.ok === false, 'AI addition apply should require exact confirmation');
     const agentReviewQueue = await postJson('/api/agent/chat', {
       tool: 'get_review_queue',
       arguments: { bucket: 'all', limit: 5 },
@@ -239,7 +389,7 @@ try {
     assert(!JSON.stringify(agentReviewQueue.data).match(/cookie|sk-this-must-not-be-sent/i), 'agent review queue must not expose credential-shaped data');
     const agentEvidence = await postJson('/api/agent/chat', {
       tool: 'get_track_evidence',
-      arguments: { bucket: 'will_add' },
+      arguments: { bucket: 'needs_confirmation' },
     });
     assert(agentEvidence.ok, '/api/agent/chat should return track evidence after a sync preview exists');
     assert(agentEvidence.data?.tool === 'get_track_evidence', 'agent evidence lookup should use the track evidence tool');
@@ -251,9 +401,28 @@ try {
     assert(!Object.prototype.hasOwnProperty.call(agentEvidence.data.result.evidence.sourceTrack, 'id'), 'agent evidence source track must not expose provider ids');
     assert(!Object.prototype.hasOwnProperty.call(agentEvidence.data.result.evidence.sourceTrack, 'mid'), 'agent evidence source track must not expose provider mids');
     assert(!JSON.stringify(agentEvidence.data).match(/cookie|sk-this-must-not-be-sent/i), 'agent evidence lookup must not expose credential-shaped data');
-    const productPreview = await getJson('/api/sync/preview?bucket=may_delete');
+    const productPreview = await getJson('/api/sync/preview?bucket=needs_confirmation');
     assert(productPreview.ok, 'product sync preview should return ok');
-    assert(productPreview.data?.bucket === 'may_delete', 'product sync preview should honor bucket filter');
+    assert(productPreview.data?.bucket === 'needs_confirmation', 'product sync preview should honor bucket filter');
+    const previewPageOne = await getJson('/api/sync/preview?bucket=needs_confirmation&limit=1');
+    assert(previewPageOne.data?.items?.length === 1, 'product sync preview should honor page size');
+    assert(previewPageOne.data?.nextCursor === '1', 'product sync preview should return the next cursor');
+    const previewPageTwo = await getJson(`/api/sync/preview?bucket=needs_confirmation&limit=1&cursor=${previewPageOne.data.nextCursor}`);
+    assert(previewPageTwo.data?.items?.length === 1, 'product sync preview should load the next page');
+    assert(previewPageTwo.data.items[0].id !== previewPageOne.data.items[0].id, 'product sync preview cursor should advance without duplicate items');
+    const staleMedia = await postJsonStatus('/api/sync/media', {
+      previewId: 'preview-stale',
+      operationId: productPreview.data.items[0]?.id,
+      role: 'source',
+    }, 409);
+    assert(staleMedia.ok === false, 'sync media should reject stale preview ids before provider access');
+    const unknownMedia = await postJsonStatus('/api/sync/media', {
+      previewId: productCheck.data.previewId,
+      operationId: 'unknown-operation',
+      role: 'source',
+    }, 404);
+    assert(unknownMedia.ok === false, 'sync media should only resolve tracks from the current preview');
+    assert(!JSON.stringify(unknownMedia).match(/cookie|qm_keyst|MUSIC_U|authorization/i), 'sync media errors must not expose credentials');
     const productResolveAdditions = await postJson('/api/sync/resolve-additions', {
       targets: ['qq', 'netease'],
       bucket: 'will_add',
@@ -312,6 +481,7 @@ try {
     );
     await fs.writeFile(qqLiveValidationReport, qqLiveValidationReportText, 'utf8');
 
+    await fs.rm(path.join(tempRoot, 'data', 'sync-add-state.json'), { force: true });
     const neteaseProductCheck = await postJson('/api/sync/check', {
       mode: 'canonical_mirror',
       platforms: ['apple', 'netease'],
@@ -319,8 +489,8 @@ try {
       targets: ['netease'],
     });
     assert(neteaseProductCheck.ok, 'product single-target sync check should return ok for deletion flow');
-    const currentProductMirrorPlan = await getJson('/api/mirror/plan');
-    const firstRemove = currentProductMirrorPlan.plan.operations.find((operation) => operation.action === 'remove');
+    const currentProductDeletePreview = await getJson('/api/sync/preview?bucket=may_delete&limit=20');
+    const firstRemove = currentProductDeletePreview.data.items.find((operation) => operation.action === 'remove');
     assert(firstRemove, 'product fixture should have a removable item');
     const deleteBeforeConfirm = await postJsonStatus('/api/sync/execute-deletions', {
       dryRun: true,
@@ -345,7 +515,7 @@ try {
     assert(Number(productDeleteOnly.data?.remove?.requested || 0) === 1, 'product delete-only execution should request the confirmed deletion');
     result.productApi = {
       previewId: productCheck.data.previewId,
-      mayDelete: productPreview.data.total,
+      needsConfirmation: productPreview.data.total,
       addResolutionTargets: productResolveAdditions.data.addResolution?.targets?.length || 0,
       tombstoneRiskGroups: tombstoneRisk.data.groups?.length || 0,
       addOnlyRemoveRequested: productAddOnly.data.remove?.requested || 0,
@@ -495,7 +665,7 @@ try {
       targets: ['qq', 'netease'],
     });
     assert(managedPreview.ok, 'managed product sync check should return ok with saved baseline');
-    assert(Number(managedPreview.data?.counts?.may_delete || 0) > 0, 'managed preview should expose tombstone review candidates');
+    assert(Number(managedPreview.data?.counts?.needs_confirmation || 0) > 0, 'managed preview should keep tombstone candidates in manual review');
     const managedCandidateAddId = await markFirstManagedAddReviewCandidate(tempRoot, 'qq');
     const acceptedAddCandidate = await postJson('/api/sync/addition-decision', {
       operationId: managedCandidateAddId,
@@ -559,9 +729,9 @@ try {
       targets: ['netease'],
     }, 409);
     assert(managedDeleteBeforeTombstone.ok === false, 'managed delete execution should fail before tombstone confirmation');
-    const tombstonePreview = await getJson('/api/sync/preview?bucket=may_delete');
+    const tombstonePreview = await getJson('/api/sync/preview?bucket=needs_confirmation');
     const tombstoneCandidates = tombstonePreview.data.items.filter((item) => item.tombstoneKey);
-    const tombstoneCandidate = tombstoneCandidates[0];
+    const tombstoneCandidate = tombstoneCandidates.find((item) => item.title === 'Provider Exclusive Archive') || tombstoneCandidates[0];
     assert(tombstoneCandidate, 'managed preview should include a tombstone candidate');
     const managedTombstoneRisk = await postJson('/api/ai/tombstones/analyze', {
       limit: 10,
@@ -570,7 +740,7 @@ try {
     assert(managedTombstoneRisk.ok, 'managed tombstone risk analysis should return ok');
     assert(Number(managedTombstoneRisk.data?.total || 0) >= tombstoneCandidates.length, 'managed tombstone risk analysis should cover deletion signals');
     assert(managedTombstoneRisk.data?.groups?.some((group) => group.id === 'needs_review'), 'managed tombstone risk analysis should group unhandled deletion signals');
-    const batchTombstones = tombstoneCandidates.slice(1);
+    const batchTombstones = tombstoneCandidates.filter((item) => item.id !== tombstoneCandidate.id);
     let batchedTombstones = null;
     if (batchTombstones.length) {
       batchedTombstones = await postJson('/api/sync/tombstones', {
@@ -593,9 +763,13 @@ try {
     });
     assert(confirmedTombstone.ok, 'product tombstone global delete confirmation should return ok');
     assert(Number(confirmedTombstone.data?.tombstones?.actions?.confirm_global_delete || 0) >= 1, 'global tombstone confirmation should be recorded');
-    const confirmedDeletePreview = await getJson('/api/sync/preview?bucket=may_delete');
-    const policyRemove = confirmedDeletePreview.data.items.find((item) => item.action === 'remove' && item.targetPlatforms?.[0]);
-    assert(policyRemove, 'confirmed managed tombstone should create a policy remove operation');
+    const confirmedDeletePreview = await getJson('/api/sync/preview?bucket=all&limit=100');
+    const policyRemove = confirmedDeletePreview.data.items.find((item) => (
+      item.action === 'remove'
+      && item.status === 'ready'
+      && item.targetPlatforms?.[0]
+    ));
+    assert(policyRemove, `confirmed managed tombstone should create a ready policy remove operation: ${JSON.stringify(confirmedDeletePreview.data.items.map((item) => ({ action: item.action, status: item.status, title: item.title, reason: item.reason, blockedReason: item.blockedReason })))}`);
     const policyRemoveTarget = policyRemove.targetPlatforms[0];
     const managedDeleteOnly = await postJson('/api/sync/execute-deletions', {
       dryRun: true,
@@ -668,6 +842,25 @@ try {
     assert(activatedManagedBaseline.data?.activatedPolicy?.id === 'managed_bidirectional', 'baseline activation should return managed sync policy');
     const appStateAfterActivation = await getJson('/api/app/state');
     assert(appStateAfterActivation.data?.syncMode?.id === 'managed_bidirectional', 'app state should expose activated managed sync mode');
+    const enabledAutoSync = await postJson('/api/auto-sync', {
+      enabled: true,
+      intervalMinutes: 15,
+      targets: ['qq', 'netease'],
+      refreshApple: false,
+      refreshTargets: false,
+      autoExecuteAdditions: false,
+      requireBaseline: true,
+      maxSourceAgeMinutes: 10080,
+    });
+    assert(enabledAutoSync.data?.automation?.enabled === true, 'auto-sync should enable after baseline and readiness gates pass');
+    assert(enabledAutoSync.data?.automation?.nextRunAt, 'enabled auto-sync should persist the next run time');
+    const autoSyncCheck = await postJson('/api/auto-sync/run', { dryRun: true, executeAdditions: false });
+    assert(autoSyncCheck.data?.run?.dryRun === true, 'manual scheduled-flow check must remain non-mutating without explicit execute');
+    assert(autoSyncCheck.data?.run?.preview?.previewId, 'manual scheduled-flow check should generate a sync preview');
+    assert(autoSyncCheck.data?.history?.length >= 2, 'auto-sync history should retain blocked and ready checks');
+    const appStateWithAutoSync = await getJson('/api/app/state');
+    assert(appStateWithAutoSync.data?.autoSync?.enabled === true, '/api/app/state should expose enabled auto-sync state');
+    assert(!JSON.stringify(appStateWithAutoSync.data?.autoSync).includes('operationId'), 'app auto-sync summary must not expose operation ids');
     result.productLifecycle = {
       baselineTracks: savedBaseline.data.baseline.summary?.tracks || 0,
       managedMayDelete: managedPreview.data.counts?.may_delete || 0,
@@ -683,6 +876,8 @@ try {
       syncRuns: syncRuns.runs.length,
       tombstoneActions: ignoredTombstone.data.tombstones?.actions || {},
       activatedPolicy: activatedManagedBaseline.data.activatedPolicy?.id || '',
+      autoSyncEnabled: appStateWithAutoSync.data.autoSync.enabled,
+      autoSyncHistory: autoSyncCheck.data.history.length,
     };
   }
 
@@ -805,11 +1000,13 @@ async function seedMirrorFixtures(root) {
     track('n-1', 'Already There', 'Alice', 181000),
     track('n-2', 'Old Target Only', 'Dora', 200000),
     track('n-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('n-4', 'Provider Exclusive Archive', 'Zed', 101000),
   ])), 'utf8');
   await fs.writeFile(path.join(dataDir, 'qq.json'), JSON.stringify(snapshot('qq', [
     track('q-1', 'Already There', 'Alice', 181000),
     qqMidOnlyTrack('qq-mid-old-target-only', 'Old Target Only', 'Dora', 200000),
     track('q-3', 'Night Drive Acoustic', 'Carol', 240000),
+    qqMidOnlyTrack('qq-mid-provider-exclusive', 'Provider Exclusive Archive', 'Zed', 101000),
   ])), 'utf8');
   await fs.writeFile(path.join(reportDir, 'live-validation-qq.json'), JSON.stringify(liveValidationReport('qq', packageInfo)), 'utf8');
   await fs.writeFile(path.join(reportDir, 'live-validation-netease.json'), JSON.stringify(liveValidationReport('netease', packageInfo)), 'utf8');
@@ -930,7 +1127,7 @@ async function markSyncPreviewConverged(root) {
     skipped: false,
     status: 'converged',
     converged: true,
-    refreshedAt: '2026-07-07T00:30:00.000Z',
+    refreshedAt: fixtureTimestamp,
     refreshedTargets: ['qq', 'netease'],
     previewId,
     generatedAt: preview.generatedAt,
@@ -980,7 +1177,8 @@ function snapshot(platform, tracks) {
   return {
     platform,
     source: `${platform}:http-smoke`,
-    fetchedAt: '2026-07-07T00:00:00.000Z',
+    fetchedAt: fixtureTimestamp,
+    playlistId: platform === 'apple' ? null : `${platform}-fixture-playlist`,
     skipped: false,
     tracks,
   };

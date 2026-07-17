@@ -127,9 +127,11 @@ function runStaticChecks() {
   checks.push(assertIncludes(dockerfile, 'FROM node:24-alpine', 'uses the intended Node 24 Alpine base image'));
   checks.push(assertIncludes(dockerfile, 'ENV NODE_ENV=production', 'sets production NODE_ENV'));
   checks.push(assertIncludes(dockerfile, 'HOST=0.0.0.0', 'binds the container server to all interfaces'));
+  checks.push(assertIncludes(dockerfile, 'apk add --no-cache ffmpeg', 'installs FFmpeg for local Chromaprint alignment'));
   checks.push(assertIncludes(dockerfile, 'RUN npm ci --omit=dev', 'installs production dependencies reproducibly'));
   checks.push(assertIncludes(dockerfile, 'COPY src ./src', 'copies backend source'));
   checks.push(assertIncludes(dockerfile, 'COPY web ./web', 'copies frontend assets'));
+  checks.push(assertIncludes(dockerfile, 'COPY --from=web-build /app/web-app/dist ./web-app/dist', 'copies the built React frontend'));
   checks.push(assertIncludes(dockerfile, 'EXPOSE 4319', 'documents the web port'));
   checks.push(assertIncludes(dockerfile, 'CMD ["node", "src/server.js"]', 'starts the HTTP server directly'));
   checks.push(assertNotIncludes(dockerfile, 'sed -i', 'does not patch source code during image build'));
@@ -147,10 +149,11 @@ function runStaticChecks() {
 
 async function getDockerVersion() {
   try {
-    const result = await runDocker(['--version'], { timeoutMs: 10000 });
-    return { ok: true, version: result.stdout.trim() };
+    const cli = await runDocker(['--version'], { timeoutMs: 10000 });
+    const daemon = await runDocker(['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 10000 });
+    return { ok: true, version: `${cli.stdout.trim()} (server ${daemon.stdout.trim()})` };
   } catch (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, error: `Docker daemon is unavailable: ${firstLine(error.message)}` };
   }
 }
 
@@ -257,6 +260,10 @@ function assertNotIncludes(text, needle, message) {
 
 function tail(value) {
   return String(value || '').split(/\r?\n/).filter(Boolean).slice(-20).join('\n');
+}
+
+function firstLine(value) {
+  return String(value || '').split(/\r?\n/).find(Boolean) || 'unknown error';
 }
 
 function randomPort() {
