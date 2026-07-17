@@ -1,5 +1,6 @@
 import { compareAppleToPlatform } from './match.js';
 import { durationLabel, normalizeText } from './normalize.js';
+import { trackArtworkUrl } from './track-media.js';
 
 const DEFAULT_MATCH_THRESHOLD = 0.82;
 const DEFAULT_REVIEW_THRESHOLD = 0.68;
@@ -181,6 +182,8 @@ function compactResolvedTrack(track) {
     duration: durationLabel(track.durationMs),
     durationMs: track.durationMs || null,
     isrc: track.isrc || null,
+    songType: track.songType ?? null,
+    artworkUrl: trackArtworkUrl(track),
   };
 }
 

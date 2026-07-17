@@ -80,6 +80,46 @@ describe('policy-driven sync core', () => {
     assert.equal(plan.summary.blocked, 1);
   });
 
+  it('persists canonical identity decisions through the product policy wrapper', () => {
+    const sourceSnapshot = snapshot('apple', [
+      track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
+    ]);
+    const targetSnapshot = snapshot('netease', [
+      track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 240000),
+    ]);
+    const undecided = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['netease'],
+      snapshots: { apple: sourceSnapshot, netease: targetSnapshot },
+    });
+    const review = undecided.operations.find((operation) => operation.action === 'review');
+    assert(review?.decisionKey);
+
+    const decided = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['netease'],
+      snapshots: { apple: sourceSnapshot, netease: targetSnapshot },
+      reviewDecisions: {
+        items: {
+          [review.decisionKey]: {
+            key: review.decisionKey,
+            action: 'separate',
+            target: 'netease',
+            decidedAt: '2026-07-11T00:00:00.000Z',
+          },
+        },
+      },
+    });
+
+    assert.equal(decided.operations.some((operation) => operation.action === 'review'), false);
+    assert.equal(decided.operations.every((operation) => operation.decisionKey === review.decisionKey), true);
+    assert.equal(decided.operations.every((operation) => operation.manualDecision?.action === 'separate'), true);
+    assert.equal(decided.operations.some((operation) => operation.action === 'add'), true);
+    assert.equal(decided.operations.some((operation) => operation.action === 'remove'), true);
+  });
+
   it('blocks union propagation for clusters that need review', () => {
     const plan = buildSyncPolicyPlan({
       policy: 'union_convergence',
@@ -221,6 +261,7 @@ describe('policy-driven sync core', () => {
 
     const removes = plan.operations.filter((operation) => operation.action === 'remove');
     assert.deepEqual(removes.map((operation) => operation.targetPlatform), ['qq']);
+    assert.equal(plan.operations.filter((operation) => operation.action === 'add').length, 0);
     assert.equal(plan.summary.baselineDeleted, 1);
   });
 

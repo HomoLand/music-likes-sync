@@ -115,8 +115,13 @@ export function buildSyncPolicyPlan(input = {}) {
         operations,
       });
     }
+    const unionOperations = suppressConfirmedGlobalDeleteAdds(
+      buildUnionOperations(unified, participants),
+      baselineDiff,
+      tombstones,
+    );
     const operations = [
-      ...buildUnionOperations(unified, participants),
+      ...unionOperations,
       ...buildDeletionOperations({
         baselineDiff,
         snapshots,
@@ -384,6 +389,27 @@ function buildUnionOperations(unified, participants) {
   return assignOperationIds(operations);
 }
 
+function suppressConfirmedGlobalDeleteAdds(operations, baselineDiff, tombstones) {
+  const confirmedTokenSets = [];
+  for (const diff of Object.values(baselineDiff.platforms || {})) {
+    for (const deleted of diff.deleted || []) {
+      if (tombstones.items?.[deleted.tombstoneKey]?.action === 'confirm_global_delete') {
+        confirmedTokenSets.push(new Set(deleted.tokens || []));
+      }
+    }
+  }
+  if (!confirmedTokenSets.length) return operations;
+
+  return operations.filter((operation) => {
+    if (operation.action !== 'add' || !operation.sourceTrack) return true;
+    const platform = normalizePlatform(operation.sourceTrack.platform || operation.sourcePlatform || '');
+    const tokens = trackTokens(platform, operation.sourceTrack);
+    return !confirmedTokenSets.some((confirmedTokens) => (
+      tokens.some((token) => confirmedTokens.has(token))
+    ));
+  });
+}
+
 function buildReadOnlyOperations(unified, participants, baselineDiff) {
   const operations = buildUnionOperations(unified, participants)
     .map((operation) => ({
@@ -535,6 +561,7 @@ export function summarizePolicyOperations(operations = []) {
 function policyOperation(input) {
   return {
     id: input.id || '',
+    decisionKey: input.decisionKey || '',
     action: input.action,
     status: input.status,
     destructive: Boolean(input.destructive || input.action === 'remove'),
@@ -553,6 +580,21 @@ function policyOperation(input) {
     candidateTrack: compactPolicyTrack(input.candidateTrack),
     resolvedTargetTrack: compactPolicyTrack(input.resolvedTargetTrack),
     blockedReason: input.blockedReason || '',
+    manualDecision: input.manualDecision ? {
+      key: input.manualDecision.key || input.decisionKey || '',
+      action: input.manualDecision.action || '',
+      decidedAt: input.manualDecision.decidedAt || '',
+      note: input.manualDecision.note || '',
+      originalAction: input.manualDecision.originalAction || '',
+      originalReason: input.manualDecision.originalReason || '',
+      ignored: Boolean(input.manualDecision.ignored),
+      source: input.manualDecision.source || 'manual',
+      aiBatchId: input.manualDecision.aiBatchId || '',
+      aiModel: input.manualDecision.aiModel || '',
+      aiConfidence: input.manualDecision.aiConfidence ?? null,
+      userApprovedAt: input.manualDecision.userApprovedAt || '',
+      approvalBatchId: input.manualDecision.approvalBatchId || '',
+    } : null,
   };
 }
 

@@ -72,7 +72,12 @@ export function normalizeSyncReviewResult(result, batch, meta = {}) {
       },
       reason: clean(raw.reason).slice(0, 600),
     };
-    decisions.push(applySyncSuggestionSafety(baseDecision, byId.get(itemId)));
+    const guarded = applySyncSuggestionSafety(baseDecision, byId.get(itemId));
+    decisions.push(
+      guarded.recommendedAction !== 'needs_human' && guarded.confidence < 0.65
+        ? downgradeAdd(guarded, `model confidence ${guarded.confidence} is below the draft threshold`, 'low_model_confidence')
+        : guarded,
+    );
   }
 
   return {
@@ -109,6 +114,13 @@ export function applySyncSuggestionSafety(decision, context = {}) {
   if (hasVersionCueConflict(facts.sourceText, facts.targetText)) {
     return downgradeAdd(decision, 'version cue appears on only one side', 'version_cue_mismatch');
   }
+  if (facts.deterministicSupport !== null && facts.deterministicSupport < 3 && !facts.sameIsrc) {
+    return downgradeAdd(
+      decision,
+      `only ${facts.deterministicSupport} deterministic match dimensions strongly support the candidate`,
+      'insufficient_deterministic_support',
+    );
+  }
   if (/\b(known|likely|seems?|appears on both|acceptable|mislabeled|metadata error|album difference|album discrepancy|album variance|despite version label)\b/i.test(text)) {
     return downgradeAdd(decision, 'AI used unverifiable or speculative evidence', 'speculative_evidence');
   }
@@ -140,9 +152,20 @@ function extractSyncFacts(context = {}) {
   const durationDeltaSeconds = context.duration_delta_seconds !== undefined
     ? Number(context.duration_delta_seconds)
     : durationDeltaSecondsFromTracks(source, target, sourceCluster);
+  const algorithmScore = context.algorithm_score && typeof context.algorithm_score === 'object'
+    ? context.algorithm_score
+    : null;
+  const supportDimensions = algorithmScore ? [
+    Number(algorithmScore.title || 0) >= 0.75,
+    Number(algorithmScore.artist || 0) >= 0.6,
+    Number(algorithmScore.album || 0) >= 0.75,
+    Number(algorithmScore.duration || 0) >= 0.75,
+  ].filter(Boolean).length : null;
   return {
     targetInLibrary: Boolean(context.target_candidate_in_current_library || context.targetPresence?.inLibrary),
     durationDeltaSeconds: Number.isFinite(durationDeltaSeconds) ? Math.abs(durationDeltaSeconds) : null,
+    deterministicSupport: supportDimensions,
+    sameIsrc: context.match_evidence?.isrc?.relation === 'same',
     sourceText: [
       sourceCluster.title,
       sourceCluster.artist,
@@ -266,7 +289,7 @@ function clamp(value, min, max) {
 }
 
 const SYNC_REVIEW_SYSTEM_PROMPT = `
-You are a strict music sync safety judge. You only use the supplied JSON data. Do not browse, search, infer facts from memory, or invent missing metadata.
+You are a strict music sync safety judge. You only use the supplied JSON data. Do not browse, search, infer facts or artist aliases from memory, or invent missing metadata.
 
 Task: decide whether a target platform search candidate is safe to add to the user's target playlist as the same recording/version as the source track.
 

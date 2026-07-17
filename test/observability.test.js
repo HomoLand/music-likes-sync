@@ -11,6 +11,10 @@ describe('observability helpers', () => {
     assert.equal(routeTemplate('/api/sync/check'), '/api/sync/check');
     assert.equal(routeTemplate('/api/sync/addition-decision'), '/api/sync/addition-decision');
     assert.equal(routeTemplate('/api/sync/addition-decisions'), '/api/sync/addition-decisions');
+    assert.equal(routeTemplate('/api/sync/identity-decision'), '/api/sync/identity-decision');
+    assert.equal(routeTemplate('/api/ai/identity/review'), '/api/ai/identity/review');
+    assert.equal(routeTemplate('/api/ai/identity/apply'), '/api/ai/identity/apply');
+    assert.equal(routeTemplate('/api/ai/additions/apply'), '/api/ai/additions/apply');
     assert.equal(routeTemplate('/api/mirror/plan'), '/api/mirror/plan');
     assert.equal(routeTemplate('/api/mirror/resolve-adds'), '/api/mirror/resolve-adds');
     assert.equal(routeTemplate('/api/mirror/convergence'), '/api/mirror/convergence');

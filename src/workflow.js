@@ -1,5 +1,16 @@
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
+import {
+  assessAppleAutoSyncCapture,
+  appendAutoSyncRun,
+  defaultAutoSyncState,
+  emptyAutoSyncRunLog,
+  nextAutoSyncRunAt,
+  normalizeAutoSyncState,
+  summarizeAutoSync,
+  summarizeAutoSyncRun,
+} from './auto-sync.js';
 import {
   buildAiProviderState,
   requestAiJson,
@@ -9,6 +20,9 @@ import {
 } from './ai-provider.js';
 import { buildReviewBatch, requestDeepSeekReview } from './ai-review.js';
 import { buildAppleSnapshotFromTracks, loadApplePlaylistUrl, parseAppleText } from './apple.js';
+import { captureAppleMusicPage, openAppleMusicBrowser } from './apple-edge.js';
+import { refreshQQMusicBrowserCredential } from './qq-edge.js';
+import { alignAudioMedia } from './audio-alignment.js';
 import { buildMatchEvidence, compactTrackForAi } from './evidence.js';
 import { enrichAppleSnapshotWithMusicBrainz } from './metadata/musicbrainz.js';
 import { compareAppleToPlatform } from './match.js';
@@ -54,10 +68,13 @@ import {
 } from './sync-policy.js';
 import {
   validateAgentSessionsState,
+  validateAutoSyncRunLogState,
+  validateAutoSyncState,
   validateAiProviderState,
   validateMusicProfileState,
   validateRecommendationShortlistsState,
   validateSyncBaselineState,
+  validateSyncBackupState,
   validateSyncPolicyState,
   validateSyncPreviewState,
   validateSyncRunLogState,
@@ -72,9 +89,50 @@ import {
   summarizeAgentToolResult,
 } from './agent-tools.js';
 import { buildUnifiedLibrary, buildUnifiedMarkdown } from './unified.js';
-import { addNeteaseTracksToPlaylist, removeNeteaseTracksFromPlaylist, searchNeteaseTracks } from './providers/netease.js';
-import { addQQTracksToPlaylist, removeQQTracksFromPlaylist, searchQQTracks } from './providers/qq.js';
-import { getAppleCatalogCacheStats } from './providers/apple.js';
+import {
+  addNeteaseTracksToPlaylist,
+  removeNeteaseTracksFromPlaylist,
+  resolveNeteaseTrackMedia,
+  searchNeteaseTracks,
+} from './providers/netease.js';
+import {
+  addQQTracksToPlaylist,
+  removeQQTracksFromPlaylist,
+  resolveQQTrackMedia,
+  searchQQTracks,
+} from './providers/qq.js';
+import { getAppleCatalogCacheStats, resolveAppleTrackMedia } from './providers/apple.js';
+import { trackArtworkUrl } from './track-media.js';
+import {
+  attachProductAddReviewResult,
+  buildProductAddReviewItems,
+} from './product-add-review.js';
+import {
+  attachProductAddState,
+  guardProductAddTargetConflicts,
+  normalizeProductAddState,
+  productAddReferencesTarget,
+  upsertProductAddState,
+} from './product-add-state.js';
+import {
+  attachProductIdentityReviewSuggestions,
+  buildProductIdentityReviewOperations,
+  productIdentityDecisionKey,
+  productIdentityDecisionState,
+  upsertProductIdentityReviewResult,
+} from './product-identity-review.js';
+import { acquireRunLock, RunLockError } from './run-lock.js';
+import {
+  appendSyncBackup,
+  appendSyncRestoreRun,
+  buildSyncBackup,
+  buildSyncRestorePlan,
+  emptySyncBackupState,
+  expectedSyncRestoreConfirmation,
+  summarizeSyncBackup,
+  summarizeSyncRestoreRun,
+  verifySyncBackup,
+} from './sync-backup.js';
 import {
   DATA_DIR,
   REPORT_DIR,
@@ -90,6 +148,9 @@ import {
 const require = createRequire(import.meta.url);
 const PLATFORMS = ['apple', 'qq', 'netease'];
 const WRITABLE_PLATFORMS = ['apple', 'qq', 'netease'];
+let activeProductAutoSyncPromise = null;
+let syncBackupMutationQueue = Promise.resolve();
+const productMediaCache = new Map();
 
 export const FILES = {
   appleJson: path.join(DATA_DIR, 'apple.json'),
@@ -122,8 +183,13 @@ export const FILES = {
   musicProfile: path.join(DATA_DIR, 'music-profile.json'),
   recommendationShortlists: path.join(DATA_DIR, 'recommendation-shortlists.json'),
   agentSessions: path.join(DATA_DIR, 'agent-sessions.json'),
+  autoSync: path.join(DATA_DIR, 'auto-sync.json'),
+  autoSyncRuns: path.join(DATA_DIR, 'auto-sync-runs.json'),
+  autoSyncLock: path.join(DATA_DIR, 'auto-sync.lock'),
+  syncBackups: path.join(DATA_DIR, 'sync-backups.json'),
   syncDecisions: path.join(DATA_DIR, 'sync-decisions.json'),
   syncAiSuggestions: path.join(DATA_DIR, 'sync-ai-suggestions.json'),
+  syncAddState: path.join(DATA_DIR, 'sync-add-state.json'),
   syncErrors: path.join(DATA_DIR, 'sync-errors.json'),
   writePlanBackupsDir: path.join(DATA_DIR, 'write-plan-backups'),
 };
@@ -143,11 +209,18 @@ export async function importAppleUrl(url, options = {}) {
   return apple;
 }
 
-export async function importAppleRows(rows, source = 'apple-browser') {
+export async function importAppleRows(rows, source = 'apple-browser', options = {}) {
   await ensureDirs();
-  const apple = buildAppleSnapshotFromTracks(rows, source);
+  let apple = buildAppleSnapshotFromTracks(rows, source);
   if (!apple.tracks.length) {
     throw new Error('Apple 页面抓取结果为空。');
+  }
+  if (options.enrichMetadata) {
+    const enriched = await enrichAppleSnapshotWithMusicBrainz(apple, {
+      refresh: false,
+      limit: options.metadataLimit ?? 0,
+    });
+    apple = enriched.snapshot;
   }
   await writeJson(FILES.appleJson, apple);
   return apple;
@@ -212,8 +285,20 @@ function qrStatusText(code) {
 
 export async function fetchPlatformSnapshots(options = {}) {
   await ensureDirs();
-  const qqCookie = await readTextIfExists(FILES.qqCookie);
+  let qqCookie = await readTextIfExists(FILES.qqCookie);
   const neteaseCookie = await readTextIfExists(FILES.neteaseCookie);
+
+  if (options.qq !== false && options.refreshBrowserCredential === true) {
+    try {
+      const refreshed = await refreshQQMusicBrowserCredential();
+      if (refreshed?.cookie) {
+        qqCookie = normalizeCookie(refreshed.cookie);
+        await writeText(FILES.qqCookie, qqCookie);
+      }
+    } catch {
+      // Fall back to the last saved credential; the provider request below remains the authority.
+    }
+  }
 
   const result = {};
   if (options.qq !== false) {
@@ -660,7 +745,7 @@ export async function checkMirrorConvergence(options = {}) {
 
 export async function getProductAppState() {
   await ensureDirs();
-  const [state, syncPolicy, syncPreview, syncTombstones, syncBaseline, aiProvider, liveValidation] = await Promise.all([
+  const [state, syncPolicy, syncPreview, syncTombstones, syncBaseline, aiProvider, liveValidation, autoSync] = await Promise.all([
     getState(),
     readSyncPolicyState(),
     readJsonIfExists(FILES.syncPreview),
@@ -668,6 +753,7 @@ export async function getProductAppState() {
     readJsonIfExists(FILES.syncBaseline),
     getProductAiProviderState(),
     getProductLiveValidationState(),
+    getProductAutoSyncState(),
   ]);
 
   return {
@@ -687,7 +773,368 @@ export async function getProductAppState() {
     validation: {
       live: liveValidation,
     },
+    autoSync: autoSync.automation,
   };
+}
+
+export async function getProductSyncBackups(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  const state = await (dependencies.readBackupState || readSyncBackupState)();
+  const limit = Math.min(20, Math.max(1, Number(options.limit || 5)));
+  return {
+    version: state.version,
+    updatedAt: state.updatedAt || '',
+    backups: (state.backups || []).slice(0, limit).map(summarizeVerifiedSyncBackup),
+    restoreRuns: (state.restoreRuns || []).slice(0, Math.min(50, Math.max(1, Number(options.runLimit || 20))))
+      .map(summarizeSyncRestoreRun),
+  };
+}
+
+export async function createProductSyncBackup(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  const targets = normalizeProductTargets(options.targets || ['qq', 'netease']);
+  const snapshots = options.snapshots || await loadProductBackupSnapshots(targets, options, dependencies);
+  const unavailable = targets.filter((target) => !snapshots?.[target] || snapshots[target].skipped);
+  if (unavailable.length) {
+    throw productHttpError(409, `Cannot create a deletion backup because ${unavailable.map(targetLabel).join(', ')} is unavailable.`);
+  }
+  const policyState = options.policyState || await (dependencies.readPolicyState || readSyncPolicyState)();
+  const preview = options.preview || await (dependencies.readPreview || (() => readJsonIfExists(FILES.syncPreview)))();
+  let backup;
+  try {
+    backup = buildSyncBackup({
+      id: options.id,
+      createdAt: options.createdAt,
+      previewId: options.previewId || productPreviewId(preview),
+      policy: options.policy || policyState?.policy || 'canonical_mirror',
+      reason: options.reason || 'manual',
+      targets,
+      snapshots,
+    });
+  } catch (error) {
+    throw productHttpError(409, formatErrorMessage(error));
+  }
+  const state = await persistProductSyncBackup(backup, dependencies);
+  return {
+    backup: summarizeVerifiedSyncBackup(backup),
+    updatedAt: state.updatedAt,
+    retained: state.backups.length,
+  };
+}
+
+export async function restoreProductSyncBackup(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  const state = await (dependencies.readBackupState || readSyncBackupState)();
+  const backupId = String(options.backupId || '').trim();
+  const backup = state.backups.find((item) => item.id === backupId);
+  if (!backup) throw productHttpError(404, 'Sync backup was not found.');
+
+  const targets = normalizeProductTargets(options.targets || backup.targets);
+  const snapshots = options.snapshots || await loadProductBackupSnapshots(targets, options, dependencies);
+  let plan;
+  try {
+    plan = buildSyncRestorePlan(backup, snapshots, { targets });
+  } catch (error) {
+    throw productHttpError(409, formatErrorMessage(error));
+  }
+
+  const dryRun = options.dryRun !== false;
+  const confirmationText = expectedSyncRestoreConfirmation(backup.id);
+  const startedAt = new Date().toISOString();
+  const baseRun = {
+    id: `sync-restore-${randomUUID()}`,
+    backupId: backup.id,
+    startedAt,
+    completedAt: startedAt,
+    status: dryRun ? 'preview' : 'completed',
+    dryRun,
+    targets,
+    summary: summarizeProductRestorePlan(plan),
+    error: '',
+  };
+
+  if (dryRun) {
+    await persistProductSyncRestoreRun(baseRun, dependencies);
+    return {
+      dryRun: true,
+      backup: summarizeVerifiedSyncBackup(backup),
+      confirmationText,
+      plan: baseRun.summary,
+      writes: {},
+      restoreRun: summarizeSyncRestoreRun(baseRun),
+    };
+  }
+
+  if (String(options.confirmText || '').trim() !== confirmationText) {
+    throw productHttpError(400, `Restore confirmation does not match. Enter ${confirmationText}.`);
+  }
+  assertProductRestoreDestinations(backup, snapshots, targets);
+  await (dependencies.assertLiveValidation || assertProductLiveValidationReady)(targets, options);
+
+  const writes = {};
+  try {
+    for (const target of targets) {
+      const addition = plan.additions[target];
+      if (!addition.missing) {
+        writes[target] = emptyProductRestoreMutation();
+        continue;
+      }
+      const playlistId = String(snapshots[target]?.playlistId || backup.snapshots[target]?.playlistId || '').trim();
+      const cookie = dependencies.readCookie
+        ? await dependencies.readCookie(target)
+        : await readTextIfExists(target === 'qq' ? FILES.qqCookie : FILES.neteaseCookie);
+      if (!cookie?.trim()) throw new Error(`Missing ${targetLabel(target)} cookie. Connect the platform before restoring.`);
+      const result = dependencies.addTracks
+        ? await dependencies.addTracks(target, { cookie, playlistId, tracks: addition.tracks, batchSize: options.batchSize })
+        : target === 'qq'
+          ? await addQQTracksToPlaylist(cookie, playlistId, addition.tracks, { batchSize: options.batchSize })
+          : await addNeteaseTracksToPlaylist(cookie, playlistId, addition.tracks.map((track) => track.id), { batchSize: options.batchSize });
+      writes[target] = summarizeProductRestoreMutation(result);
+    }
+
+    const verifiedSnapshots = await loadProductBackupSnapshots(targets, { ...options, refresh: true }, dependencies);
+    const verificationPlan = buildSyncRestorePlan(backup, verifiedSnapshots, { targets });
+    if (verificationPlan.summary.missing > 0) {
+      throw productHttpError(409, `Restore verification found ${verificationPlan.summary.missing} track(s) still missing.`);
+    }
+    const completedRun = {
+      ...baseRun,
+      completedAt: new Date().toISOString(),
+      status: 'completed',
+      summary: {
+        ...baseRun.summary,
+        remainingMissing: verificationPlan.summary.missing,
+      },
+    };
+    await persistProductSyncRestoreRun(completedRun, dependencies);
+    return {
+      dryRun: false,
+      backup: summarizeVerifiedSyncBackup(backup),
+      confirmationText,
+      plan: completedRun.summary,
+      writes,
+      restoreRun: summarizeSyncRestoreRun(completedRun),
+    };
+  } catch (error) {
+    const failedRun = {
+      ...baseRun,
+      completedAt: new Date().toISOString(),
+      status: 'failed',
+      error: formatErrorMessage(error).slice(0, 500),
+    };
+    await persistProductSyncRestoreRun(failedRun, dependencies);
+    throw error;
+  }
+}
+
+export async function getProductAutoSyncState(options = {}) {
+  await ensureDirs();
+  const state = await readAutoSyncState();
+  const log = await readAutoSyncRunLog();
+  const readiness = await evaluateProductAutoSyncReadiness(state, options);
+  return {
+    automation: summarizeAutoSync(state, log, {
+      running: options.running === undefined ? Boolean(activeProductAutoSyncPromise) : Boolean(options.running),
+    }),
+    readiness,
+    history: (log.runs || []).slice(0, Math.min(50, Math.max(1, Number(options.limit || 20))))
+      .map(summarizeAutoSyncRun),
+  };
+}
+
+export async function saveProductAutoSyncSettings(options = {}) {
+  await ensureDirs();
+  const current = await readAutoSyncState();
+  const state = normalizeAutoSyncState(options, current);
+  const readiness = await evaluateProductAutoSyncReadiness(state);
+  if (state.enabled && !readiness.ok) {
+    throw productHttpError(409, `自动同步尚不能启用：${readiness.reasons.map((reason) => reason.message).join('；')}`);
+  }
+  assertValidState(validateAutoSyncState(state), 'auto-sync');
+  await writeJson(FILES.autoSync, state);
+  return getProductAutoSyncState();
+}
+
+export async function runProductAutoSync(options = {}, dependencies = {}) {
+  if (activeProductAutoSyncPromise) {
+    throw productHttpError(409, '自动同步任务正在运行，请等待本次任务结束。');
+  }
+  activeProductAutoSyncPromise = runProductAutoSyncWithLock(options, dependencies);
+  try {
+    return await activeProductAutoSyncPromise;
+  } finally {
+    activeProductAutoSyncPromise = null;
+  }
+}
+
+async function runProductAutoSyncWithLock(options = {}, dependencies = {}) {
+  let lock;
+  try {
+    lock = await (dependencies.acquireAutoSyncLock || acquireRunLock)(FILES.autoSyncLock);
+  } catch (error) {
+    if (error instanceof RunLockError || error?.code === 'RUN_LOCKED') {
+      throw productHttpError(409, '另一项自动同步任务正在运行，请等待本次任务结束。');
+    }
+    throw error;
+  }
+  try {
+    return await performProductAutoSync(options, dependencies);
+  } finally {
+    await lock?.release?.();
+  }
+}
+
+async function performProductAutoSync(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  const state = await readAutoSyncState();
+  const trigger = ['manual', 'scheduled', 'startup'].includes(options.trigger) ? options.trigger : 'manual';
+  const policyState = await readSyncPolicyState();
+  const policy = policyState.policy || 'canonical_mirror';
+  const startedAt = new Date().toISOString();
+  const executeAdditions = trigger === 'manual'
+    ? options.executeAdditions === true && state.enabled && state.autoExecuteAdditions
+    : state.enabled && state.autoExecuteAdditions;
+  const baseRun = {
+    id: `auto-sync-${randomUUID()}`,
+    trigger,
+    status: 'completed',
+    startedAt,
+    completedAt: startedAt,
+    policy,
+    targets: state.targets,
+    dryRun: options.dryRun === true || !executeAdditions,
+    message: '',
+    snapshotRefresh: {},
+    preview: {},
+    additions: { requested: 0, succeeded: 0, failed: 0, blocked: 0 },
+    deletionSignals: 0,
+    convergence: null,
+    error: '',
+  };
+
+  if (trigger !== 'manual' && !state.enabled) {
+    return finishProductAutoSyncRun(state, {
+      ...baseRun,
+      status: 'skipped',
+      message: '自动同步未启用。',
+    });
+  }
+
+  const refreshFailures = [];
+  if (state.refreshApple) {
+    try {
+      const apple = await (dependencies.refreshAppleSnapshot || refreshAppleSnapshotForAutoSync)();
+      baseRun.snapshotRefresh.apple = { status: 'refreshed', count: apple.tracks?.length || 0, fetchedAt: apple.fetchedAt || '' };
+    } catch (error) {
+      const message = safeAutoSyncMessage(formatErrorMessage(error));
+      baseRun.snapshotRefresh.apple = { status: 'failed', message };
+      refreshFailures.push({ code: 'apple_refresh_failed', platform: 'apple', message: `Apple Music 刷新失败：${message}` });
+    }
+  } else {
+    baseRun.snapshotRefresh.apple = { status: 'skipped' };
+  }
+
+  if (state.refreshTargets) {
+    try {
+      const snapshots = await (dependencies.refreshTargetSnapshots || fetchPlatformSnapshots)({
+        qq: state.targets.includes('qq'),
+        netease: state.targets.includes('netease'),
+        refreshBrowserCredential: true,
+      });
+      for (const target of state.targets) {
+        const snapshot = snapshots[target];
+        const status = snapshot?.skipped ? 'failed' : 'refreshed';
+        baseRun.snapshotRefresh[target] = {
+          status,
+          count: snapshot?.tracks?.length || 0,
+          fetchedAt: snapshot?.fetchedAt || '',
+          message: snapshot?.reason || '',
+        };
+        if (status === 'failed') {
+          refreshFailures.push({
+            code: `${target}_refresh_failed`,
+            platform: target,
+            message: `${targetLabel(target)} 刷新失败：${snapshot?.reason || '登录凭据不可用'}`,
+          });
+        }
+      }
+    } catch (error) {
+      const message = safeAutoSyncMessage(formatErrorMessage(error));
+      refreshFailures.push({ code: 'target_refresh_failed', platform: '', message: `目标平台刷新失败：${message}` });
+    }
+  } else {
+    for (const target of state.targets) baseRun.snapshotRefresh[target] = { status: 'skipped' };
+  }
+
+  const readiness = await evaluateProductAutoSyncReadiness(state, { extraReasons: refreshFailures });
+  if (!readiness.ok) {
+    return finishProductAutoSyncRun(state, {
+      ...baseRun,
+      status: 'attention',
+      message: readiness.reasons.map((reason) => reason.message).join('；'),
+    });
+  }
+
+  try {
+    const preview = await (dependencies.generatePreview || generateProductSyncPreview)({
+      mode: policy,
+      policy,
+      source: policyState.source?.platform || 'apple',
+      platforms: policyState.participants || ['apple', ...state.targets],
+      targets: state.targets,
+      deletionPolicy: policyState.deletionPolicy || 'ask',
+    });
+    const counts = preview.counts || {};
+    baseRun.preview = {
+      previewId: preview.previewId || '',
+      generatedAt: preview.generatedAt || '',
+      willAdd: Number(counts.will_add || 0),
+      needsConfirmation: Number(counts.needs_confirmation || 0),
+      mayDelete: Number(counts.may_delete || 0),
+    };
+    baseRun.deletionSignals = baseRun.preview.mayDelete;
+
+    const shouldExecuteAdditions = !baseRun.dryRun && baseRun.preview.willAdd > 0;
+    if (shouldExecuteAdditions) {
+      const execution = await (dependencies.executeAdditions || executeProductSyncAdditions)({
+        targets: state.targets,
+        dryRun: false,
+        force: false,
+        resolve: true,
+        refreshAfterWrite: true,
+      });
+      baseRun.additions = summarizeAutoSyncAdditions(execution, baseRun.preview.willAdd);
+      const convergenceResult = await (dependencies.checkConvergence || checkProductSyncConvergence)({
+        targets: state.targets,
+        refreshTarget: false,
+        persist: true,
+      });
+      baseRun.convergence = convergenceResult.convergence || convergenceResult.preview?.convergence || null;
+    } else {
+      baseRun.additions = {
+        requested: baseRun.preview.willAdd,
+        succeeded: 0,
+        failed: 0,
+        blocked: 0,
+      };
+    }
+
+    const needsAttention = baseRun.preview.needsConfirmation > 0
+      || baseRun.preview.mayDelete > 0
+      || baseRun.additions.failed > 0
+      || baseRun.additions.blocked > 0;
+    baseRun.status = needsAttention ? 'attention' : 'completed';
+    baseRun.message = autoSyncRunMessage(baseRun);
+    return finishProductAutoSyncRun(state, baseRun);
+  } catch (error) {
+    const message = safeAutoSyncMessage(formatErrorMessage(error));
+    return finishProductAutoSyncRun(state, {
+      ...baseRun,
+      status: 'failed',
+      message: `自动同步失败：${message}`,
+      error: message,
+    });
+  }
 }
 
 export async function getProductLiveValidationState(options = {}) {
@@ -815,9 +1262,14 @@ export async function generateProductSyncPreview(options = {}) {
   const source = String(options.source || 'apple').trim();
   const targetList = normalizeProductTargets(options.targets || options.target || ['qq']);
   const participants = normalizeProductParticipants(options.platforms || [source, ...targetList]);
-  const snapshots = await readProductSnapshots();
-  const baseline = await readJsonIfExists(FILES.syncBaseline);
-  const tombstones = await readSyncTombstoneState();
+  const [snapshots, baseline, tombstones, reviewDecisions, identitySuggestions, addState] = await Promise.all([
+    readProductSnapshots(),
+    readJsonIfExists(FILES.syncBaseline),
+    readSyncTombstoneState(),
+    readMirrorDecisionState(),
+    readMirrorAiSuggestionState(),
+    readProductAddState(),
+  ]);
   const generatedAt = new Date().toISOString();
   const policyState = {
     version: 1,
@@ -830,7 +1282,7 @@ export async function generateProductSyncPreview(options = {}) {
   };
   assertValidState(validateSyncPolicyState(policyState), 'sync-policy');
 
-  const plan = buildSyncPolicyPlan({
+  let plan = buildSyncPolicyPlan({
     policy,
     source,
     targets: targetList,
@@ -840,12 +1292,32 @@ export async function generateProductSyncPreview(options = {}) {
     tombstones,
     threshold: options.threshold || options.minScore,
     reviewThreshold: options.reviewThreshold,
+    reviewDecisions: productIdentityDecisionState(reviewDecisions),
     generatedAt,
   });
+  if (policy === 'canonical_mirror') {
+    plan = attachProductIdentityReviewSuggestions(plan, identitySuggestions);
+  }
+  const restoredAddState = attachProductAddState(plan, addState);
+  if (restoredAddState.changed) {
+    plan = {
+      ...restoredAddState.plan,
+      summary: {
+        ...summarizePolicyOperations(restoredAddState.plan.operations || []),
+        baselineAdded: plan.summary?.baselineAdded || 0,
+        baselineDeleted: plan.summary?.baselineDeleted || 0,
+      },
+    };
+  }
+  const conflictGuard = applyProductAddConflictGuards(plan);
+  plan = conflictGuard.plan;
   assertValidState(validateSyncPreviewState(plan), 'sync-preview');
 
-  await writeJson(FILES.syncPolicy, policyState);
-  await writeJson(FILES.syncPreview, plan);
+  await Promise.all([
+    writeJson(FILES.syncPolicy, policyState),
+    writeJson(FILES.syncPreview, plan),
+    conflictGuard.changed ? persistProductAddState(plan.operations, generatedAt) : Promise.resolve(),
+  ]);
 
   let compatibilityMirrorPlan = null;
   if (policy === 'canonical_mirror' && source === 'apple' && targetList.length >= 1) {
@@ -1100,8 +1572,9 @@ export async function getProductSyncPreview(options = {}) {
   const bucket = String(options.bucket || 'all').trim();
   const offset = Math.max(0, Number(options.offset || options.cursor || 0));
   const limit = Math.min(100, Math.max(1, Number(options.limit || 50)));
+  const comparisonIndex = buildProductComparisonIndex(plan.operations || []);
   const items = (plan.operations || [])
-    .map((operation) => productPreviewItem(operation, { tombstones }))
+    .map((operation) => productPreviewItem(operation, { tombstones, comparisonIndex }))
     .filter((item) => bucket === 'all' || item.bucket === bucket);
   const page = items.slice(offset, offset + limit);
   return {
@@ -1115,6 +1588,71 @@ export async function getProductSyncPreview(options = {}) {
     total: items.length,
     items: page,
     nextCursor: offset + page.length < items.length ? String(offset + page.length) : null,
+  };
+}
+
+export async function resolveProductSyncMedia(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  const plan = await (dependencies.readPreview || (() => readJsonIfExists(FILES.syncPreview)))();
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  const currentPreviewId = productPreviewId(plan);
+  const requestedPreviewId = String(options.previewId || '').trim();
+  if (requestedPreviewId && requestedPreviewId !== currentPreviewId) {
+    throw productHttpError(409, '同步预览已经更新，请刷新页面后再试听。');
+  }
+
+  const operationId = String(options.operationId || options.id || '').trim();
+  if (!operationId) throw productHttpError(400, '缺少同步预览条目 ID。');
+  const operation = (plan.operations || []).find((item) => item.id === operationId);
+  if (!operation) throw productHttpError(404, '当前同步预览里没有这个条目。');
+  const selection = selectProductMediaTrack(operation, options);
+  if (!selection.track) throw productHttpError(404, '这个条目没有对应的平台版本。');
+
+  const resolved = await resolveCachedProductMedia(selection, options, dependencies);
+  const { track, media, cacheKey } = resolved;
+  let alignment = null;
+  if (options.alignWithSource && selection.role !== 'source' && media?.playable && media?.previewUrl) {
+    const sourceSelection = selectProductMediaTrack(operation, { role: 'source' });
+    if (sourceSelection.track) {
+      try {
+        const source = await resolveCachedProductMedia(sourceSelection, options, dependencies);
+        if (source.media?.playable && source.media?.previewUrl) {
+          alignment = dependencies.alignMedia
+            ? await dependencies.alignMedia(source, resolved)
+            : await alignAudioMedia({
+              previewUrl: source.media.previewUrl,
+              expiresAt: source.media.expiresAt,
+              cacheKey: source.cacheKey,
+            }, {
+              previewUrl: media.previewUrl,
+              expiresAt: media.expiresAt,
+              cacheKey,
+            });
+        }
+      } catch {
+        alignment = unavailableProductMediaAlignment();
+      }
+    }
+    alignment ||= unavailableProductMediaAlignment();
+  }
+
+  const artworkUrl = media?.artworkUrl || trackArtworkUrl(track);
+  return {
+    previewId: currentPreviewId,
+    operationId,
+    role: selection.role,
+    alternativeIndex: selection.alternativeIndex,
+    track: productTrackSummary({ ...track, artworkUrl }),
+    media: {
+      artworkUrl: artworkUrl || '',
+      previewUrl: media?.previewUrl || '',
+      playable: Boolean(media?.playable && media?.previewUrl),
+      reason: media?.reason || '',
+      expiresAt: media?.expiresAt || '',
+      maxPreviewSeconds: alignment?.maxPreviewSeconds || 30,
+      alignment,
+    },
   };
 }
 
@@ -1141,8 +1679,9 @@ export async function resolveProductSyncAdditions(options = {}) {
   const tombstones = await readSyncTombstoneState();
   const bucket = String(options.bucket || 'will_add').trim();
   const limit = Math.min(100, Math.max(1, Number(options.previewLimit || options.limit || 30)));
+  const comparisonIndex = buildProductComparisonIndex(resolvedPlan.operations || []);
   const items = (resolvedPlan.operations || [])
-    .map((operation) => productPreviewItem(operation, { tombstones }))
+    .map((operation) => productPreviewItem(operation, { tombstones, comparisonIndex }))
     .filter((item) => bucket === 'all' || item.bucket === bucket)
     .slice(0, limit);
 
@@ -1161,6 +1700,387 @@ export async function resolveProductSyncAdditions(options = {}) {
         .filter((item) => bucket === 'all' || item.bucket === bucket).length,
       items,
     },
+  };
+}
+
+export async function reviewProductAddCandidates(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  if (options.consent !== true) {
+    throw productHttpError(400, '使用 AI 复核前，需要明确同意发送当前候选的最小化歌曲证据。');
+  }
+  const plan = await readJsonIfExists(FILES.syncPreview);
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查并查找新增候选。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  const items = buildProductAddReviewItems(plan, {
+    operationIds: options.operationIds,
+    targets: options.targets,
+    limit: options.limit || options.aiLimit,
+    refresh: options.refresh,
+  });
+  if (!items.length) {
+    throw productHttpError(409, '当前没有可交给 AI 复核的低置信新增候选。');
+  }
+
+  const aiProvider = await resolveWorkflowAiProvider(options);
+  const result = await (dependencies.requestReview || requestDeepSeekSyncReview)({
+    apiKey: aiProvider.apiKey,
+    model: aiProvider.model,
+    baseUrl: aiProvider.baseUrl,
+    thinking: options.thinking !== false,
+    items,
+  });
+  const attached = attachProductAddReviewResult(plan, result);
+  assertValidState(validateSyncPreviewState(attached.plan), 'sync-preview');
+  await Promise.all([
+    writeJson(FILES.syncPreview, attached.plan),
+    persistProductAddState(attached.plan.operations, attached.plan.addAiReview?.reviewedAt),
+  ]);
+  const preview = await getProductSyncPreview({
+    bucket: options.bucket || 'needs_confirmation',
+    limit: options.previewLimit || 30,
+  });
+  return {
+    previewId: productPreviewId(attached.plan),
+    batchId: result.batchId || '',
+    model: result.model || '',
+    reviewedAt: result.reviewedAt || '',
+    changed: attached.changed,
+    summary: attached.summary,
+    reviews: (result.decisions || []).map((decision) => ({
+      operationId: decision.itemId || '',
+      target: decision.target || '',
+      recommendedAction: decision.recommendedAction || 'needs_human',
+      relation: decision.relation || 'uncertain',
+      confidence: Number(decision.confidence || 0),
+      guarded: Boolean(decision.safety?.guarded),
+      reason: String(decision.reason || '').slice(0, 600),
+    })),
+    preview,
+  };
+}
+
+export async function reviewProductIdentityCandidates(options = {}, dependencies = {}) {
+  await (dependencies.ensureDirs || ensureDirs)();
+  if (options.consent !== true) {
+    throw productHttpError(400, '使用 AI 复核前，需要明确同意发送当前两个平台版本的最小化歌曲证据。');
+  }
+  const plan = await readJsonIfExists(FILES.syncPreview);
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  if (plan.policy !== 'canonical_mirror') {
+    throw productHttpError(409, '跨平台版本判断目前只用于 Apple Music 可信源同步。');
+  }
+
+  const operations = buildProductIdentityReviewOperations(plan, {
+    operationIds: options.operationIds,
+    targets: options.targets,
+    limit: options.limit || options.aiLimit,
+    refresh: options.refresh,
+  });
+  if (!operations.length) {
+    throw productHttpError(409, '当前没有可交给 AI 复核的跨平台版本冲突。');
+  }
+
+  const aiProvider = await resolveWorkflowAiProvider(options);
+  const result = await (dependencies.requestReview || requestDeepSeekMirrorReview)({
+    apiKey: aiProvider.apiKey,
+    model: aiProvider.model,
+    baseUrl: aiProvider.baseUrl,
+    thinking: options.thinking !== false,
+    operations,
+  });
+  const currentSuggestions = await readMirrorAiSuggestionState();
+  const persisted = upsertProductIdentityReviewResult(currentSuggestions, {
+    ...result,
+    itemCount: operations.length,
+  });
+  const nextPlan = attachProductIdentityReviewSuggestions(plan, persisted.state);
+  assertValidState(validateSyncPreviewState(nextPlan), 'sync-preview');
+  await Promise.all([
+    writeJson(FILES.mirrorAiSuggestions, persisted.state),
+    writeJson(FILES.syncPreview, nextPlan),
+  ]);
+  const preview = await getProductSyncPreview({
+    bucket: options.bucket || 'needs_confirmation',
+    limit: options.previewLimit || 30,
+  });
+  return {
+    previewId: productPreviewId(nextPlan),
+    batchId: result.batchId || '',
+    model: result.model || '',
+    reviewedAt: result.reviewedAt || '',
+    changed: persisted.changed,
+    summary: persisted.summary,
+    reviews: (result.decisions || []).map((decision) => ({
+      operationId: decision.operationId || '',
+      decisionKey: decision.decisionKey || decision.itemId || '',
+      target: decision.target || '',
+      recommendedAction: decision.recommendedAction || 'needs_human',
+      relation: decision.relation || 'uncertain',
+      confidence: Number(decision.confidence || 0),
+      guarded: Boolean(decision.safety?.guarded),
+      reason: String(decision.reason || '').slice(0, 600),
+    })),
+    preview,
+  };
+}
+
+export async function applyProductIdentityDecision(options = {}) {
+  await ensureDirs();
+  const plan = await readJsonIfExists(FILES.syncPreview);
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  if (plan.policy !== 'canonical_mirror') {
+    throw productHttpError(409, '跨平台版本判断目前只用于 Apple Music 可信源同步。');
+  }
+
+  const operationId = String(options.operationId || options.id || '').trim();
+  if (!operationId) throw productHttpError(400, '缺少待判断条目 ID。');
+  const operation = (plan.operations || []).find((item) => item.id === operationId);
+  if (!operation) throw productHttpError(404, '没有找到待判断条目，请刷新同步预览后重试。');
+  const action = String(options.action || '').trim().toLowerCase();
+  if (!['keep', 'separate', 'clear'].includes(action)) {
+    throw productHttpError(400, '版本判断只支持 keep、separate 或 clear。');
+  }
+  if (action !== 'clear' && operation.action !== 'review') {
+    throw productHttpError(409, '这个条目已不在人工版本复核队列中。');
+  }
+
+  const key = productIdentityDecisionKey(operation);
+  const target = normalizeMirrorTarget(operation.targetPlatform || operation.targetTrack?.platform || options.target);
+  const decisions = await readMirrorDecisionState();
+  const now = new Date().toISOString();
+  applyMirrorDecision(decisions, {
+    key,
+    action,
+    target,
+    operationId,
+    reason: operation.reason || '',
+    note: String(options.note || '').slice(0, 500),
+  }, action, now);
+  decisions.updatedAt = now;
+  await writeJson(FILES.mirrorDecisions, decisions);
+
+  const regenerated = await refreshProductPreviewFromPolicy();
+  if (!regenerated?.plan) throw productHttpError(409, '同步规则尚未保存，无法重建预览。');
+  const preview = await getProductSyncPreview({
+    bucket: options.bucket || 'needs_confirmation',
+    limit: options.previewLimit || 30,
+  });
+  return {
+    previewId: productPreviewId(regenerated.plan),
+    action,
+    decisionKey: key,
+    decision: decisions.items[key] || null,
+    counts: productPreviewCounts(regenerated.plan),
+    blocked: productPreviewBlocked(regenerated.plan),
+    preview,
+  };
+}
+
+export async function applyProductIdentityAiSuggestions(options = {}) {
+  await ensureDirs();
+  const expected = 'APPLY HIGH CONFIDENCE AI IDENTITY DRAFTS';
+  if (String(options.confirmText || '').trim().toUpperCase() !== expected) {
+    throw productHttpError(400, `AI 身份建议确认不匹配。请输入 ${expected}。`);
+  }
+  const plan = await readJsonIfExists(FILES.syncPreview);
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  if (plan.policy !== 'canonical_mirror') {
+    throw productHttpError(409, 'AI 身份建议批量采纳目前只用于 Apple Music 可信源同步。');
+  }
+
+  const suggestions = await readMirrorAiSuggestionState();
+  const decisions = await readMirrorDecisionState();
+  const threshold = normalizeApplyThreshold(options.threshold ?? 0.9);
+  const requested = new Set(normalizeOperationIds(options.operationIds));
+  const targets = new Set(normalizeProductTargets(options.targets || plan.targets || ['qq', 'netease']));
+  const now = new Date().toISOString();
+  const batchId = `product-identity-ai-approval-${now.replace(/[:.]/g, '-')}`;
+  const stats = {
+    threshold,
+    reviewed: 0,
+    eligible: 0,
+    applied: 0,
+    kept: 0,
+    separated: 0,
+    skippedGuarded: 0,
+    skippedLowConfidence: 0,
+    skippedNeedsHuman: 0,
+    skippedExistingManual: 0,
+    skippedNotRequested: 0,
+  };
+
+  for (const operation of plan.operations || []) {
+    if (operation.action !== 'review') continue;
+    if (requested.size && !requested.has(operation.id)) {
+      stats.skippedNotRequested += 1;
+      continue;
+    }
+    if (targets.size && !targets.has(operation.targetPlatform)) continue;
+    const key = productIdentityDecisionKey(operation);
+    const suggestion = suggestions.items?.[key] || operation.aiReview;
+    if (!suggestion) continue;
+    stats.reviewed += 1;
+    if (suggestion.safety?.guarded) {
+      stats.skippedGuarded += 1;
+      continue;
+    }
+    const confidence = Number(suggestion.confidence || 0);
+    if (!Number.isFinite(confidence) || confidence < threshold) {
+      stats.skippedLowConfidence += 1;
+      continue;
+    }
+    const action = mirrorAiActionToDecision(suggestion.recommendedAction);
+    if (!action) {
+      stats.skippedNeedsHuman += 1;
+      continue;
+    }
+    stats.eligible += 1;
+    const existing = decisions.items[key];
+    if (existing && !existing.aiAppliedAt && !options.overwrite) {
+      stats.skippedExistingManual += 1;
+      continue;
+    }
+    decisions.items[key] = {
+      key,
+      action,
+      target: normalizeMirrorTarget(operation.targetPlatform || suggestion.target),
+      operationId: operation.id,
+      reason: suggestion.reasonCode || operation.reason || 'identity_ai_user_approved',
+      note: String(options.authorizationNote || suggestion.reason || 'User approved high-confidence AI identity draft.').slice(0, 500),
+      source: 'ai_user_approved',
+      aiBatchId: suggestion.batchId || '',
+      aiModel: suggestion.model || '',
+      aiConfidence: confidence,
+      userApprovedAt: now,
+      approvalBatchId: batchId,
+      decidedAt: existing?.decidedAt || now,
+      updatedAt: now,
+    };
+    stats.applied += 1;
+    if (action === 'keep') stats.kept += 1;
+    if (action === 'separate') stats.separated += 1;
+  }
+
+  if (!stats.applied) {
+    throw productHttpError(409, '没有通过安全门禁和置信度阈值的 AI 身份建议可供采纳。');
+  }
+  decisions.updatedAt = now;
+  await writeJson(FILES.mirrorDecisions, decisions);
+  const regenerated = await refreshProductPreviewFromPolicy();
+  const preview = await getProductSyncPreview({
+    bucket: options.bucket || 'needs_confirmation',
+    limit: options.previewLimit || 30,
+  });
+  return {
+    ...stats,
+    batchId,
+    previewId: productPreviewId(regenerated?.plan || regenerated),
+    preview,
+  };
+}
+
+export async function applyProductAddAiSuggestions(options = {}) {
+  await ensureDirs();
+  const expected = 'APPLY HIGH CONFIDENCE AI ADD DRAFTS';
+  if (String(options.confirmText || '').trim().toUpperCase() !== expected) {
+    throw productHttpError(400, `AI 新增建议确认不匹配。请输入 ${expected}。`);
+  }
+  const plan = await readJsonIfExists(FILES.syncPreview);
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  const threshold = normalizeApplyThreshold(options.threshold ?? 0.9);
+  const requested = new Set(normalizeOperationIds(options.operationIds));
+  const targets = new Set(normalizeProductTargets(options.targets || plan.targets || ['qq', 'netease']));
+  const now = new Date().toISOString();
+  const batchId = `product-add-ai-approval-${now.replace(/[:.]/g, '-')}`;
+  const stats = {
+    threshold,
+    reviewed: 0,
+    eligible: 0,
+    applied: 0,
+    skippedGuarded: 0,
+    skippedLowConfidence: 0,
+    skippedNonAdd: 0,
+    skippedWithoutCandidate: 0,
+    skippedNotRequested: 0,
+  };
+
+  const operations = (plan.operations || []).map((operation) => {
+    if (operation.action !== 'add' || !operation.aiReview) return operation;
+    if (requested.size && !requested.has(operation.id)) {
+      stats.skippedNotRequested += 1;
+      return operation;
+    }
+    if (targets.size && !targets.has(operation.targetPlatform)) return operation;
+    stats.reviewed += 1;
+    if (operation.aiReview.guarded || operation.aiReview.safety?.guarded) {
+      stats.skippedGuarded += 1;
+      return operation;
+    }
+    const confidence = Number(operation.aiReview.confidence || 0);
+    if (!Number.isFinite(confidence) || confidence < threshold) {
+      stats.skippedLowConfidence += 1;
+      return operation;
+    }
+    if (operation.aiReview.recommendedAction !== 'add') {
+      stats.skippedNonAdd += 1;
+      return operation;
+    }
+    if (!operation.candidateTrack) {
+      stats.skippedWithoutCandidate += 1;
+      return operation;
+    }
+    stats.eligible += 1;
+    stats.applied += 1;
+    return applyProductAddDecisionToOperation(operation, {
+      action: 'accept_candidate',
+      batchId,
+      decidedAt: now,
+      source: 'ai_user_approved',
+      aiBatchId: operation.aiReview.batchId || '',
+      aiModel: operation.aiReview.model || '',
+      aiConfidence: confidence,
+      userApprovedAt: now,
+    });
+  });
+
+  if (!stats.applied) {
+    throw productHttpError(409, '没有通过安全门禁和置信度阈值的 AI 新增建议可供采纳。');
+  }
+  let nextPlan = {
+    ...plan,
+    resolvedAt: now,
+    operations,
+    summary: {
+      ...summarizePolicyOperations(operations),
+      baselineAdded: plan.summary?.baselineAdded || 0,
+      baselineDeleted: plan.summary?.baselineDeleted || 0,
+    },
+    addAiApproval: {
+      approvedAt: now,
+      batchId,
+      authorizationNote: String(options.authorizationNote || '').slice(0, 500),
+      ...stats,
+    },
+  };
+  nextPlan = applyProductAddConflictGuards(nextPlan).plan;
+  assertValidState(validateSyncPreviewState(nextPlan), 'sync-preview');
+  await Promise.all([
+    writeJson(FILES.syncPreview, nextPlan),
+    persistProductAddState(nextPlan.operations, now),
+  ]);
+  const preview = await getProductSyncPreview({
+    bucket: options.bucket || 'needs_confirmation',
+    limit: options.previewLimit || 30,
+  });
+  return {
+    ...stats,
+    batchId,
+    previewId: productPreviewId(nextPlan),
+    preview,
   };
 }
 
@@ -1196,7 +2116,7 @@ export async function applyProductAddCandidateDecision(options = {}) {
   if (!changed) {
     throw productHttpError(matchedNonAdd ? 409 : 404, matchedNonAdd ? '没有找到同 ID 的新增操作；请刷新同步预览后重试。' : '没有找到对应的新增操作。');
   }
-  const nextPlan = {
+  let nextPlan = {
     ...plan,
     resolvedAt: now,
     addResolution: {
@@ -1210,8 +2130,13 @@ export async function applyProductAddCandidateDecision(options = {}) {
       baselineDeleted: plan.summary?.baselineDeleted || 0,
     },
   };
+  nextPlan = applyProductAddConflictGuards(nextPlan).plan;
+  selected = nextPlan.operations.find((operation) => operation.id === operationId) || selected;
   assertValidState(validateSyncPreviewState(nextPlan), 'sync-preview');
-  await writeJson(FILES.syncPreview, nextPlan);
+  await Promise.all([
+    writeJson(FILES.syncPreview, nextPlan),
+    persistProductAddState(selected ? [selected] : [], now),
+  ]);
   const tombstones = await readSyncTombstoneState();
   return {
     previewId: productPreviewId(nextPlan),
@@ -1273,7 +2198,7 @@ export async function applyProductAddCandidateDecisionBatch(options = {}) {
     throw productHttpError(409, '没有可批量处理的新增候选；请刷新同步预览后重试。');
   }
 
-  const nextPlan = {
+  let nextPlan = {
     ...plan,
     resolvedAt: now,
     addResolution: {
@@ -1287,8 +2212,13 @@ export async function applyProductAddCandidateDecisionBatch(options = {}) {
       baselineDeleted: plan.summary?.baselineDeleted || 0,
     },
   };
+  nextPlan = applyProductAddConflictGuards(nextPlan).plan;
+  changedOperations.splice(0, changedOperations.length, ...nextPlan.operations.filter((operation) => requested.has(operation.id)));
   assertValidState(validateSyncPreviewState(nextPlan), 'sync-preview');
-  await writeJson(FILES.syncPreview, nextPlan);
+  await Promise.all([
+    writeJson(FILES.syncPreview, nextPlan),
+    persistProductAddState(changedOperations, now),
+  ]);
   const tombstones = await readSyncTombstoneState();
   return {
     previewId: productPreviewId(nextPlan),
@@ -1358,6 +2288,10 @@ export async function confirmProductSyncDeletions(options = {}) {
   if (String(options.confirmText || '').trim().toUpperCase() !== expected) {
     throw productHttpError(400, `删除确认不匹配。请输入 ${expected} 后再确认删除。`);
   }
+  const policyState = await readSyncPolicyState();
+  if ((policyState.policy || '') === 'canonical_mirror') {
+    return confirmCanonicalProductSyncDeletions(options, targets);
+  }
 
   let tombstones = await readSyncTombstoneState();
   const now = new Date().toISOString();
@@ -1405,91 +2339,99 @@ export async function confirmProductSyncDeletions(options = {}) {
   };
 }
 
+async function confirmCanonicalProductSyncDeletions(options, targets) {
+  const plan = await readJsonIfExists(FILES.syncPreview);
+  if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
+  assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  let tombstones = await readSyncTombstoneState();
+  const now = new Date().toISOString();
+  const targetResults = {};
+  const confirmedOperationIds = [];
+  let confirmed = 0;
+  let skippedPendingAdd = 0;
+
+  for (const target of targets) {
+    const operationIds = productPolicyOperationIdsForTarget(options.operationIds, target);
+    if (hasProductOperationFilter(options.operationIds) && !operationIds.length) {
+      targetResults[target] = { confirmed: 0, operationIds: [], skipped: true, pendingAdd: 0 };
+      continue;
+    }
+    const selected = selectProductPolicyRemoveOperations(plan.operations || [], target, operationIds, plan.policy);
+    const pending = selected.filter((operation) => canonicalRemoveHasPendingReplacement(plan, operation));
+    const operations = selected.filter((operation) => !canonicalRemoveHasPendingReplacement(plan, operation));
+    targetResults[target] = {
+      confirmed: operations.length,
+      operationIds: operations.map((operation) => operation.id),
+      pendingAdd: pending.length,
+    };
+    confirmed += operations.length;
+    skippedPendingAdd += pending.length;
+    confirmedOperationIds.push(...operations.map((operation) => operation.id));
+    for (const operation of operations) {
+      const key = canonicalProductDeletionKey(operation);
+      tombstones = upsertTombstoneDecision(tombstones, {
+        key,
+        action: 'confirm_global_delete',
+        platform: target,
+        track: operation.targetTrack,
+        note: String(options.authorizationNote || `User confirmed canonical deletion for ${operation.id}`).slice(0, 500),
+        decidedAt: now,
+        updatedAt: now,
+      });
+      tombstones.items[key].operationId = operation.id;
+      tombstones.items[key].decisionKey = operation.decisionKey || '';
+      tombstones.items[key].userApprovedAt = now;
+    }
+  }
+
+  if (!confirmed) {
+    const reason = skippedPendingAdd
+      ? `有 ${skippedPendingAdd} 个删除需要先完成对应 Apple 版本新增。`
+      : '没有可确认的删除操作。';
+    throw productHttpError(409, reason);
+  }
+  assertValidState(validateSyncTombstoneState(tombstones), 'sync-tombstones');
+  await writeJson(FILES.syncTombstones, tombstones);
+  return {
+    target: targets.length === 1 ? targets[0] : 'multi',
+    targets: targetResults,
+    confirmed,
+    skippedPendingAdd,
+    operationIds: confirmedOperationIds,
+    tombstones: summarizeProductTombstones(tombstones),
+  };
+}
+
 export async function executeProductSyncAdditions(options = {}) {
   await ensureDirs();
   const policyState = await readSyncPolicyState();
-  if (policyState?.policy && policyState.policy !== 'canonical_mirror') {
-    return executeProductPolicySyncAdditions(options, policyState);
-  }
-  await assertProductExecutionPolicy();
-  const targets = await resolveProductExecutionTargets(options);
-  await assertProductLiveValidationReady(targets, options);
-  const results = [];
-
-  for (const target of targets) {
-    const operationIds = productOperationIdsForTarget(options.operationIds, target);
-    if (hasProductOperationFilter(options.operationIds) && !operationIds.length) {
-      results.push(emptyProductExecutionResult(target, options, 'operation_filter_empty'));
-      continue;
-    }
-    await generateProductMirrorPlanForTarget(target, options);
-    results.push(await runMirrorSyncPlan(productRunOptionsForTarget(options, target, 'add', operationIds)));
-  }
-
-  return aggregateProductExecutionResults(results, {
-    targets,
-    dryRun: options.dryRun !== false,
-    action: 'add',
-  });
+  return executeProductPolicySyncAdditions(options, policyState);
 }
 
 export async function executeProductSyncDeletions(options = {}) {
   await ensureDirs();
   const policyState = await readSyncPolicyState();
-  if (policyState?.policy && policyState.policy !== 'canonical_mirror') {
-    return executeProductPolicySyncDeletions(options, policyState);
-  }
-  await assertProductExecutionPolicy();
-  const targets = await resolveProductExecutionTargets(options);
-  await assertProductLiveValidationReady(targets, options);
-  const tombstones = await readSyncTombstoneState();
-  const results = [];
-  let selected = 0;
-  let missingConfirmations = 0;
-
-  for (const target of targets) {
-    const plan = await generateProductMirrorPlanForTarget(target, options);
-    const operationIds = productOperationIdsForTarget(options.operationIds, target);
-    if (hasProductOperationFilter(options.operationIds) && !operationIds.length) {
-      results.push(emptyProductExecutionResult(target, options, 'operation_filter_empty'));
-      continue;
-    }
-    const operations = selectMirrorRemoveOperations(plan, operationIds);
-    if (!operations.length) {
-      results.push(emptyProductExecutionResult(target, options, 'no_delete_operations'));
-      continue;
-    }
-    selected += operations.length;
-    const missing = operations.filter((operation) => !isProductDeletionConfirmed(tombstones, target, operation.id));
-    missingConfirmations += missing.length;
-    if (missing.length) continue;
-    results.push(await runMirrorSyncPlan({
-      ...productRunOptionsForTarget(options, target, 'remove', operations.map((operation) => operation.id)),
-      confirmText: expectedMirrorDeleteConfirmation(target),
-    }));
-  }
-
-  if (!selected) throw productHttpError(409, '没有可执行的删除操作。');
-  if (missingConfirmations) {
-    throw productHttpError(409, `删除执行被阻止：${missingConfirmations} 个操作缺少确认记录。`);
-  }
-
-  return aggregateProductExecutionResults(results, {
-    targets,
-    dryRun: options.dryRun !== false,
-    action: 'remove',
-  });
+  return executeProductPolicySyncDeletions(options, policyState);
 }
 
 async function executeProductPolicySyncAdditions(options = {}, policyState = {}) {
-  const plan = await readJsonIfExists(FILES.syncPreview);
+  let plan = await readJsonIfExists(FILES.syncPreview);
   if (!plan) throw productHttpError(409, 'Missing sync preview. Run a sync check before executing additions.');
   assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  const conflictGuard = applyProductAddConflictGuards(plan);
+  if (conflictGuard.changed) {
+    plan = conflictGuard.plan;
+    assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+    await Promise.all([
+      writeJson(FILES.syncPreview, plan),
+      persistProductAddState(plan.operations, new Date().toISOString()),
+    ]);
+  }
   const policy = plan.policy || policyState.policy || '';
   if (policy === 'read_only_analysis') {
     throw productHttpError(409, 'Read-only analysis mode cannot write additions.');
   }
-  if (policy !== 'union_convergence' && policy !== 'managed_bidirectional') {
+  if (!['canonical_mirror', 'union_convergence', 'managed_bidirectional'].includes(policy)) {
     throw productHttpError(409, `Policy add execution is not supported for ${policy || 'unknown'} mode.`);
   }
 
@@ -1540,49 +2482,55 @@ async function executeProductPolicySyncAdditions(options = {}, policyState = {})
 }
 
 async function executeProductPolicySyncDeletions(options = {}, policyState = {}) {
-  const plan = await readJsonIfExists(FILES.syncPreview);
+  let plan = await readJsonIfExists(FILES.syncPreview);
   if (!plan) throw productHttpError(409, 'Missing sync preview. Run a sync check before executing deletions.');
   assertValidState(validateSyncPreviewState(plan), 'sync-preview');
   const policy = plan.policy || policyState.policy || '';
   if (policy === 'read_only_analysis') {
     throw productHttpError(409, 'Read-only analysis mode cannot write deletions.');
   }
-  if (policy !== 'managed_bidirectional') {
+  if (!['canonical_mirror', 'managed_bidirectional'].includes(policy)) {
     throw productHttpError(409, `Policy delete execution is not supported for ${policy || 'unknown'} mode.`);
   }
 
   const targets = resolveProductPolicyExecutionTargets(options, policyState, plan);
   await assertProductLiveValidationReady(targets, options);
+  const realWrite = options.dryRun === false;
+  if (realWrite) {
+    await loadProductBackupSnapshots(targets, { ...options, refresh: true });
+    const refreshed = await refreshProductPreviewFromPolicy({ policyState });
+    plan = refreshed?.plan || refreshed || plan;
+    assertValidState(validateSyncPreviewState(plan), 'sync-preview');
+  }
   const snapshots = await readProductSnapshots();
   const tombstones = await readSyncTombstoneState();
-  const results = [];
+  const entries = [];
   let selected = 0;
   let missingConfirmations = 0;
 
   for (const target of targets) {
     const operationIds = productPolicyOperationIdsForTarget(options.operationIds, target);
     if (hasProductOperationFilter(options.operationIds) && !operationIds.length) {
-      results.push(emptyProductExecutionResult(target, options, 'operation_filter_empty'));
+      entries.push({ target, result: emptyProductExecutionResult(target, options, 'operation_filter_empty') });
       continue;
     }
 
-    const operations = selectProductPolicyRemoveOperations(plan.operations || [], target, operationIds);
+    const operations = selectProductPolicyRemoveOperations(plan.operations || [], target, operationIds, policy)
+      .filter((operation) => policy !== 'canonical_mirror' || !canonicalRemoveHasPendingReplacement(plan, operation));
     if (!operations.length) {
-      results.push(emptyProductExecutionResult(target, options, 'no_delete_operations'));
+      entries.push({ target, result: emptyProductExecutionResult(target, options, 'no_delete_operations') });
       continue;
     }
     selected += operations.length;
 
-    const unconfirmed = operations.filter((operation) => !isProductPolicyDeletionConfirmed(tombstones, operation));
+    const unconfirmed = operations.filter((operation) => !isProductPolicyDeletionConfirmed(tombstones, operation, policy));
     missingConfirmations += unconfirmed.length;
-    if (unconfirmed.length) continue;
-
     const removePlan = buildProductPolicyRemoveMirrorPlan(plan, target, {
       operationIds: operations.map((operation) => operation.id),
       playlistId: productTargetOptionValue(options.playlistId, target) || snapshots[target]?.playlistId || '',
       snapshot: snapshots[target],
     });
-    results.push(await executeProductPolicyRemoveMirrorPlan(removePlan, options, target));
+    entries.push({ target, operations, removePlan, blocked: unconfirmed.length > 0 });
   }
 
   if (!selected) throw productHttpError(409, 'No executable policy deletion operations are available.');
@@ -1590,11 +2538,30 @@ async function executeProductPolicySyncDeletions(options = {}, policyState = {})
     throw productHttpError(409, `Policy deletion execution blocked: ${missingConfirmations} operation(s) are missing confirmed tombstones.`);
   }
 
-  const aggregate = aggregateProductExecutionResults(results, {
+  const executableEntries = entries.filter((entry) => entry.removePlan && !entry.blocked);
+  let backupResult = null;
+  if (realWrite) {
+    backupResult = await createProductSyncBackup({
+      targets: executableEntries.map((entry) => entry.target),
+      snapshots,
+      preview: plan,
+      policy,
+      reason: 'pre_delete',
+    });
+  }
+
+  const results = [];
+  for (const entry of entries) {
+    if (entry.result) results.push(entry.result);
+    else results.push(await executeProductPolicyRemoveMirrorPlan(entry.removePlan, options, entry.target));
+  }
+
+  const aggregateBase = aggregateProductExecutionResults(results, {
     targets,
     dryRun: options.dryRun !== false,
     action: 'remove',
   });
+  const aggregate = backupResult ? { ...aggregateBase, backup: backupResult.backup } : aggregateBase;
   return attachProductPolicyConvergence(aggregate, {
     policy,
     policyState,
@@ -1938,7 +2905,7 @@ export async function analyzeProductTombstoneRisks(options = {}) {
   const tombstones = await readSyncTombstoneState();
   const limit = clampPositiveInteger(options.limit, 50, 100);
   const operations = (plan.operations || [])
-    .filter((operation) => productBucketForOperation(operation) === 'may_delete' && operation.tombstoneKey)
+    .filter((operation) => operation.tombstoneKey && operation.reason === 'tombstone_candidate')
     .slice(0, limit);
   const items = operations.map((operation) => {
     const item = productPreviewItem(operation, { tombstones });
@@ -2414,7 +3381,7 @@ export async function resolveMirrorAdds(options = {}) {
 
 export async function runMirrorSyncPlan(options = {}) {
   await ensureDirs();
-  const plan = await readJsonIfExists(FILES.mirrorPlan);
+  const plan = options.plan || await readJsonIfExists(FILES.mirrorPlan);
   if (!plan) throw new Error('缺少 Apple 可信源镜像计划，请先生成 mirror plan。');
   const target = normalizeMirrorTarget(plan.target?.platform || options.target || 'qq');
   const dryRun = options.dryRun !== false;
@@ -2433,6 +3400,18 @@ export async function runMirrorSyncPlan(options = {}) {
     if (completed) {
       return duplicateMirrorRunResult(completed, identity);
     }
+  }
+
+  let deleteBackup = null;
+  if (!dryRun && options.skipDeleteBackup !== true && mirrorPlanExecutesRemovals(plan, actions)) {
+    deleteBackup = await createProductSyncBackup({
+      targets: [target],
+      refresh: true,
+      playlistId: { [target]: playlistId },
+      preview: plan,
+      policy: 'canonical_mirror',
+      reason: 'pre_delete',
+    });
   }
 
   let checkpoint = null;
@@ -2490,6 +3469,7 @@ export async function runMirrorSyncPlan(options = {}) {
       status: 'completed',
       resumed: Boolean(checkpoint?.resumeOf),
       resumeOf: checkpoint?.resumeOf || '',
+      backup: deleteBackup?.backup || null,
     };
   } catch (error) {
     if (checkpoint) {
@@ -2497,6 +3477,14 @@ export async function runMirrorSyncPlan(options = {}) {
     }
     throw error;
   }
+}
+
+function mirrorPlanExecutesRemovals(plan, actions) {
+  const includesRemove = !actions.length || actions.includes('remove');
+  return includesRemove && (plan.operations || []).some((operation) => (
+    operation.action === 'remove'
+    && (operation.status === 'ready' || operation.status === 'blocked')
+  ));
 }
 
 export async function saveMirrorDecision(input = {}) {
@@ -3675,6 +4663,7 @@ function productPlatformState(platform, state) {
     id: platform,
     label: targetLabel(platform),
     state: platformConnectionState(platform, snapshot, hasCredential),
+    credentialPresent: Boolean(hasCredential),
     trackCount: snapshot.count || 0,
     lastReadAt: snapshot.fetchedAt || '',
     capabilities: {
@@ -3875,6 +4864,241 @@ function summarizeProductSyncRun(run) {
   };
 }
 
+async function readAutoSyncState() {
+  const data = await readJsonIfExists(FILES.autoSync);
+  const state = data || defaultAutoSyncState();
+  assertValidState(validateAutoSyncState(state), 'auto-sync');
+  return state;
+}
+
+async function readAutoSyncRunLog() {
+  const data = await readJsonIfExists(FILES.autoSyncRuns);
+  const log = data || emptyAutoSyncRunLog();
+  assertValidState(validateAutoSyncRunLogState(log), 'auto-sync-runs');
+  return log;
+}
+
+async function evaluateProductAutoSyncReadiness(state, options = {}) {
+  const [baseline, policyState, liveValidation, snapshots] = await Promise.all([
+    readJsonIfExists(FILES.syncBaseline),
+    readSyncPolicyState(),
+    getProductLiveValidationState(),
+    readProductSnapshots(),
+  ]);
+  const reasons = [...(options.extraReasons || [])];
+  if (state.requireBaseline && !baseline) {
+    reasons.push({ code: 'missing_baseline', platform: '', message: '请先完成一次收敛同步并保存基线。' });
+  }
+  if (policyState.policy === 'read_only_analysis') {
+    reasons.push({ code: 'read_only_policy', platform: '', message: '只分析模式不能启用自动同步。' });
+  }
+
+  const snapshotStatus = {};
+  const requiredPlatforms = ['apple', ...state.targets];
+  for (const platform of requiredPlatforms) {
+    const snapshot = snapshots[platform];
+    const fetchedAt = snapshot?.fetchedAt || '';
+    const ageMinutes = fetchedAt ? Math.max(0, (Date.now() - Date.parse(fetchedAt)) / 60000) : null;
+    const available = Boolean(snapshot && !snapshot.skipped && Array.isArray(snapshot.tracks));
+    snapshotStatus[platform] = {
+      available,
+      fetchedAt,
+      ageMinutes: ageMinutes === null || Number.isNaN(ageMinutes) ? null : Math.round(ageMinutes * 10) / 10,
+      tracks: snapshot?.tracks?.length || 0,
+    };
+    if (!available) {
+      reasons.push({
+        code: `${platform}_snapshot_missing`,
+        platform,
+        message: `${targetLabel(platform)} 曲库尚未读取。`,
+      });
+    } else if (ageMinutes === null || Number.isNaN(ageMinutes) || ageMinutes > state.maxSourceAgeMinutes) {
+      reasons.push({
+        code: `${platform}_snapshot_stale`,
+        platform,
+        message: `${targetLabel(platform)} 曲库已超过 ${formatAutoSyncAge(state.maxSourceAgeMinutes)}，请先刷新。`,
+      });
+    }
+  }
+
+  for (const target of state.targets) {
+    const validation = liveValidation.targets?.[target];
+    if (!validation?.ok) {
+      reasons.push({
+        code: `${target}_write_validation_missing`,
+        platform: target,
+        message: `${targetLabel(target)} 真实新增/删除验证尚未通过或已过期。`,
+      });
+    }
+  }
+
+  const uniqueReasons = [...new Map(reasons.map((reason) => [`${reason.code}:${reason.platform || ''}`, reason])).values()];
+  return {
+    ok: uniqueReasons.length === 0,
+    reasons: uniqueReasons,
+    policy: {
+      id: policyState.policy || 'canonical_mirror',
+      label: productPolicyLabel(policyState.policy || 'canonical_mirror'),
+    },
+    baseline: summarizeProductBaseline(baseline),
+    snapshots: snapshotStatus,
+    liveValidation: {
+      ok: state.targets.every((target) => Boolean(liveValidation.targets?.[target]?.ok)),
+      targets: Object.fromEntries(state.targets.map((target) => [target, {
+        ok: Boolean(liveValidation.targets?.[target]?.ok),
+        status: liveValidation.targets?.[target]?.status || 'missing',
+        validatedAt: liveValidation.targets?.[target]?.validatedAt || '',
+      }])),
+    },
+  };
+}
+
+async function refreshAppleSnapshotForAutoSync() {
+  const current = await readJsonIfExists(FILES.appleJson);
+  const sourceUrl = /^https:\/\/music\.apple\.com\//iu.test(String(current?.source || ''))
+    ? String(current.source)
+    : '';
+  const reference = await readAppleAutoSyncReference(current);
+
+  let capture = null;
+  let capturedPage = false;
+  let lastError = null;
+  try {
+    capture = await captureAppleMusicPage();
+    capturedPage = true;
+    const assessment = assessAppleAutoSyncCapture(capture, reference);
+    if (!assessment.ok) {
+      lastError = new Error(assessment.message);
+      capture = null;
+    }
+  } catch (error) {
+    lastError = error;
+  }
+
+  if (!capture?.tracks?.length) {
+    if (!sourceUrl) {
+      throw new Error('当前 Apple 快照不是浏览器来源。请在连接管理中从浏览器重新读取一次“喜欢的歌曲”。');
+    }
+    if (!capturedPage) await openAppleMusicBrowser(sourceUrl, { headless: true });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await sleep(1200 + attempt * 500);
+      try {
+        const candidate = await captureAppleMusicPage();
+        const assessment = assessAppleAutoSyncCapture(candidate, reference);
+        if (assessment.ok) {
+          capture = candidate;
+          break;
+        }
+        lastError = new Error(assessment.message);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+  if (!capture?.tracks?.length) throw lastError || new Error('Apple Music 自动刷新没有读取到歌曲。');
+  return importAppleRows(
+    capture.tracks,
+    capture.source || sourceUrl || 'apple-browser-auto-sync',
+    { enrichMetadata: true, metadataLimit: 0 },
+  );
+}
+
+async function readAppleAutoSyncReference(current) {
+  const [baseline, mirrorPlan] = await Promise.all([
+    readJsonIfExists(FILES.syncBaseline),
+    readJsonIfExists(FILES.mirrorPlan),
+  ]);
+  const baselineReference = {
+    count: baseline?.platforms?.apple?.count || baseline?.platforms?.apple?.tracks?.length || 0,
+    source: baseline?.platforms?.apple?.source || '',
+    fetchedAt: baseline?.platforms?.apple?.fetchedAt || baseline?.savedAt || '',
+  };
+  if (baselineReference.count > 0) return baselineReference;
+
+  const candidates = [
+    {
+      count: current?.tracks?.length || 0,
+      source: current?.source || '',
+      fetchedAt: current?.fetchedAt || '',
+    },
+    {
+      count: mirrorPlan?.source?.platform === 'apple' ? mirrorPlan.source.count || 0 : 0,
+      source: mirrorPlan?.source?.platform === 'apple' ? mirrorPlan.source.source || '' : '',
+      fetchedAt: mirrorPlan?.source?.platform === 'apple' ? mirrorPlan.source.fetchedAt || '' : '',
+    },
+  ].filter((candidate) => candidate.count > 0);
+  return candidates.sort((left, right) => right.count - left.count)[0] || { count: 0, source: '', fetchedAt: '' };
+}
+
+async function finishProductAutoSyncRun(state, run) {
+  const completedAt = new Date().toISOString();
+  const entry = {
+    ...run,
+    completedAt,
+    message: safeAutoSyncMessage(run.message),
+    error: safeAutoSyncMessage(run.error),
+  };
+  const currentLog = await readAutoSyncRunLog();
+  const log = appendAutoSyncRun(currentLog, entry);
+  assertValidState(validateAutoSyncRunLogState(log), 'auto-sync-runs');
+  await writeJson(FILES.autoSyncRuns, log);
+
+  const nextState = normalizeAutoSyncState({
+    ...state,
+    nextRunAt: nextAutoSyncRunAt(state, completedAt),
+    lastRunAt: completedAt,
+    lastStatus: entry.status,
+    lastMessage: entry.message,
+    lastRunId: entry.id,
+  }, state, { now: completedAt });
+  assertValidState(validateAutoSyncState(nextState), 'auto-sync');
+  await writeJson(FILES.autoSync, nextState);
+  const result = await getProductAutoSyncState({ running: false });
+  return {
+    ...result,
+    run: summarizeAutoSyncRun(entry),
+  };
+}
+
+function summarizeAutoSyncAdditions(execution, fallbackRequested = 0) {
+  const requested = Number(execution?.add?.requested ?? execution?.addResult?.requested ?? fallbackRequested) || 0;
+  const succeeded = Number(execution?.addResult?.added ?? execution?.addResult?.accepted ?? 0) || 0;
+  const failed = Number(execution?.addResult?.failed ?? 0) || 0;
+  const blocked = Number(execution?.add?.blocked ?? 0)
+    + Number(execution?.blocked?.unresolvedAdds ?? 0)
+    + Number(execution?.addResult?.skipped ?? 0);
+  return { requested, succeeded, failed, blocked };
+}
+
+function autoSyncRunMessage(run) {
+  const parts = [];
+  if (run.dryRun) parts.push('本次仅检查，未写入平台。');
+  else if (run.additions.succeeded > 0) parts.push(`已自动新增 ${run.additions.succeeded} 首。`);
+  else parts.push('没有需要自动新增的歌曲。');
+  if (run.preview.needsConfirmation > 0) parts.push(`${run.preview.needsConfirmation} 首需要复核。`);
+  if (run.deletionSignals > 0) parts.push(`${run.deletionSignals} 条删除信号等待确认，未自动删除。`);
+  if (run.additions.blocked > 0) parts.push(`${run.additions.blocked} 首新增因匹配不确定而暂停。`);
+  return parts.join('');
+}
+
+function safeAutoSyncMessage(value) {
+  return String(value || '')
+    .replace(/\b(?:MUSIC_U|qm_keyst|qqmusic_key|p_skey)=[^;\s]+/giu, '[credential redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._-]+/giu, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/giu, 'sk-[redacted]')
+    .slice(0, 500);
+}
+
+function formatAutoSyncAge(minutes) {
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天`;
+  if (minutes % 60 === 0) return `${minutes / 60} 小时`;
+  return `${minutes} 分钟`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function productNextAction(plan, syncPolicy) {
   if (!plan) return syncPolicy?.policy ? 'run_sync_check' : 'choose_sync_mode';
   const counts = productPreviewCounts(plan);
@@ -3950,7 +5174,7 @@ function summarizeProductAddResolution(addResolution = {}, targets = []) {
 function productPreviewItem(operation, options = {}) {
   const track = operation.sourceTrack || operation.targetTrack || operation.candidateTrack || {};
   const tombstoneDecision = productTombstoneDecisionForOperation(operation, options.tombstones);
-  const resolvedTrack = operation.resolvedTargetTrack || operation.targetTrack || null;
+  const resolvedTrack = operation.resolvedTargetTrack || null;
   const candidateTrack = operation.candidateTrack || null;
   return {
     id: operation.id,
@@ -3961,6 +5185,9 @@ function productPreviewItem(operation, options = {}) {
     title: track.title || '',
     artist: track.artist || (Array.isArray(track.artists) ? track.artists.join(', ') : ''),
     album: track.album || '',
+    artworkUrl: trackArtworkUrl(track),
+    sourceTrack: operation.sourceTrack ? productTrackSummary(operation.sourceTrack) : null,
+    targetTrack: operation.targetTrack ? productTrackSummary(operation.targetTrack) : null,
     sourcePlatforms: [...new Set([operation.sourcePlatform, ...(operation.platforms || [])].filter(Boolean))],
     sourcePlatform: operation.sourcePlatform || '',
     targetPlatforms: [...new Set([operation.targetPlatform].filter(Boolean))],
@@ -3976,16 +5203,89 @@ function productPreviewItem(operation, options = {}) {
       message: operation.resolution.message || '',
     } : null,
     alternatives: Array.isArray(operation.alternatives) ? operation.alternatives.slice(0, 3).map(productTrackSummary) : [],
+    relatedMatches: productRelatedMatches(operation, options.comparisonIndex),
     addDecision: operation.addDecision ? {
       action: operation.addDecision.action || '',
       alternativeIndex: operation.addDecision.alternativeIndex ?? null,
       batchId: operation.addDecision.batchId || '',
       decidedAt: operation.addDecision.decidedAt || '',
+      source: operation.addDecision.source || 'manual',
+      aiBatchId: operation.addDecision.aiBatchId || '',
+      aiModel: operation.addDecision.aiModel || '',
+      aiConfidence: operation.addDecision.aiConfidence ?? null,
+      userApprovedAt: operation.addDecision.userApprovedAt || '',
+    } : null,
+    identityDecision: operation.manualDecision ? {
+      action: operation.manualDecision.action || '',
+      decidedAt: operation.manualDecision.decidedAt || '',
+      originalReason: operation.manualDecision.originalReason || '',
+      source: operation.manualDecision.source || 'manual',
+      aiModel: operation.manualDecision.aiModel || '',
+      aiConfidence: operation.manualDecision.aiConfidence ?? null,
+      userApprovedAt: operation.manualDecision.userApprovedAt || '',
+    } : null,
+    aiReview: operation.aiReview ? {
+      batchId: operation.aiReview.batchId || '',
+      model: operation.aiReview.model || '',
+      reviewedAt: operation.aiReview.reviewedAt || '',
+      recommendedAction: operation.aiReview.recommendedAction || 'needs_human',
+      relation: operation.aiReview.relation || 'uncertain',
+      confidence: Number(operation.aiReview.confidence || 0),
+      reason: operation.aiReview.reason || '',
+      guarded: Boolean(operation.aiReview.safety?.guarded),
     } : null,
     tombstoneKey: operation.tombstoneKey || '',
     tombstoneAction: tombstoneDecision?.action || '',
     tombstoneUpdatedAt: tombstoneDecision?.updatedAt || '',
   };
+}
+
+function buildProductComparisonIndex(operations = []) {
+  const index = new Map();
+  for (const operation of operations) {
+    const key = productSourceComparisonKey(operation);
+    if (!key) continue;
+    const group = index.get(key) || [];
+    group.push(operation);
+    index.set(key, group);
+  }
+  return index;
+}
+
+function productRelatedMatches(operation, comparisonIndex) {
+  if (!(comparisonIndex instanceof Map)) return [];
+  const key = productSourceComparisonKey(operation);
+  if (!key) return [];
+  return (comparisonIndex.get(key) || [])
+    .filter((related) => related.id !== operation.id && ['qq', 'netease'].includes(related.targetPlatform))
+    .map((related) => ({
+      operationId: related.id || '',
+      action: related.action || '',
+      targetPlatform: related.targetPlatform || '',
+      score: productScoreValue(related.resolvedScore ?? related.score),
+      targetTrack: related.targetTrack ? productTrackSummary(related.targetTrack) : null,
+      resolvedTarget: related.resolvedTargetTrack ? productTrackSummary(related.resolvedTargetTrack) : null,
+      candidateTarget: related.candidateTrack ? productTrackSummary(related.candidateTrack) : null,
+      alternatives: Array.isArray(related.alternatives) ? related.alternatives.slice(0, 3).map(productTrackSummary) : [],
+      addDecision: related.addDecision ? {
+        action: related.addDecision.action || '',
+        alternativeIndex: related.addDecision.alternativeIndex ?? null,
+      } : null,
+    }));
+}
+
+function productSourceComparisonKey(operation = {}) {
+  const track = operation.sourceTrack;
+  if (!track) return '';
+  const providerId = String(track.id || track.mid || track.isrc || '').trim();
+  const fallback = normalizeText(`${track.title || ''} ${track.artist || ''} ${track.album || ''}`);
+  return `${operation.sourcePlatform || track.platform || 'source'}:${providerId || fallback}`;
+}
+
+function productScoreValue(score) {
+  const value = typeof score === 'object' && score ? score.total ?? score.score : score;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function productTrackSummary(track = {}) {
@@ -3998,7 +5298,117 @@ function productTrackSummary(track = {}) {
     album: track.album || '',
     durationMs: track.durationMs || null,
     isrc: track.isrc || null,
+    songType: track.songType ?? null,
+    artworkUrl: trackArtworkUrl(track),
   };
+}
+
+function selectProductMediaTrack(operation, options = {}) {
+  const role = String(options.role || 'source').trim().toLowerCase();
+  if (role === 'source') {
+    return {
+      role,
+      alternativeIndex: null,
+      track: operation.sourceTrack || null,
+      platform: operation.sourcePlatform || operation.sourceTrack?.platform || '',
+    };
+  }
+  if (role === 'target') {
+    return {
+      role,
+      alternativeIndex: null,
+      track: operation.targetTrack || null,
+      platform: operation.targetPlatform || operation.targetTrack?.platform || '',
+    };
+  }
+  if (role === 'candidate') {
+    return {
+      role,
+      alternativeIndex: null,
+      track: operation.candidateTrack || null,
+      platform: operation.targetPlatform || operation.candidateTrack?.platform || '',
+    };
+  }
+  if (role === 'resolved') {
+    return {
+      role,
+      alternativeIndex: null,
+      track: operation.resolvedTargetTrack || null,
+      platform: operation.targetPlatform || operation.resolvedTargetTrack?.platform || '',
+    };
+  }
+  if (role === 'alternative') {
+    const alternativeIndex = Number(options.alternativeIndex);
+    if (!Number.isInteger(alternativeIndex) || alternativeIndex < 0 || alternativeIndex >= (operation.alternatives || []).length) {
+      throw productHttpError(400, '备选版本序号无效。');
+    }
+    return {
+      role,
+      alternativeIndex,
+      track: operation.alternatives[alternativeIndex],
+      platform: operation.targetPlatform || operation.alternatives[alternativeIndex]?.platform || '',
+    };
+  }
+  throw productHttpError(400, '媒体版本只支持 source、target、candidate、resolved 或 alternative。');
+}
+
+async function resolveProductProviderMedia(platform, track, options = {}) {
+  if (platform === 'apple') return resolveAppleTrackMedia(track, options);
+  const cookie = await readTextIfExists(platform === 'qq' ? FILES.qqCookie : FILES.neteaseCookie);
+  if (!cookie?.trim()) throw productHttpError(409, `缺少 ${targetLabel(platform)} 登录凭据，请先连接平台。`);
+  if (platform === 'qq') return resolveQQTrackMedia(cookie, track, options);
+  return resolveNeteaseTrackMedia(cookie, track, options);
+}
+
+async function resolveCachedProductMedia(selection, options = {}, dependencies = {}) {
+  const track = selection.track;
+  const platform = String(track?.platform || selection.platform || '').trim().toLowerCase();
+  if (!PLATFORMS.includes(platform)) throw productHttpError(400, '这个版本的平台不支持试听。');
+  const cacheKey = productMediaCacheKey(platform, track);
+  const cached = productMediaCache.get(cacheKey);
+  const now = Date.now();
+  let media = cached?.validUntil > now ? cached.media : null;
+  if (!media) {
+    media = dependencies.resolveMedia
+      ? await dependencies.resolveMedia(platform, track, selection)
+      : await resolveProductProviderMedia(platform, track, options);
+    const expiresAt = Date.parse(media?.expiresAt || '');
+    const validUntil = Number.isFinite(expiresAt) && expiresAt > now
+      ? Math.min(expiresAt, now + 10 * 60 * 1000)
+      : now + (platform === 'apple' ? 60 * 60 * 1000 : 5 * 60 * 1000);
+    productMediaCache.set(cacheKey, { validUntil, media });
+    pruneProductMediaCache(now);
+  }
+  return { selection, track, platform, cacheKey, media };
+}
+
+function unavailableProductMediaAlignment() {
+  return {
+    status: 'unavailable',
+    method: 'chromaprint',
+    confidence: null,
+    offsetFromSourceSeconds: 0,
+    sourceStartSeconds: 0,
+    targetStartSeconds: 0,
+    overlapSeconds: 0,
+    maxPreviewSeconds: 30,
+    reason: '暂时无法自动对齐这个平台的试听片段。',
+  };
+}
+
+function productMediaCacheKey(platform, track = {}) {
+  const providerId = String(track.mid || track.id || track.isrc || '').trim();
+  const fallback = normalizeText(`${track.title || ''} ${track.artist || ''} ${track.album || ''}`);
+  return `${platform}:${providerId || fallback}`;
+}
+
+function pruneProductMediaCache(now = Date.now()) {
+  for (const [key, entry] of productMediaCache) {
+    if (!entry?.validUntil || entry.validUntil <= now) productMediaCache.delete(key);
+  }
+  while (productMediaCache.size > 200) {
+    productMediaCache.delete(productMediaCache.keys().next().value);
+  }
 }
 
 function findProductExplanationOperation(plan, options = {}) {
@@ -4492,8 +5902,8 @@ function productTombstoneDecisionForOperation(operation, tombstones) {
 }
 
 function productBucketForOperation(operation) {
+  if (operation.action === 'review' || operation.status !== 'ready') return 'needs_confirmation';
   if (operation.action === 'remove' || operation.reason === 'tombstone_candidate') return 'may_delete';
-  if (operation.action === 'review' || operation.status === 'needs_review') return 'needs_confirmation';
   if (operation.action === 'add') return 'will_add';
   return 'will_keep';
 }
@@ -4554,6 +5964,114 @@ async function readProductSnapshots() {
     apple: prepareSnapshot(await readJsonIfExists(FILES.appleJson)),
     qq: prepareSnapshot(await readJsonIfExists(FILES.qqJson)),
     netease: prepareSnapshot(await readJsonIfExists(FILES.neteaseJson)),
+  };
+}
+
+async function readSyncBackupState() {
+  const state = await readJsonIfExists(FILES.syncBackups) || emptySyncBackupState();
+  assertValidState(validateSyncBackupState(state), 'sync-backups');
+  return state;
+}
+
+async function loadProductBackupSnapshots(targets, options = {}, dependencies = {}) {
+  if (options.refresh === false) {
+    return (dependencies.readSnapshots || readProductSnapshots)();
+  }
+  if (dependencies.fetchSnapshots) return dependencies.fetchSnapshots(targets, options);
+  const targetSet = new Set(normalizeProductTargets(targets));
+  return fetchPlatformSnapshots({
+    qq: targetSet.has('qq'),
+    netease: targetSet.has('netease'),
+    qqPlaylistId: productTargetOptionValue(options.playlistId, 'qq') || '',
+    neteasePlaylistId: productTargetOptionValue(options.playlistId, 'netease') || '',
+  });
+}
+
+async function persistProductSyncBackup(backup, dependencies = {}) {
+  if (dependencies.persistBackup) return dependencies.persistBackup(backup);
+  return mutateProductSyncBackupState((state) => appendSyncBackup(state, backup), dependencies);
+}
+
+async function persistProductSyncRestoreRun(run, dependencies = {}) {
+  if (dependencies.persistRestoreRun) return dependencies.persistRestoreRun(run);
+  return mutateProductSyncBackupState((state) => appendSyncRestoreRun(state, run), dependencies);
+}
+
+async function mutateProductSyncBackupState(mutation, dependencies = {}) {
+  const task = async () => {
+    const state = await (dependencies.readBackupState || readSyncBackupState)();
+    const next = mutation(state);
+    assertValidState(validateSyncBackupState(next), 'sync-backups');
+    if (dependencies.writeBackupState) await dependencies.writeBackupState(next);
+    else await writeJson(FILES.syncBackups, next);
+    return next;
+  };
+  const pending = syncBackupMutationQueue.then(task, task);
+  syncBackupMutationQueue = pending.catch(() => undefined);
+  return pending;
+}
+
+function summarizeVerifiedSyncBackup(backup) {
+  return {
+    ...summarizeSyncBackup(backup),
+    integrity: verifySyncBackup(backup),
+  };
+}
+
+function summarizeProductRestorePlan(plan) {
+  const targets = {};
+  for (const target of plan.targets || []) {
+    const item = plan.additions?.[target] || {};
+    targets[target] = {
+      backupCount: Number(item.backupCount || 0),
+      currentCount: Number(item.currentCount || 0),
+      missing: Number(item.missing || 0),
+      unrestorable: Number(item.unrestorable || 0),
+    };
+  }
+  return {
+    targets,
+    targetCount: Number(plan.summary?.targets || 0),
+    backupTracks: Number(plan.summary?.backupTracks || 0),
+    missing: Number(plan.summary?.missing || 0),
+    unrestorable: Number(plan.summary?.unrestorable || 0),
+  };
+}
+
+function assertProductRestoreDestinations(backup, snapshots, targets) {
+  for (const target of targets) {
+    const savedPlaylistId = String(backup.snapshots?.[target]?.playlistId || '').trim();
+    const currentPlaylistId = String(snapshots?.[target]?.playlistId || '').trim();
+    if (!savedPlaylistId || !currentPlaylistId) {
+      throw productHttpError(409, `Cannot restore ${targetLabel(target)} because its liked playlist identity is unavailable.`);
+    }
+    if (savedPlaylistId !== currentPlaylistId) {
+      throw productHttpError(409, `Cannot restore ${targetLabel(target)} because the selected playlist changed after the backup.`);
+    }
+  }
+}
+
+function emptyProductRestoreMutation() {
+  return {
+    requested: 0,
+    submitted: 0,
+    accepted: 0,
+    added: 0,
+    alreadyPresent: 0,
+    verified: true,
+    missing: 0,
+  };
+}
+
+function summarizeProductRestoreMutation(result = {}) {
+  return {
+    requested: Number(result.requested || 0),
+    submitted: Number(result.submitted || 0),
+    accepted: Number(result.accepted || 0),
+    added: Number(result.added ?? result.accepted ?? 0),
+    alreadyPresent: Number(result.alreadyPresent || 0),
+    verified: Boolean(result.verified),
+    missing: Array.isArray(result.missingIds) ? result.missingIds.length : Number(result.missing || 0),
   };
 }
 
@@ -4767,13 +6285,15 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
   }
 
   if (!changed) {
-    return {
+    const unchangedPlan = {
       ...plan,
       addResolution: resolution,
     };
+    await persistProductAddState(unchangedPlan.operations, resolution.resolvedAt);
+    return unchangedPlan;
   }
 
-  const nextPlan = {
+  let nextPlan = {
     ...plan,
     resolvedAt: resolution.resolvedAt,
     addResolution: resolution,
@@ -4784,8 +6304,12 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
       baselineDeleted: plan.summary?.baselineDeleted || 0,
     },
   };
+  nextPlan = applyProductAddConflictGuards(nextPlan).plan;
   assertValidState(validateSyncPreviewState(nextPlan), 'sync-preview');
-  await writeJson(FILES.syncPreview, nextPlan);
+  await Promise.all([
+    writeJson(FILES.syncPreview, nextPlan),
+    persistProductAddState(nextPlan.operations, resolution.resolvedAt),
+  ]);
   return nextPlan;
 }
 
@@ -4849,6 +6373,11 @@ function applyProductAddDecisionToOperation(operation = {}, options = {}) {
       alternativeIndex: options.action === 'select_alternative' ? clampProductAlternativeIndex(options.alternativeIndex) : null,
       batchId: options.batchId || '',
       decidedAt,
+      source: options.source || 'manual',
+      aiBatchId: options.aiBatchId || '',
+      aiModel: options.aiModel || '',
+      aiConfidence: Number.isFinite(Number(options.aiConfidence)) ? Number(options.aiConfidence) : null,
+      userApprovedAt: options.userApprovedAt || '',
     },
     resolution: {
       ...(operation.resolution || {}),
@@ -4917,12 +6446,12 @@ function selectProductPolicyAddOperations(operations = [], target, operationIds 
     .filter((operation) => !wanted.size || wanted.has(operation.id));
 }
 
-function selectProductPolicyRemoveOperations(operations = [], target, operationIds = []) {
+function selectProductPolicyRemoveOperations(operations = [], target, operationIds = [], policy = '') {
   const wanted = new Set(normalizeOperationIds(operationIds));
   return (operations || [])
     .filter((operation) => operation.action === 'remove')
     .filter((operation) => operation.targetPlatform === target)
-    .filter((operation) => operation.reason === 'confirmed_global_tombstone')
+    .filter((operation) => policy === 'canonical_mirror' || operation.reason === 'confirmed_global_tombstone')
     .filter((operation) => operation.status === 'ready' || operation.blockedReason === 'missing_destructive_target_id')
     .filter((operation) => !wanted.size || wanted.has(operation.id));
 }
@@ -4946,7 +6475,7 @@ function productPolicyAddOperationToMirrorOperation(operation = {}) {
 
 function buildProductPolicyRemoveMirrorPlan(plan = {}, target, options = {}) {
   const operationIds = new Set(normalizeOperationIds(options.operationIds));
-  const operations = selectProductPolicyRemoveOperations(plan.operations || [], target, [...operationIds])
+  const operations = selectProductPolicyRemoveOperations(plan.operations || [], target, [...operationIds], plan.policy)
     .map(productPolicyRemoveOperationToMirrorOperation);
   const snapshot = options.snapshot || {};
   const targetPlan = {
@@ -5018,7 +6547,6 @@ async function executeProductPolicyAddMirrorPlan(plan, options = {}, target) {
   });
   const completed = {
     ...result,
-    status: 'completed',
     completedAt: new Date().toISOString(),
   };
   await appendProductSyncRun(completed, {
@@ -5052,7 +6580,6 @@ async function executeProductPolicyRemoveMirrorPlan(plan, options = {}, target) 
   });
   const completed = {
     ...result,
-    status: 'completed',
     completedAt: new Date().toISOString(),
   };
   await appendProductSyncRun(completed, {
@@ -5272,12 +6799,53 @@ function isProductDeletionConfirmed(tombstones, target, operationId) {
   return item?.action === 'confirm_global_delete';
 }
 
-function isProductPolicyDeletionConfirmed(tombstones, operation = {}) {
+function isProductPolicyDeletionConfirmed(tombstones, operation = {}, policy = '') {
   if (operation.action !== 'remove') return false;
+  if (policy === 'canonical_mirror') {
+    const item = tombstones?.items?.[canonicalProductDeletionKey(operation)];
+    return item?.action === 'confirm_global_delete';
+  }
   if (operation.reason !== 'confirmed_global_tombstone') return false;
   if (!operation.tombstoneKey) return false;
   const item = tombstones?.items?.[operation.tombstoneKey];
   return item?.action === 'confirm_global_delete';
+}
+
+function canonicalProductDeletionKey(operation = {}) {
+  const target = String(operation.targetPlatform || operation.targetTrack?.platform || '').trim().toLowerCase();
+  const providerId = String(operation.targetTrack?.id || operation.targetTrack?.mid || '').trim();
+  if (!target || !providerId) {
+    return `canonical-delete|${target || 'target'}|blocked:${operation.id || 'unknown'}`;
+  }
+  return `canonical-delete|${target}|${providerId}`;
+}
+
+function applyProductAddConflictGuards(plan = {}) {
+  const guarded = guardProductAddTargetConflicts(plan);
+  if (!guarded.changed) return guarded;
+  return {
+    ...guarded,
+    plan: {
+      ...guarded.plan,
+      summary: {
+        ...summarizePolicyOperations(guarded.plan.operations || []),
+        baselineAdded: plan.summary?.baselineAdded || 0,
+        baselineDeleted: plan.summary?.baselineDeleted || 0,
+      },
+    },
+  };
+}
+
+function canonicalRemoveHasPendingReplacement(plan = {}, operation = {}) {
+  if (operation.action !== 'remove') return false;
+  if (productAddReferencesTarget(plan, operation)) return true;
+  if (operation.manualDecision?.action !== 'separate' || !operation.decisionKey) return false;
+  return (plan.operations || []).some((candidate) => (
+    candidate.action === 'add'
+    && candidate.targetPlatform === operation.targetPlatform
+    && candidate.decisionKey === operation.decisionKey
+    && (candidate.status !== 'ready' || !(candidate.resolvedTargetTrack || candidate.targetTrack))
+  ));
 }
 
 function expectedProductDeleteConfirmation(targets) {
@@ -5311,8 +6879,8 @@ function aggregateProductExecutionResults(results, options = {}) {
     remove: sumProductNumericObject(results, 'remove'),
     review: sumProductNumericObject(results, 'review'),
     blocked: sumProductNumericObject(results, 'blocked'),
-    addResult: sumProductNumericObject(results, 'addResult'),
-    removeResult: sumProductNumericObject(results, 'removeResult'),
+    addResult: aggregateProductMutationResults(results, 'addResult'),
+    removeResult: aggregateProductMutationResults(results, 'removeResult'),
     results,
   };
 }
@@ -5320,6 +6888,8 @@ function aggregateProductExecutionResults(results, options = {}) {
 function productAggregateStatus(results) {
   if (!results.length) return 'skipped';
   if (results.every((result) => result.status === 'skipped')) return 'skipped';
+  if (results.every((result) => result.status === 'failed')) return 'failed';
+  if (results.some((result) => result.status === 'failed' || result.status === 'partial')) return 'partial';
   if (results.some((result) => result.status === 'completed')) return 'completed';
   if (results.every((result) => result.status === 'preview' || result.dryRun)) return 'preview';
   return results[0]?.status || 'completed';
@@ -5330,12 +6900,25 @@ function sumProductNumericObject(results, key) {
   for (const result of results) {
     const value = result?.[key] || {};
     for (const [field, amount] of Object.entries(value)) {
+      if (typeof amount === 'boolean') continue;
       if (Number.isFinite(Number(amount))) {
         summary[field] = (summary[field] || 0) + Number(amount);
       }
     }
   }
   return summary;
+}
+
+function aggregateProductMutationResults(results, key) {
+  const summary = sumProductNumericObject(results, key);
+  const mutations = results.map((result) => result?.[key]).filter(Boolean);
+  return {
+    ...summary,
+    verified: mutations.length > 0 && mutations.every((result) => result.verified === true),
+    missing: mutations.reduce((total, result) => total + (Array.isArray(result.missingIds) ? result.missingIds.length : 0), 0),
+    stillPresent: mutations.reduce((total, result) => total + (Array.isArray(result.stillPresentIds) ? result.stillPresentIds.length : 0), 0),
+    unsupported: mutations.reduce((total, result) => total + (Array.isArray(result.unsupportedIds) ? result.unsupportedIds.length : 0), 0),
+  };
 }
 
 function emptyProductExecutionResult(target, options = {}, skipReason = 'skipped') {
@@ -5416,6 +6999,19 @@ async function readSyncDecisionState() {
     updatedAt: data?.updatedAt || '',
     items: data?.items || {},
   };
+}
+
+async function readProductAddState() {
+  return normalizeProductAddState(await readJsonIfExists(FILES.syncAddState));
+}
+
+async function persistProductAddState(operations = [], updatedAt = '') {
+  const current = await readProductAddState();
+  const persisted = upsertProductAddState(current, operations, {
+    updatedAt: updatedAt || new Date().toISOString(),
+  });
+  if (persisted.changed) await writeJson(FILES.syncAddState, persisted.state);
+  return persisted;
 }
 
 async function readSyncPolicyState() {

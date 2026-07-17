@@ -1,5 +1,6 @@
 import { durationLabel, normalizeText } from './normalize.js';
 import { compareAppleToPlatform } from './match.js';
+import { trackArtworkUrl, trackPreviewUrl } from './track-media.js';
 
 const DEFAULT_SOURCE = 'apple';
 const DEFAULT_MATCH_THRESHOLD = 0.82;
@@ -383,6 +384,12 @@ function compactManualDecision(operation, decision) {
     note: decision.note || '',
     originalAction: 'review',
     originalReason: operation.reason || '',
+    source: decision.source || 'manual',
+    aiBatchId: decision.aiBatchId || '',
+    aiModel: decision.aiModel || '',
+    aiConfidence: Number.isFinite(Number(decision.aiConfidence)) ? Number(decision.aiConfidence) : null,
+    userApprovedAt: decision.userApprovedAt || '',
+    approvalBatchId: decision.approvalBatchId || '',
   };
 }
 
@@ -432,6 +439,9 @@ function compactMirrorTrack(track) {
     duration: durationLabel(track.durationMs),
     durationMs: track.durationMs || null,
     isrc: track.isrc || null,
+    songType: track.songType ?? null,
+    artworkUrl: trackArtworkUrl(track),
+    previewUrl: track.platform === 'apple' ? trackPreviewUrl(track) : '',
     aliases: compactAliases(track.aliases),
     metadata: compactMirrorMetadata(track.metadata),
   };

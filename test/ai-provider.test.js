@@ -92,4 +92,40 @@ describe('AI provider abstraction', () => {
     assert.equal(result.response.capability, 'json_object');
     assert.equal(JSON.stringify(result).includes('sk-local-test-key'), false);
   });
+
+  it('retries transient provider failures without changing the request payload', async () => {
+    let calls = 0;
+    const result = await requestAiJson({
+      providerConfig: resolveAiProviderConfig({
+        apiKey: 'sk-local-test-key',
+        model: 'deepseek-test',
+        baseUrl: 'https://example.test/v1',
+      }, {}),
+      messages: [{ role: 'user', content: 'Return json' }],
+      thinking: false,
+      maxAttempts: 2,
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            ok: false,
+            status: 503,
+            statusText: 'Unavailable',
+            async text() { return JSON.stringify({ error: { message: 'try again' } }); },
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          async text() {
+            return JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] });
+          },
+        };
+      },
+    });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(result.json, { ok: true });
+  });
 });
