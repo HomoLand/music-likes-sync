@@ -5289,6 +5289,21 @@ function productRelatedMatches(operation, comparisonIndex) {
         action: related.addDecision.action || '',
         alternativeIndex: related.addDecision.alternativeIndex ?? null,
       } : null,
+      identityDecision: related.manualDecision ? {
+        action: related.manualDecision.action || '',
+        decidedAt: related.manualDecision.decidedAt || '',
+        originalReason: related.manualDecision.originalReason || '',
+      } : null,
+      aiReview: related.aiReview ? {
+        batchId: related.aiReview.batchId || '',
+        model: related.aiReview.model || '',
+        reviewedAt: related.aiReview.reviewedAt || '',
+        recommendedAction: related.aiReview.recommendedAction || 'needs_human',
+        relation: related.aiReview.relation || 'uncertain',
+        confidence: Number(related.aiReview.confidence || 0),
+        reason: related.aiReview.reason || '',
+        guarded: Boolean(related.aiReview.safety?.guarded),
+      } : null,
     }));
 }
 

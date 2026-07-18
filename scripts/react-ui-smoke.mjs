@@ -114,6 +114,18 @@ async function runViewportSmoke(browserInstance, options) {
   const qrFixture = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlS7gAAAABJRU5ErkJggg==';
   let mockConnectedQqPlaylists = false;
 
+  await page.route('https://api.github.com/repos/HomoLand/music-likes-sync/releases/latest', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({
+        tag_name: 'v0.2.0',
+        html_url: 'https://github.com/HomoLand/music-likes-sync/releases/tag/v0.2.0',
+      }),
+    });
+  });
+
   await page.route('**/api/apple/connect/start', async (route) => {
     await route.fulfill({
       status: 200,
@@ -344,9 +356,12 @@ async function runViewportSmoke(browserInstance, options) {
     await mediaResolve;
     await expectVisible(page, '[data-testid="react-version-audition"]', 'version audition comparison');
     await expectVisibleText(page, '版本试听对比', 'version audition heading');
-    await expectVisible(page, '.identity-decision-panel', 'manual identity decision controls');
-    await expectVisibleText(page, '同一版本', 'same-version decision action');
-    await expectVisibleText(page, '不同版本', 'different-version decision action');
+    const identityDecisionPanels = page.locator('.audition-decision');
+    await identityDecisionPanels.first().waitFor({ state: 'visible', timeout: 15000 });
+    assert(await identityDecisionPanels.count() > 0, 'platform-scoped identity decision controls should be visible');
+    await expectVisibleText(page, '可以，保留', 'keep-existing-version decision action');
+    await expectVisibleText(page, '不可以，替换', 'replace-with-Apple-version decision action');
+    await expectVisibleText(page, '每个决定只影响它所在的平台', 'platform-scoped decision explanation');
     const auditionRows = await page.locator('.audition-row').count();
     assert(auditionRows >= 2, 'manual review should compare the source and at least one provider version');
     assert(await page.locator('.audition-audio').evaluate((audio) => audio.paused), 'version audition must not autoplay');
@@ -356,7 +371,12 @@ async function runViewportSmoke(browserInstance, options) {
     const auditionAudio = page.locator('.audition-audio');
     const auditionSourcePlay = page.locator('.audition-row').nth(0).locator('.audition-play');
     const auditionTargetPlay = page.locator('.audition-row').nth(1).locator('.audition-play');
+    const auditionSourceTitle = (await page.locator('.audition-row').nth(0).locator('.audition-track-copy > strong').textContent())?.trim() || '';
     await auditionSourcePlay.click();
+    await page.waitForFunction((title) => (
+      document.querySelector('[data-testid="react-sidebar-player-title"]')?.textContent?.trim() === title
+    ), auditionSourceTitle, { timeout: 10000 });
+    assert(auditionSourceTitle && auditionSourceTitle !== 'Night Driver', 'sidebar player should use the real auditioned track');
     await auditionAudio.evaluate((audio) => { audio.currentTime = 8; });
     const alignedMediaResolve = page.waitForResponse((response) => (
       new URL(response.url()).pathname === '/api/sync/media'
@@ -480,6 +500,15 @@ async function runViewportSmoke(browserInstance, options) {
     await page.getByTestId('react-refresh-diagnostics').click();
     await validationRequest;
     await assertNoHorizontalOverflow(page, 'advanced settings');
+
+    await page.getByTestId('react-open-help').click();
+    await expectVisible(page, '[data-testid="react-help-screen"]', 'help and about screen');
+    await expectVisibleText(page, '没有 Likes Sync 云端账号', 'local-only account explanation');
+    await expectVisibleText(page, '当前版本 v0.1.0', 'current application version');
+    await page.getByRole('button', { name: '检查新版本' }).click();
+    await expectVisibleText(page, '发现新版本 v0.2.0', 'explicit release update check');
+    assert(await page.getByLabel('用户').count() === 0, 'misleading product account avatar should not be rendered');
+    await assertNoHorizontalOverflow(page, 'help and about');
 
     assert(problems.length === 0, `browser problems:\n${problems.join('\n')}`);
     return {

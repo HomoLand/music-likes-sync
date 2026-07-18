@@ -82,12 +82,24 @@ interface ScreenProps {
   onRunCheck: () => void;
   onSaveBaseline: () => void;
   onRefreshState: () => Promise<void>;
+  onAuditionPlaybackChange: (state: AuditionPlaybackState | null) => void;
   syncBusy: boolean;
   syncError: string;
   syncMessage: string;
 }
 
 type TombstoneFilter = 'undecided' | 'qq' | 'netease' | 'decided' | 'all';
+
+export interface AuditionPlaybackState {
+  key: string;
+  title: string;
+  artist: string;
+  artworkUrl?: string;
+  platform: PlatformKey;
+  playing: boolean;
+  elapsedSeconds: number;
+  limitSeconds: number;
+}
 
 export function SyncPreviewScreen({
   activeBucket,
@@ -110,6 +122,7 @@ export function SyncPreviewScreen({
   onRunCheck,
   onSaveBaseline,
   onRefreshState,
+  onAuditionPlaybackChange,
   syncBusy,
   syncError,
   syncMessage,
@@ -250,6 +263,7 @@ export function SyncPreviewScreen({
 
         <MatchInspector
           item={selectedItem}
+          onAuditionPlaybackChange={onAuditionPlaybackChange}
           onApplyAdditionDecision={onApplyAdditionDecision}
           onApplyIdentityDecision={onApplyIdentityDecision}
           onReviewItems={onReviewItems}
@@ -576,23 +590,7 @@ function RowActions({
   if (item.action === 'review') {
     return (
       <div className="row-actions identity-actions">
-        <button
-          className="accept"
-          disabled={syncBusy}
-          onClick={() => onApplyIdentityDecision(item.id, 'keep')}
-          title="目标平台版本就是 Apple Music 中的同一录音"
-          type="button"
-        >
-          同一版本
-        </button>
-        <button
-          disabled={syncBusy}
-          onClick={() => onApplyIdentityDecision(item.id, 'separate')}
-          title="两个版本不同，生成新增 Apple 版本和目标版本删除草稿"
-          type="button"
-        >
-          不同版本
-        </button>
+        <span className="row-action-note">请在右侧逐项判断</span>
         <button disabled={syncBusy || Boolean(item.aiReview)} onClick={() => onReviewItems([item.id])} type="button">
           {item.aiReview ? 'AI 已分析' : '问 AI'}
         </button>
@@ -646,6 +644,7 @@ function RowActions({
 
 function MatchInspector({
   item,
+  onAuditionPlaybackChange,
   onApplyAdditionDecision,
   onApplyIdentityDecision,
   onReviewItems,
@@ -653,6 +652,7 @@ function MatchInspector({
   syncBusy,
 }: {
   item: PreviewTrackItem | null;
+  onAuditionPlaybackChange: (state: AuditionPlaybackState | null) => void;
   onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
   onApplyIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
   onReviewItems: (operationIds?: string[]) => void;
@@ -672,9 +672,6 @@ function MatchInspector({
     <aside className="match-inspector">
       <div className="inspector-head">
         <h2>匹配详情</h2>
-        <button aria-label="关闭详情" className="icon-button" type="button">
-          <X size={16} />
-        </button>
       </div>
       <div className="inspector-track">
         <AlbumArtwork title={item.title} index={2} src={item.artworkUrl || item.sourceTrack?.artworkUrl} />
@@ -684,6 +681,12 @@ function MatchInspector({
           <small>{item.album || '未知专辑'}</small>
         </div>
       </div>
+      {item.action === 'review' ? (
+        <div className="identity-task-intro">
+          <strong>请逐个平台判断</strong>
+          <span>目标平台里的候选，能否代表上面这首 Apple Music 喜欢歌曲？每个决定只影响它所在的平台。</span>
+        </div>
+      ) : null}
       <div className="audition-section" data-testid="react-version-audition">
         <div className="audition-heading">
           <span><Headphones size={15} />版本试听对比</span>
@@ -692,6 +695,7 @@ function MatchInspector({
         {versions.length ? (
           <VersionAudition
             disabled={syncBusy}
+            onAuditionPlaybackChange={onAuditionPlaybackChange}
             onChoose={(version) => {
               if (version.role === 'alternative') {
                 onApplyAdditionDecision(version.operationId, 'select_alternative', version.alternativeIndex);
@@ -699,6 +703,8 @@ function MatchInspector({
                 onApplyAdditionDecision(version.operationId, 'accept_candidate');
               }
             }}
+            onIdentityDecision={onApplyIdentityDecision}
+            onReviewItems={onReviewItems}
             operationId={item.id}
             preload={item.bucket === 'needs_confirmation'}
             previewId={previewId}
@@ -719,25 +725,6 @@ function MatchInspector({
         <Bot size={18} />
         <p>{reviewMessage(item)}</p>
       </div>
-      {item.action === 'review' ? (
-        <div className="identity-decision-panel">
-          <div>
-            <strong>试听后的判断</strong>
-            <span>AI 只提供草稿，最终关系由你决定。</span>
-          </div>
-          <div>
-            <button className="primary-button" disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'keep')} type="button">
-              <Check size={15} />同一版本
-            </button>
-            <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'separate')} type="button">
-              <X size={15} />不同版本
-            </button>
-            <button disabled={syncBusy || Boolean(item.aiReview)} onClick={() => onReviewItems([item.id])} type="button">
-              <Bot size={15} />{item.aiReview ? 'AI 已分析' : '问 AI'}
-            </button>
-          </div>
-        </div>
-      ) : null}
     </aside>
   );
 }
@@ -753,18 +740,26 @@ interface AuditionVersion {
   score?: number | null;
   selected: boolean;
   canChoose: boolean;
+  aiReviewed: boolean;
+  canDecideIdentity: boolean;
 }
 
 function VersionAudition({
   disabled,
+  onAuditionPlaybackChange,
   onChoose,
+  onIdentityDecision,
+  onReviewItems,
   operationId,
   preload,
   previewId,
   versions,
 }: {
   disabled: boolean;
+  onAuditionPlaybackChange: (state: AuditionPlaybackState | null) => void;
   onChoose: (version: AuditionVersion) => void;
+  onIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
+  onReviewItems: (operationIds?: string[]) => void;
   operationId: string;
   preload: boolean;
   previewId: string;
@@ -775,6 +770,9 @@ function VersionAudition({
   const activeLimitRef = useRef(30);
   const activeOffsetRef = useRef(0);
   const activeRoleRef = useRef<TrackMediaRole>('source');
+  const activeVersionRef = useRef<AuditionVersion | null>(null);
+  const activeMediaRef = useRef<TrackMediaResult | null>(null);
+  const lastPublishedSecondRef = useRef(-1);
   const segmentStartSourceRef = useRef(0);
   const [mediaByKey, setMediaByKey] = useState<Record<string, TrackMediaResult>>({});
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
@@ -794,8 +792,12 @@ function VersionAudition({
     activeLimitRef.current = 30;
     activeOffsetRef.current = 0;
     activeRoleRef.current = 'source';
+    activeVersionRef.current = null;
+    activeMediaRef.current = null;
+    lastPublishedSecondRef.current = -1;
     segmentStartSourceRef.current = 0;
-  }, [operationId, previewId]);
+    onAuditionPlaybackChange(null);
+  }, [onAuditionPlaybackChange, operationId, previewId]);
 
   useEffect(() => {
     if (!preload || !previewId || !versions.length) return undefined;
@@ -816,7 +818,28 @@ function VersionAudition({
     return () => { active = false; };
   }, [operationId, preload, previewId, versions]);
 
-  useEffect(() => () => audioRef.current?.pause(), []);
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    onAuditionPlaybackChange(null);
+  }, [onAuditionPlaybackChange]);
+
+  function publishPlayback(
+    version: AuditionVersion,
+    result: TrackMediaResult,
+    playing: boolean,
+    elapsedSeconds: number,
+  ) {
+    onAuditionPlaybackChange({
+      key: version.key,
+      title: version.track.title || '未命名歌曲',
+      artist: version.track.artist || '未知歌手',
+      artworkUrl: result.media.artworkUrl || result.track.artworkUrl || version.track.artworkUrl,
+      platform: version.platform,
+      playing,
+      elapsedSeconds,
+      limitSeconds: result.media.maxPreviewSeconds || activeLimitRef.current || 30,
+    });
+  }
 
   async function ensureMedia(version: AuditionVersion, alignWithSource = false): Promise<TrackMediaResult | null> {
     const existing = mediaByKey[version.key];
@@ -841,6 +864,8 @@ function VersionAudition({
     if (playingKey === version.key && !audio.paused) {
       audio.pause();
       setPlayingKey('');
+      const currentMedia = activeMediaRef.current || mediaByKey[version.key];
+      if (currentMedia) publishPlayback(version, currentMedia, false, progress);
       return;
     }
     const result = await ensureMedia(version, version.role !== 'source');
@@ -856,6 +881,9 @@ function VersionAudition({
       ? Math.max(0, audio.currentTime - activeOffsetRef.current)
       : aligned ? alignment.sourceStartSeconds : 0;
     const startTime = Math.max(0, sourcePosition + offset);
+    if (!audio.paused && activeVersionRef.current && activeMediaRef.current) {
+      publishPlayback(activeVersionRef.current, activeMediaRef.current, false, progress);
+    }
     audio.pause();
     audio.src = result.media.previewUrl;
     seekAudio(audio, startTime);
@@ -866,10 +894,15 @@ function VersionAudition({
       : result.media.maxPreviewSeconds || 30;
     activeOffsetRef.current = offset;
     activeRoleRef.current = version.role;
-    setProgress(Math.max(0, sourcePosition - segmentStartSourceRef.current));
+    activeVersionRef.current = version;
+    activeMediaRef.current = result;
+    const initialProgress = Math.max(0, sourcePosition - segmentStartSourceRef.current);
+    setProgress(initialProgress);
     try {
       await audio.play();
       setPlayingKey(version.key);
+      lastPublishedSecondRef.current = Math.floor(initialProgress);
+      publishPlayback(version, result, true, initialProgress);
     } catch {
       setPlayingKey('');
       setErrors((current) => ({ ...current, [version.key]: '播放被浏览器拦截，请再点一次。' }));
@@ -878,16 +911,24 @@ function VersionAudition({
 
   function handleTimeUpdate() {
     const audio = audioRef.current;
-    if (!audio || !playingKey) return;
+    if (!audio || audio.paused || !activeVersionRef.current) return;
     const limit = activeLimitRef.current;
     const sourcePosition = Math.max(0, (audio.currentTime || 0) - activeOffsetRef.current);
     const elapsed = Math.min(limit, Math.max(0, sourcePosition - segmentStartSourceRef.current));
     setProgress(elapsed);
+    const activeVersion = activeVersionRef.current;
+    const activeMedia = activeMediaRef.current;
+    const elapsedSecond = Math.floor(elapsed);
+    if (activeVersion && activeMedia && lastPublishedSecondRef.current !== elapsedSecond) {
+      lastPublishedSecondRef.current = elapsedSecond;
+      publishPlayback(activeVersion, activeMedia, true, elapsed);
+    }
     if (elapsed >= limit) {
       audio.pause();
       seekAudio(audio, segmentStartSourceRef.current + activeOffsetRef.current);
       setPlayingKey('');
       setProgress(0);
+      if (activeVersion && activeMedia) publishPlayback(activeVersion, activeMedia, false, 0);
     }
   }
 
@@ -943,6 +984,40 @@ function VersionAudition({
                 </button>
               ) : null}
             </div>
+            {version.canDecideIdentity ? (
+              <div className="audition-decision">
+                <div>
+                  <strong>{platformLabel(version.platform)} 里的这个版本可以代表 Apple Music 源歌曲吗？</strong>
+                  <span>“保留”不会改动该平台；“替换”会补入 Apple 对应版本，旧版本仍需单独确认后才会删除。</span>
+                </div>
+                <div className="audition-decision-actions">
+                  <button
+                    className="keep"
+                    disabled={disabled}
+                    onClick={() => onIdentityDecision(version.operationId, 'keep')}
+                    title="将它视为同一首录音：保留目标平台现有版本，不新增、不删除"
+                    type="button"
+                  >
+                    <Check size={14} />可以，保留
+                  </button>
+                  <button
+                    disabled={disabled}
+                    onClick={() => onIdentityDecision(version.operationId, 'separate')}
+                    title="将它视为不同录音：新增 Apple 对应版本，现有版本进入待删除队列"
+                    type="button"
+                  >
+                    <X size={14} />不可以，替换
+                  </button>
+                  <button
+                    disabled={disabled || version.aiReviewed}
+                    onClick={() => onReviewItems([version.operationId])}
+                    type="button"
+                  >
+                    <Bot size={14} />{version.aiReviewed ? 'AI 已分析' : '问 AI'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         );
       })}
@@ -952,6 +1027,9 @@ function VersionAudition({
         onEnded={() => {
           setPlayingKey('');
           setProgress(0);
+          if (activeVersionRef.current && activeMediaRef.current) {
+            publishPlayback(activeVersionRef.current, activeMediaRef.current, false, 0);
+          }
         }}
         onTimeUpdate={handleTimeUpdate}
         preload="none"
@@ -1152,14 +1230,19 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
       key: `${item.id}:source`,
       operationId: item.id,
       role: 'source',
-      label: `${platformLabel(sourcePlatform)} 源版本`,
+      label: `${platformLabel(sourcePlatform)} 判断基准`,
       track: item.sourceTrack,
       platform: sourcePlatform,
       selected: false,
       canChoose: false,
+      aiReviewed: false,
+      canDecideIdentity: false,
     });
   }
 
+  const relatedMatches = item.action === 'review'
+    ? item.relatedMatches.filter((match) => match.action === 'review' && !match.identityDecision)
+    : item.relatedMatches;
   const matches = [{
     operationId: item.id,
     action: item.action,
@@ -1170,7 +1253,9 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
     candidateTarget: item.candidateTarget,
     alternatives: item.alternatives,
     addDecision: item.addDecision,
-  }, ...item.relatedMatches];
+    identityDecision: item.identityDecision,
+    aiReview: item.aiReview,
+  }, ...relatedMatches];
 
   for (const match of matches) {
     const targetPlatform = trackPlatform(
@@ -1191,6 +1276,8 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
         score: match.score,
         selected: role === 'resolved' || accepted,
         canChoose: match.action === 'add' && role === 'candidate',
+        aiReviewed: Boolean(match.aiReview),
+        canDecideIdentity: match.action === 'review' && !match.identityDecision,
       });
     }
     for (const [alternativeIndex, track] of (match.alternatives || []).slice(0, 2).entries()) {
@@ -1207,6 +1294,8 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
         score: match.score,
         selected,
         canChoose: match.action === 'add',
+        aiReviewed: Boolean(match.aiReview),
+        canDecideIdentity: false,
       });
     }
   }

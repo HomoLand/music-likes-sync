@@ -1,4 +1,4 @@
-import { ChevronRight, HelpCircle, Pause, RefreshCcw, SkipBack, SkipForward, Volume2 } from 'lucide-react';
+import { ChevronRight, Headphones, HelpCircle, RefreshCcw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
@@ -33,6 +33,7 @@ import type {
 import {
   formatCount,
   AlbumArtwork,
+  platformLabel,
   routeIcons,
   StatusPill,
   topStatusIcons,
@@ -41,9 +42,10 @@ import { AdvancedSettingsScreen } from '../screens/AdvancedSettingsScreen';
 import { AiAssistantScreen } from '../screens/AiAssistantScreen';
 import { AutoSyncScreen } from '../screens/AutoSyncScreen';
 import { ConnectPlatformsScreen } from '../screens/ConnectPlatformsScreen';
+import { HelpScreen } from '../screens/HelpScreen';
 import { OverviewScreen } from '../screens/OverviewScreen';
 import { SyncModeScreen } from '../screens/SyncModeScreen';
-import { SyncPreviewScreen } from '../screens/SyncPreviewScreen';
+import { SyncPreviewScreen, type AuditionPlaybackState } from '../screens/SyncPreviewScreen';
 import { routes, type RouteId } from './routes';
 
 const SCREEN_META: Record<RouteId, { title: string; description: string }> = {
@@ -75,6 +77,10 @@ const SCREEN_META: Record<RouteId, { title: string; description: string }> = {
     title: '设置',
     description: '保留发布验证、本机诊断、AI Provider 和开发者命令。',
   },
+  help: {
+    title: '帮助与关于',
+    description: '了解同步判断、安全边界、平台账号和版本更新。',
+  },
 };
 
 const WRITE_TARGETS: PlatformKey[] = ['qq', 'netease'];
@@ -93,6 +99,7 @@ export function App() {
   const [syncMessage, setSyncMessage] = useState('');
   const [syncError, setSyncError] = useState('');
   const [lastConvergence, setLastConvergence] = useState<ConvergenceSummary | null>(null);
+  const [auditionPlayback, setAuditionPlayback] = useState<AuditionPlaybackState | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -176,7 +183,7 @@ export function App() {
           ))}
         </div>
 
-        <button className="sidebar-protection" type="button">
+        <button className="sidebar-protection" onClick={() => navigateTo('advanced')} title="查看写入保护和本机诊断" type="button">
           <SidebarShieldIcon size={18} strokeWidth={2.2} />
           <span>
             <strong>写入保护</strong>
@@ -185,20 +192,29 @@ export function App() {
           <ChevronRight size={16} strokeWidth={2.1} />
         </button>
 
-        <div className="sidebar-player" aria-label="正在播放">
+        <div className={auditionPlayback ? 'sidebar-player active' : 'sidebar-player empty'} aria-label="试听状态" data-testid="react-sidebar-player">
           <div className="sidebar-player-track">
-            <AlbumArtwork title="Night Driver" index={2} />
-            <span>
-              <strong>Night Driver</strong>
-              <small>Chromatics</small>
+            {auditionPlayback ? (
+              <AlbumArtwork src={auditionPlayback.artworkUrl} title={auditionPlayback.title} />
+            ) : (
+              <span className="sidebar-player-placeholder"><Headphones size={18} /></span>
+            )}
+            <span aria-live="polite">
+              <strong data-testid="react-sidebar-player-title">{auditionPlayback?.title || '暂未试听'}</strong>
+              <small>{auditionPlayback?.artist || '在同步预览中选择版本'}</small>
             </span>
           </div>
-          <div className="sidebar-player-controls">
-            <button aria-label="上一首" type="button"><SkipBack size={15} fill="currentColor" /></button>
-            <button aria-label="暂停" className="player-primary" type="button"><Pause size={17} fill="currentColor" /></button>
-            <button aria-label="下一首" type="button"><SkipForward size={15} fill="currentColor" /></button>
-          </div>
-          <div className="sidebar-volume"><Volume2 size={14} /><span><i /></span></div>
+          {auditionPlayback ? (
+            <>
+              <div className="sidebar-player-status">
+                <span>{auditionPlayback.playing ? '正在试听' : '试听已暂停'} · {platformLabel(auditionPlayback.platform)}</span>
+                <time>{Math.round(auditionPlayback.elapsedSeconds)} / {Math.round(auditionPlayback.limitSeconds)} 秒</time>
+              </div>
+              <span className="sidebar-player-progress">
+                <i style={{ width: `${Math.min(100, auditionPlayback.elapsedSeconds / Math.max(1, auditionPlayback.limitSeconds) * 100)}%` }} />
+              </span>
+            </>
+          ) : null}
         </div>
       </aside>
 
@@ -206,19 +222,16 @@ export function App() {
         <header className="top-status-bar" aria-label="运行状态">
           <div className="top-status-group">
             <StatusRailItem icon={topStatusIcons.local} label={loading ? '读取状态中' : loadError ? '本地服务异常' : '本地运行中'} tone={loadError ? 'danger' : 'success'} />
-            <StatusRailItem icon={topStatusIcons.check} label={appState?.preview.generatedAt ? '上次检查已生成' : '上次检查 2 分钟前'} />
+            <StatusRailItem icon={topStatusIcons.check} label={appState?.preview.generatedAt ? '上次检查已生成' : '尚未运行检查'} />
             <StatusRailItem icon={topStatusIcons.shield} label="写入保护已开启" />
           </div>
           <div className="top-actions">
-            <button className="ghost-button" onClick={() => void refreshAppStateAndPreview()} type="button">
+            <button className="ghost-button" onClick={() => void refreshAppStateAndPreview()} title="重新读取本机连接和同步状态" type="button">
               <RefreshCcw size={16} />
-              检查更新
+              刷新状态
             </button>
-            <button aria-label="帮助" className="round-button" type="button">
+            <button aria-label="帮助与关于" className="round-button" data-testid="react-open-help" onClick={() => navigateTo('help')} type="button">
               <HelpCircle size={18} />
-            </button>
-            <button aria-label="用户" className="round-button avatar-button" type="button">
-              <img alt="" src={`${MUSIC_ASSET_BASE}/avatar.webp`} />
             </button>
           </div>
         </header>
@@ -229,7 +242,7 @@ export function App() {
               <h1>{meta.title}</h1>
               <p>{meta.description}</p>
             </div>
-            {activeRoute !== 'advanced' ? (
+            {activeRoute !== 'advanced' && activeRoute !== 'help' ? (
               <StatusPill tone="accent">下一步：{nextAction}</StatusPill>
             ) : null}
           </section>
@@ -267,6 +280,7 @@ export function App() {
             onApplyIdentityDecision={handleApplyIdentityDecision}
             onApplyTombstoneDecision={handleApplyTombstoneDecision}
             onApplyTombstoneDecisionBatch={handleApplyTombstoneDecisionBatch}
+            onAuditionPlaybackChange={setAuditionPlayback}
             onCheckConvergence={handleCheckConvergence}
             onChangeBucket={handleLoadPreview}
             onLoadMore={handleLoadMorePreview}
@@ -289,6 +303,7 @@ export function App() {
         ) : null}
         {activeRoute === 'ai' ? <AiAssistantScreen appState={appState} onOpenReview={() => navigateTo('preview')} /> : null}
         {activeRoute === 'advanced' ? <AdvancedSettingsScreen appState={appState} /> : null}
+        {activeRoute === 'help' ? <HelpScreen onNavigate={navigateTo} /> : null}
       </main>
     </div>
   );
@@ -523,9 +538,9 @@ export function App() {
       setPreviewDetails(result.preview);
       setAppStateFromPreview(result.preview);
       const message = action === 'keep'
-        ? '已视为同一版本：该目标歌曲会保留，不产生写入。'
+        ? '已保留目标平台现有版本：它会代表 Apple Music 源歌曲，不产生新增或删除。'
         : action === 'separate'
-          ? '已视为不同版本：已生成对应新增与删除草稿；删除仍需单独确认。'
+          ? '已生成版本替换草稿：将补入 Apple 对应版本；旧版本仍需单独确认后才会删除。'
           : '已撤销版本判断并恢复人工复核。';
       setSyncMessage(message);
     } catch (error) {
@@ -807,5 +822,5 @@ function errorMessage(error: unknown): string {
 
 function routeFromLocation(): RouteId {
   const candidate = window.location.hash.replace(/^#\/?/, '').trim();
-  return routes.some((route) => route.id === candidate) ? candidate as RouteId : 'overview';
+  return candidate === 'help' || routes.some((route) => route.id === candidate) ? candidate as RouteId : 'overview';
 }

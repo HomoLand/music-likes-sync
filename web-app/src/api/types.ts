@@ -318,6 +318,8 @@ export interface PreviewTrackItem {
     candidateTarget?: TrackSummary | null;
     alternatives: TrackSummary[];
     addDecision?: Pick<AddDecisionSummary, 'action' | 'alternativeIndex'> | null;
+    identityDecision?: IdentityDecisionSummary | null;
+    aiReview?: AddAiReviewSummary | null;
   }>;
   resolution?: {
     reason?: string;

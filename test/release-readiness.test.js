@@ -43,6 +43,7 @@ describe('release readiness metadata', () => {
       'docs/API_CONTRACT.zh-CN.md',
       'docs/POLICY_CORE_DRAFT_AUDIT.zh-CN.md',
       'docs/PROVIDERS.md',
+      'docs/USER_GUIDE.zh-CN.md',
       'docs/STATE.md',
       'docs/VALIDATION.md',
       'LICENSE',
@@ -516,9 +517,9 @@ describe('release readiness metadata', () => {
     assert.match(reactScreen, /react-deletion-safety/);
     assert.match(reactScreen, /react-preview-pagination/);
     assert.match(reactScreen, /react-version-audition/);
-    assert.match(reactScreen, /identity-decision-panel/);
-    assert.match(reactScreen, /同一版本/);
-    assert.match(reactScreen, /不同版本/);
+    assert.match(reactScreen, /audition-decision/);
+    assert.match(reactScreen, /可以，保留/);
+    assert.match(reactScreen, /不可以，替换/);
     assert.match(reactScreen, /不会自动播放/);
     assert.match(reactScreen, /继续加载/);
     assert.match(reactScreen, /仅补回缺失歌曲/);
@@ -678,6 +679,7 @@ describe('release readiness metadata', () => {
       'docs/API_CONTRACT.zh-CN.md',
       'docs/POLICY_CORE_DRAFT_AUDIT.zh-CN.md',
       'docs/PROVIDERS.md',
+      'docs/USER_GUIDE.zh-CN.md',
       'docs/STATE.md',
       'docs/VALIDATION.md',
     ].map((file) => fs.readFileSync(file, 'utf8')).join('\n');
@@ -703,6 +705,7 @@ describe('release readiness metadata', () => {
       'docs/API_CONTRACT.zh-CN.md',
       'docs/POLICY_CORE_DRAFT_AUDIT.zh-CN.md',
       'docs/PROVIDERS.md',
+      'docs/USER_GUIDE.zh-CN.md',
       'docs/STATE.md',
       'docs/VALIDATION.md',
     ].map((file) => fs.readFileSync(file, 'utf8')).join('\n');

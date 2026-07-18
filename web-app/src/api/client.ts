@@ -1277,6 +1277,8 @@ function bucketsFromCounts(rawCounts: unknown): PreviewBucketSummary[] {
       candidateTarget: normalizeTrackSummary(match.candidateTarget),
       alternatives: arrayValue(match.alternatives).map(normalizeTrackSummary).filter((item): item is TrackSummary => Boolean(item)),
       addDecision: normalizeAddDecision(match.addDecision),
+      identityDecision: normalizeIdentityDecision(match.identityDecision),
+      aiReview: normalizeAddAiReview(match.aiReview),
     })).filter((match) => isPlatformKey(match.targetPlatform)),
     resolution: normalizeResolution(raw.resolution),
     addDecision: normalizeAddDecision(raw.addDecision),

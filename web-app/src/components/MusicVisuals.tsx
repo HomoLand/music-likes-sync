@@ -20,9 +20,9 @@ import type React from 'react';
 import { useEffect, useState } from 'react';
 
 import type { PlatformKey } from '../api/types';
-import type { RouteId } from '../app/routes';
+import type { MainRouteId } from '../app/routes';
 
-export const routeIcons: Record<RouteId, typeof Home> = {
+export const routeIcons: Record<MainRouteId, typeof Home> = {
   overview: Home,
   connect: Link2,
   mode: SlidersHorizontal,

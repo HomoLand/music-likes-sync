@@ -5,6 +5,14 @@
   "type": "module",
   "description": "Mirror Apple Music liked songs into QQ Music and NetEase Cloud Music with dry-run reconciliation.",
   "license": "MIT",
+  "homepage": "https://github.com/HomoLand/music-likes-sync#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HomoLand/music-likes-sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HomoLand/music-likes-sync/issues"
+  },
   "keywords": [
     "apple-music",
     "qq-music",

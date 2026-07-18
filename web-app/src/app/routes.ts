@@ -8,4 +8,5 @@ export const routes = [
   { id: 'advanced', label: '设置' },
 ] as const;
 
-export type RouteId = typeof routes[number]['id'];
+export type MainRouteId = typeof routes[number]['id'];
+export type RouteId = MainRouteId | 'help';
