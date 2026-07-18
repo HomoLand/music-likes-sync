@@ -104,6 +104,7 @@ const KANJI_READINGS = {
 
 const variantCache = new Map();
 const toSimplifiedChinese = OpenCC.Converter({ from: 't', to: 'cn' });
+const japaneseToTraditionalChinese = OpenCC.Converter({ from: 'jp', to: 't' });
 
 export function matchingTextVariants(value) {
   const raw = String(value || '').trim();
@@ -129,7 +130,7 @@ export function matchingTextVariants(value) {
 }
 
 export function foldCjk(value) {
-  return toSimplifiedChinese(String(value || ''));
+  return toSimplifiedChinese(japaneseToTraditionalChinese(String(value || '')));
 }
 
 export function romanizeKana(value) {

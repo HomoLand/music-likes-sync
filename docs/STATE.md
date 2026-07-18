@@ -157,7 +157,7 @@ Rules:
 
 - Baseline state is user-confirmed state, not disposable derived state.
 - Every platform entry must include a normalized track identity set, source metadata, `fetchedAt`, and count.
-- Track identities should prefer stable provider ids, ISRC, MusicBrainz recording ids, and normalized text/duration fallbacks.
+- Track identities should prefer stable provider ids, ISRC, Apple storefront equivalents, MusicBrainz recording ids, provider catalog positions, and normalized text/duration fallbacks.
 - Baseline migration must preserve user-confirmed identities or fail closed with a backup.
 
 ### `data/sync-preview.json`
@@ -323,7 +323,7 @@ Rules:
 - `autoExecuteAdditions` can enable ready additions after all gates pass. There is intentionally no automatic-delete setting.
 - `nextRunAt` is recalculated when automation is enabled or its interval / targets change.
 - Scheduled Apple refresh accepts only the MusicKit API result for the same playlist. Each MusicKit request, the CDP evaluation, and the single recovery retry are time-bounded; DOM fallback results and large track-count drops fail closed and require manual review.
-- Automatic Apple refresh reapplies the local MusicBrainz ISRC cache before matching; it does not perform unbounded metadata-network lookups during a scheduled run.
+- Automatic Apple refresh reapplies the bounded local Apple storefront-equivalents and MusicBrainz ISRC caches before matching; it does not perform unbounded metadata-network lookups during a scheduled run.
 - Cookies, API keys, provider payloads, playlist ids, and raw snapshots are forbidden.
 
 ### `data/auto-sync-runs.json`

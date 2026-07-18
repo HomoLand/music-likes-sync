@@ -1227,6 +1227,7 @@ function bucketsFromCounts(rawCounts: unknown): PreviewBucketSummary[] {
     { id: 'will_add', label: '会新增', count: numberValue(counts.will_add ?? counts.add), risk: 'low' },
     { id: 'will_keep', label: '会保留', count: numberValue(counts.will_keep ?? counts.keep), risk: 'none' },
     { id: 'needs_confirmation', label: '需要确认', count: numberValue(counts.needs_confirmation ?? counts.review), risk: 'medium' },
+    { id: 'not_found', label: '未找到', count: numberValue(counts.not_found), risk: 'none' },
     { id: 'may_delete', label: '可能删除', count: numberValue(counts.may_delete ?? counts.remove), risk: 'high' },
   ];
 }

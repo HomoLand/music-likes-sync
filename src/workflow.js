@@ -27,6 +27,7 @@ import { refreshQQMusicBrowserCredential } from './qq-edge.js';
 import { alignAudioMedia } from './audio-alignment.js';
 import { buildMatchEvidence, compactTrackForAi } from './evidence.js';
 import { enrichAppleSnapshotWithMusicBrainz } from './metadata/musicbrainz.js';
+import { enrichAppleSnapshotWithStorefrontAliases } from './metadata/apple-storefronts.js';
 import { compareAppleToPlatform } from './match.js';
 import { buildMirrorRunIdentity, executeMirrorSyncPlan } from './mirror-apply.js';
 import { requestDeepSeekMirrorReview } from './mirror-ai.js';
@@ -113,8 +114,10 @@ import {
   attachProductAddState,
   guardProductAddTargetConflicts,
   mergeProductAddResolution,
+  productAddAiSuggestionAlreadyApplied,
   normalizeProductAddState,
   productAddReferencesTarget,
+  rejectProductAddCandidateFromAi,
   upsertProductAddState,
 } from './product-add-state.js';
 import {
@@ -217,6 +220,12 @@ export async function importAppleRows(rows, source = 'apple-browser', options = 
   let apple = buildAppleSnapshotFromTracks(rows, source);
   if (!apple.tracks.length) {
     throw new Error('Apple 页面抓取结果为空。');
+  }
+  if (options.enrichStorefronts || options.enrichMetadata) {
+    const storefronts = await enrichAppleSnapshotWithStorefrontAliases(apple, {
+      refresh: false,
+    });
+    apple = storefronts.snapshot;
   }
   if (options.enrichMetadata) {
     const enriched = await enrichAppleSnapshotWithMusicBrainz(apple, {
@@ -331,12 +340,20 @@ export async function enrichAppleMetadata(options = {}) {
   await ensureDirs();
   const apple = await readJsonIfExists(FILES.appleJson);
   if (!apple) throw new Error('缺少 Apple 快照，请先抓取 Apple Music。');
-  const enriched = await enrichAppleSnapshotWithMusicBrainz(prepareSnapshot(apple), {
+  const storefronts = await enrichAppleSnapshotWithStorefrontAliases(prepareSnapshot(apple), {
+    refresh: options.refresh,
+    storefronts: options.storefronts,
+  });
+  const enriched = await enrichAppleSnapshotWithMusicBrainz(storefronts.snapshot, {
     limit: options.limit,
     refresh: options.refresh,
   });
   await writeJson(FILES.appleJson, enriched.snapshot);
-  return enriched;
+  return {
+    ...enriched,
+    storefrontStats: storefronts.stats,
+    storefrontCacheFile: storefronts.cacheFile,
+  };
 }
 
 export async function generateMatchReport(options = {}) {
@@ -2011,6 +2028,8 @@ export async function applyProductAddAiSuggestions(options = {}) {
     reviewed: 0,
     eligible: 0,
     applied: 0,
+    appliedAdds: 0,
+    appliedSkips: 0,
     skippedGuarded: 0,
     skippedLowConfidence: 0,
     skippedNonAdd: 0,
@@ -2026,6 +2045,10 @@ export async function applyProductAddAiSuggestions(options = {}) {
     }
     if (targets.size && !targets.has(operation.targetPlatform)) return operation;
     stats.reviewed += 1;
+    if (productAddAiSuggestionAlreadyApplied(operation)) {
+      stats.skippedAlreadyApplied += 1;
+      return operation;
+    }
     if (operation.aiReview.guarded || operation.aiReview.safety?.guarded) {
       stats.skippedGuarded += 1;
       return operation;
@@ -2035,16 +2058,29 @@ export async function applyProductAddAiSuggestions(options = {}) {
       stats.skippedLowConfidence += 1;
       return operation;
     }
-    if (operation.aiReview.recommendedAction !== 'add') {
+    const recommendation = operation.aiReview.recommendedAction;
+    if (recommendation !== 'add' && recommendation !== 'skip') {
       stats.skippedNonAdd += 1;
       return operation;
     }
-    if (!operation.candidateTrack) {
+    if (recommendation === 'add' && !operation.candidateTrack) {
       stats.skippedWithoutCandidate += 1;
       return operation;
     }
     stats.eligible += 1;
     stats.applied += 1;
+    if (recommendation === 'skip') {
+      stats.appliedSkips += 1;
+      return rejectProductAddCandidateFromAi(operation, {
+        batchId,
+        decidedAt: now,
+        aiBatchId: operation.aiReview.batchId || '',
+        aiModel: operation.aiReview.model || '',
+        aiConfidence: confidence,
+        userApprovedAt: now,
+      });
+    }
+    stats.appliedAdds += 1;
     return applyProductAddDecisionToOperation(operation, {
       action: 'accept_candidate',
       batchId,
@@ -5137,6 +5173,7 @@ function productPreviewCounts(plan) {
     will_add: operations.filter((operation) => productBucketForOperation(operation) === 'will_add').length,
     will_keep: operations.filter((operation) => productBucketForOperation(operation) === 'will_keep').length,
     needs_confirmation: operations.filter((operation) => productBucketForOperation(operation) === 'needs_confirmation').length,
+    not_found: operations.filter((operation) => productBucketForOperation(operation) === 'not_found').length,
     may_delete: operations.filter((operation) => productBucketForOperation(operation) === 'may_delete').length,
   };
 }
@@ -5531,6 +5568,15 @@ function deterministicProductExplanation(operation = {}, item = {}, evidence = {
       evidenceRefs: productExplanationEvidenceRefs(evidence),
     };
   }
+  if (item.bucket === 'not_found') {
+    return {
+      summary: '目标平台暂时没有找到可靠的对应歌曲。',
+      risk: 'low',
+      recommendedAction: 'resolve_before_add',
+      rationale: '搜索到的结果与 Apple Music 源录音差异明显，系统已自动排除，不需要把错误候选交给人工逐首确认。',
+      evidenceRefs: productExplanationEvidenceRefs(evidence),
+    };
+  }
   return {
     summary: '这条目前不需要操作。',
     risk: 'low',
@@ -5621,6 +5667,7 @@ function normalizeAgentReviewBucket(value) {
   const bucket = String(value || '').trim().toLowerCase();
   if (bucket === 'may_delete' || bucket === 'delete' || bucket === 'deletion' || bucket === 'tombstone') return 'may_delete';
   if (bucket === 'needs_confirmation' || bucket === 'review' || bucket === 'confirmation') return 'needs_confirmation';
+  if (bucket === 'not_found' || bucket === 'missing' || bucket === 'unavailable') return 'not_found';
   return 'all';
 }
 
@@ -5935,6 +5982,8 @@ function productTombstoneDecisionForOperation(operation, tombstones) {
 }
 
 function productBucketForOperation(operation) {
+  if (operation.status === 'not_found') return 'not_found';
+  if (operation.action === 'remove' && operation.blockedReason === 'candidate_target_conflict') return 'may_delete';
   if (operation.action === 'review' || operation.status !== 'ready') return 'needs_confirmation';
   if (operation.action === 'remove' || operation.reason === 'tombstone_candidate') return 'may_delete';
   if (operation.action === 'add') return 'will_add';
@@ -5942,13 +5991,17 @@ function productBucketForOperation(operation) {
 }
 
 function productEvidenceForOperation(operation) {
-  const score = productScoreValue(operation.resolvedScore ?? operation.score);
+  const scoreDetails = operation.resolvedScore ?? operation.score;
+  const score = productScoreValue(scoreDetails);
   return [
     operation.reviewKind,
     operation.reason,
     score !== null ? `score:${score}` : '',
-    operation.score?.recordingFingerprint ? 'exact_recording_fingerprint' : '',
+    scoreDetails?.recordingFingerprint ? 'exact_recording_fingerprint' : '',
+    scoreDetails?.appleEquivalentFingerprint ? 'apple_storefront_equivalent' : '',
+    scoreDetails?.catalogTrackFingerprint ? 'same_album_track_number' : '',
     operation.sourceTrack?.isrc ? 'isrc' : '',
+    operation.sourceTrack?.metadata?.appleStorefronts?.equivalentCount ? 'apple_storefronts' : '',
     operation.sourceTrack?.metadata?.musicbrainz?.recordingIds?.length ? 'musicbrainz' : '',
   ].filter(Boolean);
 }
@@ -6359,8 +6412,9 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
 
 function needsProductPolicyAddResolution(operation = {}, refresh = false) {
   if (operation.action !== 'add') return false;
-  if (operation.targetTrack || operation.resolvedTargetTrack) return false;
-  if (refresh) return true;
+  if (operation.targetTrack) return false;
+  if (refresh) return operation.status !== 'ready';
+  if (operation.resolvedTargetTrack) return false;
   return operation.status !== 'needs_review' && operation.status !== 'not_found' && operation.status !== 'blocked';
 }
 

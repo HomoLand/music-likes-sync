@@ -442,6 +442,8 @@ describe('release readiness metadata', () => {
 
   it('captures Apple Favorite Songs through the catalog playlist API before DOM fallback', () => {
     const appleEdge = fs.readFileSync('src/apple-edge.js', 'utf8');
+    const server = fs.readFileSync('src/server.js', 'utf8');
+    const workflow = fs.readFileSync('src/workflow.js', 'utf8');
 
     assert.match(appleEdge, /pathSegments\.findLast/);
     assert.match(appleEdge, /\^pl\[\.\-\]/);
@@ -452,6 +454,8 @@ describe('release readiness metadata', () => {
     assert.match(appleEdge, /requireMusicKit/);
     assert.match(appleEdge, /Promise\.race/);
     assert.match(appleEdge, /pageHasReadyMusicKit/);
+    assert.match(server, /enrichStorefronts: true/);
+    assert.match(workflow, /enrichAppleSnapshotWithStorefrontAliases/);
   });
 
   it('keeps automatic sync additions-only, readiness-gated, and cross-process locked', () => {

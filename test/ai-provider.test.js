@@ -128,4 +128,57 @@ describe('AI provider abstraction', () => {
     assert.equal(calls, 2);
     assert.deepEqual(result.json, { ok: true });
   });
+
+  it('does not retry a non-transient provider rejection', async () => {
+    let calls = 0;
+    await assert.rejects(() => requestAiJson({
+      providerConfig: resolveAiProviderConfig({
+        apiKey: 'sk-local-test-key',
+        model: 'deepseek-test',
+        baseUrl: 'https://example.test/v1',
+      }, {}),
+      messages: [{ role: 'user', content: 'Return json' }],
+      maxAttempts: 3,
+      fetchImpl: async () => {
+        calls += 1;
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          async text() { return JSON.stringify({ error: { message: 'invalid request' } }); },
+        };
+      },
+    }), /invalid request/);
+
+    assert.equal(calls, 1);
+  });
+
+  it('retries a successful response whose JSON content is truncated', async () => {
+    let calls = 0;
+    const result = await requestAiJson({
+      providerConfig: resolveAiProviderConfig({
+        apiKey: 'sk-local-test-key',
+        model: 'deepseek-test',
+        baseUrl: 'https://example.test/v1',
+      }, {}),
+      messages: [{ role: 'user', content: 'Return json' }],
+      thinking: false,
+      maxAttempts: 2,
+      fetchImpl: async () => {
+        calls += 1;
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          async text() {
+            const content = calls === 1 ? '{"decisions":[' : JSON.stringify({ decisions: [] });
+            return JSON.stringify({ choices: [{ message: { content } }] });
+          },
+        };
+      },
+    });
+
+    assert.equal(calls, 2);
+    assert.deepEqual(result.json, { decisions: [] });
+  });
 });

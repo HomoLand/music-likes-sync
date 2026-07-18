@@ -342,6 +342,7 @@ async function runViewportSmoke(browserInstance, options) {
     await previewFetch;
     await expectVisible(page, '[data-testid="react-preview-list"]', 'sync preview list');
     await expectVisible(page, '[data-testid="react-preview-pagination"]', 'sync preview pagination status');
+    await expectVisible(page, '[data-testid="react-preview-bucket-not_found"]', 'not-found preview bucket');
     await expectVisible(page, '[data-testid="react-write-panel"]', 'controlled write panel');
     await expectVisible(page, '[data-testid="react-deletion-safety"]', 'pre-delete recovery controls');
     await expectVisible(page, '[data-testid="react-ai-review-additions"]', 'AI addition review draft action');
@@ -678,13 +679,13 @@ async function seedReactAppFixtures(root) {
   await fs.writeFile(path.join(dataDir, 'netease.json'), JSON.stringify(snapshot('netease', [
     track('n-1', 'Already There', 'Alice', 181000),
     track('n-2', 'Old Target Only', 'Dora', 200000),
-    track('n-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('n-3', 'Night Drive Acoustic', 'Carol', 190000),
     ...Array.from({ length: 35 }, (_, index) => track(`n-page-${index}`, `NetEase Page Fixture ${index}`, 'Page Artist', 200000 + index)),
   ])), 'utf8');
   await fs.writeFile(path.join(dataDir, 'qq.json'), JSON.stringify(snapshot('qq', [
     track('q-1', 'Already There', 'Alice', 181000),
     qqMidOnlyTrack('qq-mid-old-target-only', 'Old Target Only', 'Dora', 200000),
-    track('q-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('q-3', 'Night Drive Acoustic', 'Carol', 190000),
     ...Array.from({ length: 35 }, (_, index) => track(`q-page-${index}`, `QQ Page Fixture ${index}`, 'Page Artist', 210000 + index)),
   ])), 'utf8');
   await fs.writeFile(path.join(dataDir, 'agent-sessions.json'), JSON.stringify({

@@ -18,6 +18,7 @@ import { runAppleMusicKitTask } from '../apple-edge.js';
 
 const DEFAULT_LIMIT = 12;
 const DEFAULT_BATCH_SIZE = 50;
+const APPLE_EQUIVALENT_BATCH_SIZE = 300;
 const CACHE_FILE = path.join(DATA_DIR, 'apple-catalog-cache.json');
 const CACHE_VERSION = 1;
 const APPLE_SEARCH_SOURCE = String(process.env.APPLE_SEARCH_SOURCE || 'apple-web').trim().toLowerCase();
@@ -263,6 +264,66 @@ async function fetchAppleCatalogSongsByIds(ids, options = {}) {
   if (!response.ok) throw new Error(`Apple Music 媒体信息读取失败：HTTP ${response.status}`);
   const payload = await response.json();
   return Array.isArray(payload?.data) ? payload.data : [];
+}
+
+export async function fetchAppleEquivalentSongs(ids, options = {}) {
+  const values = unique(ids).slice(0, APPLE_EQUIVALENT_BATCH_SIZE);
+  if (!values.length) return new Map();
+  const storefront = String(options.storefront || APPLE_STOREFRONT).trim().toLowerCase();
+  const token = String(options.token || await getAppleWebToken()).trim();
+  const request = options.fetchImpl || fetch;
+  const url = new URL(`${APPLE_WEB_API_URL}/v1/catalog/${storefront}/songs`);
+  url.searchParams.set('filter[equivalents]', values.join(','));
+  url.searchParams.set('platform', 'web');
+  const response = await request(url, {
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${token}`,
+      origin: 'https://music.apple.com',
+      referer: 'https://music.apple.com/',
+      'user-agent': 'curl/8.0',
+    },
+  });
+  if ((response.status === 401 || response.status === 403) && !options.token && options.retry !== false) {
+    appleWebToken = null;
+    return fetchAppleEquivalentSongs(values, { ...options, retry: false });
+  }
+  if (!response.ok) {
+    throw new Error(`Apple equivalent catalog lookup failed for ${storefront}: HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const resources = new Map((payload?.data || []).map((song) => [String(song?.id || ''), song]));
+  const equivalents = payload?.meta?.filters?.equivalents || {};
+  return new Map(values.map((sourceId) => {
+    const refs = Array.isArray(equivalents[sourceId]) ? equivalents[sourceId] : [];
+    const songs = refs
+      .map((ref) => resources.get(String(ref?.id || '')))
+      .filter(Boolean)
+      .map(compactAppleEquivalentSong);
+    if (!songs.length && resources.has(sourceId)) {
+      songs.push(compactAppleEquivalentSong(resources.get(sourceId)));
+    }
+    return [sourceId, songs];
+  }));
+}
+
+function compactAppleEquivalentSong(song = {}) {
+  const attrs = song.attributes || {};
+  const trackNumber = Number(attrs.trackNumber || 0);
+  const discNumber = Number(attrs.discNumber || 0);
+  const releaseDate = String(attrs.releaseDate || '');
+  return {
+    id: String(song.id || ''),
+    title: String(attrs.name || ''),
+    artist: String(attrs.artistName || ''),
+    album: String(attrs.albumName || ''),
+    durationMs: Number(attrs.durationInMillis || 0),
+    isrc: String(attrs.isrc || ''),
+    ...(trackNumber ? { trackNumber } : {}),
+    ...(discNumber ? { discNumber } : {}),
+    ...(releaseDate ? { releaseDate } : {}),
+  };
 }
 
 async function getAppleWebToken() {

@@ -748,6 +748,7 @@ function pickPreviewBucket(buckets: AppStateSummary['preview']['buckets']): Prev
     buckets.find((bucket) => bucket.id === 'needs_confirmation' && bucket.count > 0)?.id
     || buckets.find((bucket) => bucket.id === 'may_delete' && bucket.count > 0)?.id
     || buckets.find((bucket) => bucket.id === 'will_add' && bucket.count > 0)?.id
+    || buckets.find((bucket) => bucket.id === 'not_found' && bucket.count > 0)?.id
     || buckets.find((bucket) => bucket.id === 'will_keep' && bucket.count > 0)?.id
     || 'will_add'
   );
@@ -758,6 +759,7 @@ function bucketLabel(bucket: PreviewBucketId): string {
     will_add: '会新增',
     will_keep: '会保留',
     needs_confirmation: '需要确认',
+    not_found: '未找到',
     may_delete: '可能删除',
   };
   return labels[bucket];

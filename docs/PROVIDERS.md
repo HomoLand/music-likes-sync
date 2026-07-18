@@ -17,6 +17,8 @@ The mirror model does not delete from Apple Music. Apple is the desired state th
 
 The dedicated profile lives under `data/apple-edge-profile`. Later refreshes reuse that profile and the saved Favorite Songs source in headless Edge, so a valid Apple session does not open a visible window. Apple browser capture requests catalog `artwork` and public `previews` together with title, artist, album, duration, and ISRC. Older local snapshots can be refreshed from the Apple catalog by song id. Artwork is normalized to a fixed HTTPS image URL; public preview audio is used only for user-initiated comparison and is never sent to AI.
 
+The first browser import also queries Apple's catalog-equivalents filter for localized metadata. Set `APPLE_STOREFRONT` to the account's two-letter source storefront (`us` by default). `APPLE_EQUIVALENT_STOREFRONTS` controls the comma-separated evidence storefronts and defaults to `cn,hk,tw,jp,kr`. Same-ISRC equivalents are authoritative; different-ISRC regional substitutes can provide aliases only when duration and version cues remain compatible. Results are cached under `data/` and never include Apple credentials.
+
 ## QQ Music
 
 QQ Music uses a local Web API adapter.

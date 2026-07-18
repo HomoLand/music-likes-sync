@@ -37,6 +37,7 @@ export function buildMirrorSyncPlan(input = {}) {
   const comparisonThresholds = {
     threshold: thresholds.match,
     reviewThreshold: thresholds.review,
+    allowAmbiguousFingerprint: true,
   };
   const sourceComparison = compareAppleToPlatform(sourceTracks, targetTracks, comparisonThresholds);
   const sourceIndex = indexByRef(sourceTracks);
@@ -73,16 +74,17 @@ export function buildMirrorSyncPlan(input = {}) {
   const coveredTargets = new Set();
 
   for (const [target, entries] of matchedByTarget.entries()) {
-    if (entries.length === 1) {
-      const entry = entries[0];
-      keptSources.add(entry.source);
+    if (entries.length === 1 || entriesRepresentSameSourceSong(entries, sourceTracks)) {
       coveredTargets.add(target);
-      operations.push(makeOperation('keep', {
-        source: sourceTracks[entry.source],
-        target: targetTracks[target],
-        score: entry.score,
-        reason: 'matched',
-      }));
+      for (const entry of entries) {
+        keptSources.add(entry.source);
+        operations.push(makeOperation('keep', {
+          source: sourceTracks[entry.source],
+          target: targetTracks[target],
+          score: entry.score,
+          reason: 'matched',
+        }));
+      }
       continue;
     }
 
@@ -134,6 +136,16 @@ export function buildMirrorSyncPlan(input = {}) {
       if (reverseMatch) {
         const reverseSource = sourceIndex.get(reverseMatch.target);
         const possibleDuplicate = reverseSource !== undefined && keptSources.has(reverseSource);
+        if (possibleDuplicate) {
+          operations.push(makeOperation('remove', {
+            source: reverseMatch.target,
+            target: targetTracks[index],
+            score: reverseMatch.score,
+            reason: 'duplicate_target_extra',
+            message: 'A stronger target match already represents this Apple source track; remove this extra target entry.',
+          }));
+          continue;
+        }
         operations.push(makeOperation('review', {
           source: reverseMatch.target,
           target: targetTracks[index],
@@ -204,6 +216,33 @@ export function buildMirrorSyncPlan(input = {}) {
     summary: summarizeMirrorOperations(decidedOperations),
     operations: decidedOperations,
   };
+}
+
+function entriesRepresentSameSourceSong(entries, sourceTracks) {
+  if (entries.length < 2) return false;
+  const isrcs = entries.map((entry) => sourceTracks[entry.source]?.isrc).filter(Boolean);
+  if (isrcs.length !== entries.length) return false;
+  if (new Set(isrcs).size === 1) return true;
+
+  const anchor = sourceTracks[entries[0].source];
+  return entries.slice(1).every((entry) => {
+    const candidate = sourceTracks[entry.source];
+    const comparison = compareAppleToPlatform(
+      [{ ...anchor, isrc: null }],
+      [{ ...candidate, isrc: null }],
+      { threshold: 0.82, reviewThreshold: 0.68, allowAmbiguousFingerprint: true },
+    );
+    const score = comparison.matches[0]?.score
+      || comparison.reviewItems[0]?.score
+      || comparison.missingItems[0]?.best?.score;
+    return Boolean(
+      score
+      && score.title === 1
+      && score.artist >= 0.8
+      && score.duration === 1
+      && !score.versionCueConflict
+    );
+  });
 }
 
 export function summarizeMirrorOperations(operations = []) {
@@ -527,16 +566,77 @@ function compactAliases(aliases = {}) {
 
 function compactMirrorMetadata(metadata = {}) {
   const musicbrainz = metadata?.musicbrainz;
-  if (!musicbrainz) return null;
-  return {
-    musicbrainz: {
+  const appleStorefronts = metadata?.appleStorefronts;
+  const crossPlatformAliases = metadata?.crossPlatformAliases;
+  const providerCatalog = metadata?.providerCatalog;
+  if (!musicbrainz && !appleStorefronts && !crossPlatformAliases && !providerCatalog) return null;
+  const result = {};
+  if (musicbrainz) {
+    result.musicbrainz = {
       isrc: musicbrainz.isrc || null,
       fetchedAt: musicbrainz.fetchedAt || null,
       status: musicbrainz.status || 'missing',
       recordingIds: Array.isArray(musicbrainz.recordingIds)
         ? musicbrainz.recordingIds.filter(Boolean).slice(0, 8)
         : [],
-    },
+    };
+  }
+  if (appleStorefronts) {
+    result.appleStorefronts = {
+      sourceStorefront: appleStorefronts.sourceStorefront || '',
+      storefronts: Array.isArray(appleStorefronts.storefronts)
+        ? appleStorefronts.storefronts.filter(Boolean).slice(0, 12)
+        : [],
+      fetchedAt: appleStorefronts.fetchedAt || null,
+      equivalentCount: Number(appleStorefronts.equivalentCount || 0),
+      isrcs: Array.isArray(appleStorefronts.isrcs)
+        ? appleStorefronts.isrcs.filter(Boolean).slice(0, 12)
+        : [],
+      equivalents: Array.isArray(appleStorefronts.equivalents)
+        ? appleStorefronts.equivalents.slice(0, 24).map(compactAppleEquivalent)
+        : [],
+    };
+  }
+  if (crossPlatformAliases) {
+    result.crossPlatformAliases = {
+      platforms: Array.isArray(crossPlatformAliases.platforms)
+        ? crossPlatformAliases.platforms.filter(Boolean).slice(0, 4)
+        : [],
+      count: Number(crossPlatformAliases.count || 0),
+    };
+  }
+  if (providerCatalog) {
+    result.providerCatalog = compactProviderCatalog(providerCatalog);
+  }
+  return result;
+}
+
+function compactAppleEquivalent(value = {}) {
+  return {
+    storefront: value.storefront || '',
+    id: value.id || '',
+    title: value.title || '',
+    artist: value.artist || '',
+    album: value.album || '',
+    durationMs: Number(value.durationMs || 0),
+    isrc: value.isrc || '',
+    trackNumber: Number(value.trackNumber || 0),
+    discNumber: Number(value.discNumber || 0),
+    releaseDate: value.releaseDate || '',
+    isrcMatch: value.isrcMatch === true,
+    aliasTrusted: value.aliasTrusted === true,
+  };
+}
+
+function compactProviderCatalog(value = {}) {
+  return {
+    platform: value.platform || '',
+    trackNumber: Number(value.trackNumber || 0),
+    discNumber: Number(value.discNumber || 0),
+    albumId: value.albumId || '',
+    albumMid: value.albumMid || '',
+    subtitle: value.subtitle || '',
+    releaseDate: value.releaseDate || '',
   };
 }
 

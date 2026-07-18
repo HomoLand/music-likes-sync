@@ -735,7 +735,9 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/apple/browser/capture') {
     const capture = await captureAppleMusicPage();
-    const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser');
+    const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser', {
+      enrichStorefronts: true,
+    });
     return sendJson(res, 200, {
       ok: true,
       message: `Apple 页面已抓取 ${apple.tracks.length} 首`,
@@ -1659,7 +1661,9 @@ async function completeAppleBrowserConnection(status) {
     playlistType: status.playlistType,
     sourceUrl: status.sourceUrl,
   });
-  const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser');
+  const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser', {
+    enrichStorefronts: true,
+  });
   const connectedStatus = {
     code: 'connected',
     message: `Apple Music 已连接，读取 ${apple.tracks.length} 首喜爱歌曲。`,

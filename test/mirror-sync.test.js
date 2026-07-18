@@ -45,7 +45,7 @@ describe('mirror sync plan', () => {
         track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
       ]),
       targetSnapshot: snapshot('netease', [
-        track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 240000),
+        track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000),
       ]),
     });
 
@@ -63,7 +63,7 @@ describe('mirror sync plan', () => {
         track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
       ]),
       targetSnapshot: snapshot('netease', [
-        track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 240000),
+        track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000),
       ]),
     };
     const reviewPlan = buildMirrorSyncPlan(input);
@@ -100,7 +100,7 @@ describe('mirror sync plan', () => {
         track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
       ]),
       targetSnapshot: snapshot('netease', [
-        track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 240000),
+        track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000),
       ]),
     };
     const reviewPlan = buildMirrorSyncPlan(input);
@@ -153,7 +153,7 @@ describe('mirror sync plan', () => {
     );
   });
 
-  it('labels an extra target entry as a possible duplicate after keeping the best match', () => {
+  it('marks an extra target entry for removal after keeping the best match', () => {
     const source = normalizeTrack({
       id: 'a-1',
       title: 'Restore',
@@ -183,11 +183,74 @@ describe('mirror sync plan', () => {
     });
 
     assert.equal(plan.summary.keep, 1);
-    assert.equal(plan.summary.review, 1);
-    const review = plan.operations.find((operation) => operation.action === 'review');
-    assert.equal(review.reason, 'reverse_only_match');
-    assert.equal(review.reviewKind, 'possible_duplicate_target');
-    assert.equal(review.targetTrack.id, 'q-extra');
+    assert.equal(plan.summary.review, 0);
+    assert.equal(plan.summary.remove, 1);
+    const remove = plan.operations.find((operation) => operation.action === 'remove');
+    assert.equal(remove.reason, 'duplicate_target_extra');
+    assert.equal(remove.targetTrack.id, 'q-extra');
+    assert.equal(remove.destructive, true);
+  });
+
+  it('lets one target recording cover duplicate Apple entries with the same ISRC', () => {
+    const first = normalizeTrack({
+      id: 'a-single',
+      title: 'Shared Recording',
+      artists: ['Alice'],
+      album: 'Shared Recording - Single',
+      durationMs: 180000,
+      isrc: 'USAAA2600001',
+    }, 'apple');
+    const second = normalizeTrack({
+      id: 'a-album',
+      title: 'Shared Recording',
+      artists: ['Alice'],
+      album: 'Album Edition',
+      durationMs: 180000,
+      isrc: 'USAAA2600001',
+    }, 'apple');
+    const target = track('qq', 'q-1', 'Shared Recording', 'Alice', 180000);
+
+    const plan = buildMirrorSyncPlan({
+      target: 'qq',
+      sourceSnapshot: snapshot('apple', [first, second]),
+      targetSnapshot: snapshot('qq', [target]),
+    });
+
+    assert.equal(plan.summary.keep, 2);
+    assert.equal(plan.summary.review, 0);
+    assert.equal(plan.summary.add, 0);
+  });
+
+  it('treats exact Apple reissues with different ISRCs as one song-level target', () => {
+    const sourceTracks = [
+      normalizeTrack({
+        id: 'a-reissue-1',
+        title: 'Reissued Song',
+        artists: ['Alice'],
+        album: 'Single Edition',
+        durationMs: 180000,
+        isrc: 'USAAA2600001',
+      }, 'apple'),
+      normalizeTrack({
+        id: 'a-reissue-2',
+        title: 'Reissued Song',
+        artists: ['Alice'],
+        album: 'Album Edition',
+        durationMs: 180800,
+        isrc: 'USAAA2600002',
+      }, 'apple'),
+    ];
+
+    const plan = buildMirrorSyncPlan({
+      target: 'qq',
+      sourceSnapshot: snapshot('apple', sourceTracks),
+      targetSnapshot: snapshot('qq', [
+        track('qq', 'q-reissue', 'Reissued Song', 'Alice', 180000),
+      ]),
+    });
+
+    assert.equal(plan.summary.keep, 2);
+    assert.equal(plan.summary.review, 0);
   });
 
   it('preserves source aliases and MusicBrainz evidence for mirror review operations', () => {

@@ -1,6 +1,6 @@
 import { durationLabel, normalizeText } from './normalize.js';
-import { matchingTextVariants } from './transliterate.js';
-import { compareVersionCues } from './evidence.js';
+import { foldCjk, matchingTextVariants } from './transliterate.js';
+import { compareVersionCues, versionCueSet } from './evidence.js';
 
 const trackValueCache = new WeakMap();
 
@@ -23,13 +23,19 @@ export function compareAppleToPlatform(appleTracks, platformTracks, options = {}
       }))
       .sort((a, b) => (
         b.score.isrc - a.score.isrc
+        || Number(b.score.catalogTrackFingerprint) - Number(a.score.catalogTrackFingerprint)
+        || Number(b.score.appleEquivalentFingerprint) - Number(a.score.appleEquivalentFingerprint)
         || Number(b.score.recordingFingerprint) - Number(a.score.recordingFingerprint)
         || b.score.total - a.score.total
       ));
 
     const best = candidates[0] || null;
     const fingerprintCandidates = candidates.filter((candidate) => candidate.score.recordingFingerprint);
-    const ambiguousFingerprint = Boolean(best?.score.recordingFingerprint && fingerprintCandidates.length > 1);
+    const ambiguousFingerprint = Boolean(
+      options.allowAmbiguousFingerprint !== true
+      && best?.score.recordingFingerprint
+      && fingerprintCandidates.length > 1
+    );
     if (
       best
       && best.score.total >= threshold
@@ -77,8 +83,18 @@ function selectCandidatePool(apple, candidates) {
     const duration = durationScore(apple.track.durationMs, candidate.track.durationMs);
     const exactTitle = intersects(apple.titleSet, candidate.titleSet);
     const exactArtist = intersects(apple.artistSet, candidate.artistSet);
-    const title = similarity(apple.normalizedTitle, candidate.normalizedTitle);
-    const artist = similarity(apple.normalizedArtist, candidate.normalizedArtist);
+    const baseTitle = similarity(apple.normalizedTitle, candidate.normalizedTitle);
+    const baseArtist = similarity(apple.normalizedArtist, candidate.normalizedArtist);
+    const title = exactTitle ? 1 : (
+      duration >= 0.75 || exactArtist || baseTitle >= 0.3
+        ? quickFieldSimilarity(apple.titleValues, candidate.titleValues, baseTitle)
+        : baseTitle
+    );
+    const artist = exactArtist ? 1 : (
+      duration >= 0.75 || exactTitle || baseArtist >= 0.3
+        ? quickFieldSimilarity(apple.artistValues, candidate.artistValues, baseArtist)
+        : baseArtist
+    );
 
     const quick = (
       (exactTitle ? 0.5 : title * 0.36)
@@ -101,18 +117,50 @@ function selectCandidatePool(apple, candidates) {
   return selected.slice(0, 1000);
 }
 
+function quickFieldSimilarity(leftValues, rightValues, fallback) {
+  let best = fallback;
+  for (const left of leftValues.slice(0, 8)) {
+    for (const right of rightValues.slice(0, 8)) {
+      if (left === right) return 1;
+      if (!left.includes(right) && !right.includes(left)) continue;
+      const shorter = Math.min(left.length, right.length);
+      const longer = Math.max(left.length, right.length);
+      best = Math.max(best, clamp(0.75 + (shorter / longer) * 0.2, 0, 0.95));
+      if (best >= 0.95) return best;
+    }
+  }
+  return best;
+}
+
 function scoreTrack(a, b) {
   const title = bestFieldSimilarity(a, b, 'title');
   const artist = artistScore(a, b);
   const album = hasFieldValue(a, 'album') && hasFieldValue(b, 'album') ? bestFieldSimilarity(a, b, 'album') : 0.5;
   const duration = durationScore(a.durationMs, b.durationMs);
   const isrc = isrcScore(a, b);
-  const versionCueConflicts = compareVersionCues(a, b);
-  const titleVersionCueConflict = versionCueConflicts.some((item) => item.field === 'title');
-  const strongMetadataAgreement = title >= 0.95 && artist >= 0.9 && album >= 0.8 && duration >= 0.92;
-  const versionCueConflict = titleVersionCueConflict && !strongMetadataAgreement;
+  const rawVersionCueConflicts = compareVersionCues(a, b);
+  const appleEquivalentFingerprint = officialAppleEquivalentFingerprint(a, b, {
+    album,
+    artist,
+    duration,
+    title,
+  }, rawVersionCueConflicts);
+  const catalogTrackFingerprint = officialCatalogTrackFingerprint(a, b, {
+    album,
+    artist,
+    duration,
+    title,
+  }) || officialCatalogTrackFingerprint(b, a, {
+    album,
+    artist,
+    duration,
+    title,
+  });
+  const authoritativeFingerprint = appleEquivalentFingerprint || catalogTrackFingerprint;
+  const versionCueConflicts = authoritativeFingerprint ? [] : rawVersionCueConflicts;
+  const versionCueConflict = versionCueConflicts.length > 0;
   const differentIsrc = Boolean(a.isrc && b.isrc && a.isrc !== b.isrc);
-  const recordingFingerprint = (
+  const recordingFingerprint = authoritativeFingerprint || (
     title === 1
     && album === 1
     && duration === 1
@@ -121,6 +169,7 @@ function scoreTrack(a, b) {
   );
   let total = clamp(title * 0.52 + artist * 0.28 + duration * 0.15 + album * 0.05, 0, 1);
   if (isrc !== 1 && title < 0.7 && album < 0.5) total = Math.min(total, 0.67);
+  if (isrc !== 1 && duration === 0.15 && !authoritativeFingerprint) total = Math.min(total, 0.67);
   if (isrc === 1) total = Math.max(total, 0.98);
   if (recordingFingerprint) total = Math.max(total, 0.9);
   return {
@@ -132,8 +181,151 @@ function scoreTrack(a, b) {
     isrc,
     isrcConflict: differentIsrc,
     recordingFingerprint,
+    ...(appleEquivalentFingerprint ? { appleEquivalentFingerprint: true } : {}),
+    ...(catalogTrackFingerprint ? { catalogTrackFingerprint: true } : {}),
     versionCueConflict,
   };
+}
+
+function officialAppleEquivalentFingerprint(left, right, scores, versionCueConflicts) {
+  return equivalentFingerprintFor(left, right, scores, versionCueConflicts)
+    || equivalentFingerprintFor(right, left, scores, invertVersionConflicts(versionCueConflicts));
+}
+
+function equivalentFingerprintFor(appleTrack, targetTrack, scores, versionCueConflicts) {
+  const equivalents = appleTrack?.metadata?.appleStorefronts?.equivalents;
+  if (!Array.isArray(equivalents) || !equivalents.length) return false;
+  if (scores.artist < 0.8 || scores.duration !== 1) return false;
+  if (appleTrack.isrc && targetTrack.isrc && appleTrack.isrc !== targetTrack.isrc) return false;
+
+  const targetTitles = [targetTrack.title, ...(targetTrack.aliases?.titles || [])];
+  const sourceTitles = [appleTrack.title, ...(appleTrack.aliases?.titles || [])];
+  for (const equivalent of equivalents) {
+    const sameIsrc = equivalent.isrcMatch === true
+      || Boolean(appleTrack.isrc && equivalent.isrc && appleTrack.isrc === equivalent.isrc);
+    if (!sameIsrc) continue;
+    if (durationScore(equivalent.durationMs, targetTrack.durationMs) !== 1) continue;
+    const equivalentTitles = [equivalent.title, ...sourceTitles];
+    if (scores.album >= 0.85 && identityOverlap([equivalent.title], targetTitles)) return true;
+    if (
+      identityOverlap(sourceTitles, targetTitles)
+      && (!versionCueConflicts.length
+        || safeOfficialVersionOmission(appleTrack, targetTrack, scores, versionCueConflicts))
+    ) return true;
+    if (
+      scores.album >= 0.85
+      && safeOfficialVersionOmission(appleTrack, targetTrack, scores, versionCueConflicts)
+      && canonicalTitleOverlap(equivalentTitles, targetTitles)
+    ) return true;
+  }
+  return false;
+}
+
+function officialCatalogTrackFingerprint(appleTrack, targetTrack, scores) {
+  const equivalents = appleTrack?.metadata?.appleStorefronts?.equivalents;
+  const targetCatalog = targetTrack?.metadata?.providerCatalog;
+  const targetTrackNumber = positiveInteger(targetCatalog?.trackNumber);
+  if (!Array.isArray(equivalents) || !targetTrackNumber) return false;
+  if (scores.duration < 0.92) return false;
+  if (appleTrack.isrc && targetTrack.isrc && appleTrack.isrc !== targetTrack.isrc) return false;
+
+  const targetDiscNumber = positiveInteger(targetCatalog?.discNumber);
+  const targetTitles = [targetTrack.title, ...(targetTrack.aliases?.titles || [])];
+  return equivalents.some((equivalent) => {
+    const sameIsrc = equivalent.isrcMatch === true
+      || Boolean(appleTrack.isrc && equivalent.isrc && appleTrack.isrc === equivalent.isrc);
+    const equivalentTrackNumber = positiveInteger(equivalent.trackNumber);
+    const equivalentDiscNumber = positiveInteger(equivalent.discNumber);
+    if (!sameIsrc || !equivalentTrackNumber || equivalentTrackNumber !== targetTrackNumber) return false;
+    if (targetDiscNumber && equivalentDiscNumber && targetDiscNumber !== equivalentDiscNumber) return false;
+    const sameRelease = releaseDateCompatible(equivalent.releaseDate, targetCatalog.releaseDate);
+    const titleRelated = canonicalTitleOverlap([equivalent.title, appleTrack.title], targetTitles);
+    if (scores.artist < 0.7 && !sameRelease) return false;
+    if (titleRelated && scores.album >= 0.85) return true;
+    if (!sameRelease || scores.artist < 0.9) return false;
+    return scores.album >= 0.85 || scores.title >= 0.45;
+  });
+}
+
+function releaseDateCompatible(left, right) {
+  const a = Date.parse(String(left || ''));
+  const b = Date.parse(String(right || ''));
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 2 * 24 * 60 * 60 * 1000;
+}
+
+function safeOfficialVersionOmission(sourceTrack, targetTrack, scores, conflicts = []) {
+  if (!conflicts.length) return true;
+  if (scores.artist < 0.9 || scores.album < 0.95 || scores.duration !== 1 || scores.title < 0.8) return false;
+  if (conflicts.some((conflict) => conflict.source !== true || conflict.target !== false)) return false;
+  const cues = new Set(conflicts.map((conflict) => conflict.cue));
+  if ([...cues].every((cue) => ['version', 'single-version', 'album-version'].includes(cue))) return true;
+  return cues.size === 1
+    && cues.has('live')
+    && versionCueSetFromAlbum(sourceTrack.album).has('live')
+    && canonicalAlbumOverlap(sourceTrack, targetTrack);
+}
+
+function versionCueSetFromAlbum(value) {
+  return versionCueSet(value);
+}
+
+function canonicalAlbumOverlap(left, right) {
+  return canonicalTitleOverlap(
+    [left.album, ...(left.aliases?.albums || [])],
+    [right.album, ...(right.aliases?.albums || [])],
+  );
+}
+
+function canonicalTitleOverlap(left, right) {
+  const leftValues = uniqueNormalized(left.flatMap(canonicalIdentityVariants));
+  const rightValues = uniqueNormalized(right.flatMap(canonicalIdentityVariants));
+  return leftValues.some((a) => rightValues.some((b) => canonicalIdentityRelated(a, b)));
+}
+
+function canonicalIdentityRelated(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length > right.length ? left : right;
+  return shorter.length >= 2
+    && shorter.length / longer.length >= 0.45
+    && longer.startsWith(shorter);
+}
+
+function canonicalIdentityVariants(value) {
+  const raw = String(value || '').normalize('NFKC').toLowerCase();
+  const simplified = raw
+    .replace(/\boriginally\s+performed\s+by\b.*$/i, ' ')
+    .replace(/[\[(（【][^\])）】]{1,80}[\])）】]/g, ' ')
+    .replace(/\b(?:version|ver\.?|live|remaster(?:ed)?|remix(?:ed)?|instrumental|off vocal|acoustic|self cover)\b.*$/i, ' ');
+  return uniqueNormalized([raw, simplified, foldCjk(raw), foldCjk(simplified)].map((item) => (
+    item.replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+/g, '')
+  )));
+}
+
+function invertVersionConflicts(conflicts = []) {
+  return conflicts.map((conflict) => ({
+    ...conflict,
+    source: conflict.target,
+    target: conflict.source,
+  }));
+}
+
+function positiveInteger(value) {
+  const number = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function identityOverlap(left, right) {
+  const leftValues = new Set(left.flatMap(identityVariants));
+  return right.flatMap(identityVariants).some((value) => leftValues.has(value));
+}
+
+function identityVariants(value) {
+  const raw = String(value || '').normalize('NFKC').toLowerCase();
+  return uniqueNormalized([raw, foldCjk(raw)].map((item) => (
+    item.replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]+/g, '')
+  )));
 }
 
 function artistScore(a, b) {

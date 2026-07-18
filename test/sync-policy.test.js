@@ -58,7 +58,7 @@ describe('policy-driven sync core', () => {
     );
   });
 
-  it('preserves duplicate-target review context and its stable decision key', () => {
+  it('preserves automatic duplicate-target removal context', () => {
     const sourceSnapshot = snapshot('apple', [
       track('apple', 'a-restore', 'Restore', 'Artist', 281887, { album: 'Restore - EP' }),
     ]);
@@ -73,11 +73,12 @@ describe('policy-driven sync core', () => {
       targets: ['qq'],
       snapshots: { apple: sourceSnapshot, qq: targetSnapshot },
     });
-    const mirrorReview = mirror.operations.find((operation) => operation.action === 'review');
-    const policyReview = policy.operations.find((operation) => operation.action === 'review');
+    const mirrorRemove = mirror.operations.find((operation) => operation.action === 'remove');
+    const policyRemove = policy.operations.find((operation) => operation.action === 'remove');
 
-    assert.equal(policyReview?.reviewKind, 'possible_duplicate_target');
-    assert.equal(policyReview?.decisionKey, mirrorReview?.decisionKey);
+    assert.equal(policyRemove?.reason, 'duplicate_target_extra');
+    assert.equal(policyRemove?.decisionKey, mirrorRemove?.decisionKey);
+    assert.equal(policyRemove?.status, 'ready');
   });
 
   it('preserves safe source and target artwork in canonical preview operations', () => {
@@ -103,6 +104,35 @@ describe('policy-driven sync core', () => {
     const remove = plan.operations.find((operation) => operation.action === 'remove');
     assert.match(add?.sourceTrack?.artworkUrl || '', /300x300bb\.jpg/);
     assert.equal(remove?.targetTrack?.artworkUrl, 'https://y.gtimg.cn/music/photo_new/target-cover.jpg');
+  });
+
+  it('uses a strict match on one target to resolve localized artist metadata on another', () => {
+    const source = track('apple', 'a-cross', 'Localized Theme D.A. Re-Build Mix', 'K.R.A.', 183867, {
+      album: 'Original Soundtrack',
+    });
+    const plan = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['qq', 'netease'],
+      snapshots: {
+        apple: snapshot('apple', [source]),
+        qq: snapshot('qq', [
+          track('qq', 'q-cross', 'Localized Theme', 'Franchise Ensemble', 183000, {
+            album: 'Original Soundtrack',
+          }),
+        ]),
+        netease: snapshot('netease', [
+          track('netease', 'n-cross', 'Localized Theme D.A. Re-Build Mix', 'Franchise Ensemble', 183867, {
+            album: 'Original Soundtrack',
+          }),
+        ]),
+      },
+    });
+
+    const qq = plan.operations.find((operation) => operation.targetPlatform === 'qq');
+    assert.equal(qq.action, 'keep');
+    assert.equal(qq.score.artist, 1);
+    assert(qq.sourceTrack.metadata.crossPlatformAliases.platforms.includes('netease'));
   });
 
   it('blocks Apple canonical remove operations without destructive target ids', () => {
@@ -132,7 +162,7 @@ describe('policy-driven sync core', () => {
       track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
     ]);
     const targetSnapshot = snapshot('netease', [
-      track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 240000),
+      track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000),
     ]);
     const undecided = buildSyncPolicyPlan({
       policy: 'canonical_mirror',

@@ -4,7 +4,7 @@ export type PlatformStatus = 'readable' | 'writable' | 'needs_attention' | 'not_
 
 export type SyncModeId = 'canonical_mirror' | 'union_convergence' | 'managed_bidirectional' | 'read_only_analysis';
 
-export type PreviewBucketId = 'will_add' | 'will_keep' | 'needs_confirmation' | 'may_delete';
+export type PreviewBucketId = 'will_add' | 'will_keep' | 'needs_confirmation' | 'not_found' | 'may_delete';
 
 export type AdditionDecisionAction = 'accept_candidate' | 'select_alternative' | 'skip' | 'clear';
 

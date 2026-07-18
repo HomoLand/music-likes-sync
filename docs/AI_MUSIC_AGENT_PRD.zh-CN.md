@@ -176,19 +176,20 @@ Last updated: 2026-07-08
 已实现：
 
 - Apple 导出中的 ISRC 已进入识别链路。
+- `src/metadata/apple-storefronts.js` 使用 Apple 官方 catalog equivalents 接口补充跨区标题、艺人、专辑、轨道号和发行日期，并按 ISRC、时长和版本提示限制别名可信范围。
 - `src/metadata/musicbrainz.js` 支持通过 MusicBrainz 查询外部 metadata。
-- `src/evidence.js` 聚合 `external_evidence.musicbrainz`、`match_evidence`、duration delta、ISRC relation、alias overlap、version cue conflicts、support signals、risk signals。
+- `src/evidence.js` 聚合 Apple storefront、provider catalog、MusicBrainz、duration delta、ISRC relation、alias overlap、version cue conflicts、support signals 和 risk signals。
 - `src/sync-ai.js` 和 `src/ai-review.js` 已把外部证据和匹配证据放入 AI payload。
-- `src/mirror-sync.js` 在镜像计划中保留 alias 和 compact MusicBrainz metadata。
-- `src/transliterate.js` 使用 OpenCC 完整词典统一简繁体，并结合平台 / MusicBrainz 别名、假名与罗马音生成匹配变体；确定性评分与 AI 证据复用同一套变体。
-- `src/match.js` 已加入录音指纹：标准化标题和专辑精确一致、时长差不超过 2 秒、无版本冲突且无不同 ISRC 时可自动匹配；同一源命中多个指纹候选仍留在复核队列。
+- `src/mirror-sync.js` 在镜像计划中保留 alias、Apple storefront、provider catalog 和 compact MusicBrainz metadata。
+- `src/transliterate.js` 使用 OpenCC 完整词典统一简繁体与日文新旧字体，并结合平台 / Apple / MusicBrainz 别名、假名和罗马音生成匹配变体；确定性评分与 AI 证据复用同一套变体。
+- `src/match.js` 已加入录音指纹、Apple 同 ISRC 等价指纹和同发行轨道指纹；1-2 秒时长差视为平台误差，显式版本提示仍会阻止自动合并。
 - `src/mirror-sync.js` 会在同一艺人键内跨歌曲复用已由平台 / MusicBrainz 提供的显式艺名别名，不根据模型记忆扩散别名。
 - 版本风险按当前标题与专辑发行信息分别提取，支持中英日常见 `live`、`cover`、`instrumental`、`remix` 等提示；历史别名和普通专辑名称不会被误当成当前版本结论。
 - `test/match.test.js` 与 AI evaluation fixtures 已覆盖简繁体、艺名别名、日文转写、Apple storefront 本地化艺名、候选排序、不同 ISRC 和版本冲突边界。
 
 仍需改进：
 
-- 外部音乐数据库目前以 MusicBrainz 为主，还没有形成 provider-agnostic evidence registry。
+- 外部证据目前包含 Apple Catalog 和 MusicBrainz，但还没有形成 provider-agnostic evidence registry。
 - 平台返回字段不稳定，QQ / NetEase 很多候选没有 ISRC，需要更强的 fallback evidence。
 - 现有黄金集仍以合成公开样本为主，需要继续加入脱敏后的真实跨语言、同曲不同版本和错误候选案例。
 

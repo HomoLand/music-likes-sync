@@ -73,8 +73,9 @@ export async function resolveMirrorAddOperations(plan, options = {}) {
 
 function needsAddResolution(operation = {}, refresh = false) {
   if (operation.action !== 'add') return false;
-  if (operation.resolvedTargetTrack || operation.targetTrack) return false;
-  if (refresh) return true;
+  if (operation.targetTrack) return false;
+  if (refresh) return operation.status !== 'ready';
+  if (operation.resolvedTargetTrack) return false;
   return operation.status !== 'needs_review' && operation.status !== 'not_found';
 }
 
@@ -118,7 +119,10 @@ async function resolveOneAdd(operation, context) {
     };
   }
 
-  const comparison = compareAppleToPlatform([source], candidates, context.thresholds);
+  const comparison = compareAppleToPlatform([source], candidates, {
+    ...context.thresholds,
+    allowAmbiguousFingerprint: true,
+  });
   const match = comparison.matches[0];
   if (match) {
     return {
@@ -134,16 +138,28 @@ async function resolveOneAdd(operation, context) {
   }
 
   const review = comparison.reviewItems[0];
-  const best = review || comparison.missingItems[0]?.best || null;
+  if (!review) {
+    return {
+      status: 'not_found',
+      candidateTrack: null,
+      resolvedTargetTrack: null,
+      resolvedScore: comparison.missingItems[0]?.best?.score || null,
+      resolution: {
+        reason: 'target_catalog_low_score',
+        message: 'Target-platform search results are clearly different recordings; no suitable catalog match was found.',
+      },
+      alternatives: compactAlternatives(candidates, null),
+    };
+  }
   return {
     status: 'needs_review',
-    candidateTrack: compactResolvedTrack(best?.target),
-    resolvedScore: best?.score || null,
+    candidateTrack: compactResolvedTrack(review.target),
+    resolvedScore: review.score || null,
     resolution: {
-      reason: review ? 'low_confidence_target_match' : 'target_catalog_low_score',
+      reason: 'low_confidence_target_match',
       message: 'A target-platform candidate exists, but it is below the automatic add threshold.',
     },
-    alternatives: compactAlternatives(candidates, best?.target),
+    alternatives: compactAlternatives(candidates, review.target),
   };
 }
 
@@ -159,6 +175,7 @@ function hasConfidentCandidate(source, candidates, threshold) {
   return Boolean(compareAppleToPlatform([source], candidates, {
     threshold,
     reviewThreshold: threshold,
+    allowAmbiguousFingerprint: true,
   }).matches[0]);
 }
 
@@ -185,7 +202,34 @@ function compactResolvedTrack(track) {
     isrc: track.isrc || null,
     songType: track.songType ?? null,
     artworkUrl: trackArtworkUrl(track),
+    aliases: compactAliases(track.aliases),
+    metadata: compactResolvedMetadata(track.metadata),
   };
+}
+
+function compactResolvedMetadata(metadata) {
+  if (!metadata?.providerCatalog) return null;
+  const value = metadata.providerCatalog;
+  return {
+    providerCatalog: {
+      platform: value.platform || '',
+      trackNumber: Number(value.trackNumber || 0),
+      discNumber: Number(value.discNumber || 0),
+      albumId: value.albumId || '',
+      albumMid: value.albumMid || '',
+      subtitle: value.subtitle || '',
+      releaseDate: value.releaseDate || '',
+    },
+  };
+}
+
+function compactAliases(aliases = {}) {
+  const result = {};
+  for (const key of ['titles', 'artists', 'albums']) {
+    const values = Array.isArray(aliases?.[key]) ? aliases[key].filter(Boolean).slice(0, 24) : [];
+    if (values.length) result[key] = values;
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function trackKey(track = {}) {

@@ -1,5 +1,5 @@
 import { buildMirrorSyncPlan, summarizeMirrorOperations } from './mirror-sync.js';
-import { normalizeText } from './normalize.js';
+import { normalizeAliasObject, normalizeText, normalizeTrack } from './normalize.js';
 import { trackArtworkUrl } from './track-media.js';
 import { buildUnifiedLibrary } from './unified.js';
 
@@ -257,24 +257,35 @@ function buildCanonicalMirrorPlan(input) {
   const sourceSnapshot = input.snapshots[source];
   if (!sourceSnapshot) throw new Error('Missing canonical source snapshot.');
 
-  const childPlans = [];
-  const operations = [];
-  for (const target of targets) {
-    if (target === source) continue;
+  const mirrorTargets = targets.filter((target) => target !== source);
+  const buildMirrors = (canonicalSource) => mirrorTargets.map((target) => {
     if (!['qq', 'netease'].includes(target)) {
       throw new Error('canonical_mirror currently supports qq and netease targets.');
     }
     const targetSnapshot = input.snapshots[target];
     if (!targetSnapshot) throw new Error(`Missing ${target} target snapshot.`);
-    const mirror = buildMirrorSyncPlan({
-      generatedAt: input.generatedAt,
-      sourceSnapshot,
-      targetSnapshot,
+    return {
       target,
-      threshold: input.thresholds.match,
-      reviewThreshold: input.thresholds.review,
-      reviewDecisions: input.reviewDecisions,
-    });
+      mirror: buildMirrorSyncPlan({
+        generatedAt: input.generatedAt,
+        sourceSnapshot: canonicalSource,
+        targetSnapshot,
+        target,
+        threshold: input.thresholds.match,
+        reviewThreshold: input.thresholds.review,
+        reviewDecisions: input.reviewDecisions,
+      }),
+    };
+  });
+  const initialMirrors = buildMirrors(sourceSnapshot);
+  const enrichedSource = enrichCanonicalSourceWithTargetAliases(sourceSnapshot, initialMirrors);
+  const mirrors = enrichedSource.changed
+    ? buildMirrors(enrichedSource.snapshot)
+    : initialMirrors;
+
+  const childPlans = [];
+  const operations = [];
+  for (const { target, mirror } of mirrors) {
     childPlans.push({
       target,
       generatedAt: mirror.generatedAt,
@@ -308,6 +319,68 @@ function buildCanonicalMirrorPlan(input) {
     childPlans,
     operations,
   });
+}
+
+function enrichCanonicalSourceWithTargetAliases(sourceSnapshot, mirrors) {
+  const aliasesBySource = new Map();
+  for (const { target, mirror } of mirrors) {
+    for (const operation of mirror.operations || []) {
+      if (!trustedCrossTargetMatch(operation)) continue;
+      const sourceId = String(operation.sourceTrack?.id || '').trim();
+      if (!sourceId) continue;
+      const evidence = aliasesBySource.get(sourceId) || {
+        platforms: new Set(),
+        titles: [],
+        artists: [],
+        albums: [],
+      };
+      const track = operation.targetTrack;
+      evidence.platforms.add(target);
+      evidence.titles.push(track.title, ...(track.aliases?.titles || []));
+      evidence.artists.push(track.artist, ...(track.artists || []), ...(track.aliases?.artists || []));
+      evidence.albums.push(track.album, ...(track.aliases?.albums || []));
+      aliasesBySource.set(sourceId, evidence);
+    }
+  }
+  if (!aliasesBySource.size) return { snapshot: sourceSnapshot, changed: 0 };
+
+  let changed = 0;
+  const tracks = (sourceSnapshot.tracks || []).map((track) => {
+    const evidence = aliasesBySource.get(String(track.id || '').trim());
+    if (!evidence) return track;
+    const aliases = normalizeAliasObject({
+      titles: [...(track.aliases?.titles || []), ...evidence.titles],
+      artists: [...(track.aliases?.artists || []), ...evidence.artists],
+      albums: [...(track.aliases?.albums || []), ...evidence.albums],
+    });
+    changed += 1;
+    return normalizeTrack({
+      ...track,
+      aliases,
+      metadata: {
+        ...(track.metadata || {}),
+        crossPlatformAliases: {
+          platforms: [...evidence.platforms],
+          count: aliases.titles.length + aliases.artists.length + aliases.albums.length,
+        },
+      },
+    }, 'apple');
+  });
+  return {
+    snapshot: { ...sourceSnapshot, tracks },
+    changed,
+  };
+}
+
+function trustedCrossTargetMatch(operation) {
+  if (operation.action !== 'keep' || operation.status !== 'ready') return false;
+  if (!operation.sourceTrack || !operation.targetTrack) return false;
+  if (operation.manualDecision?.action === 'keep') return true;
+  const score = operation.score || {};
+  return score.isrc === 1
+    || score.recordingFingerprint === true
+    || score.appleEquivalentFingerprint === true
+    || score.catalogTrackFingerprint === true;
 }
 
 function productCanonicalMirrorOperation(operation) {
@@ -776,18 +849,71 @@ function compactPolicyTrack(track) {
     isrc: track.isrc || null,
     artworkUrl: trackArtworkUrl(track),
     aliases: track.aliases || null,
-    metadata: track.metadata?.musicbrainz
-      ? {
-        musicbrainz: {
-          status: track.metadata.musicbrainz.status || '',
-          isrc: track.metadata.musicbrainz.isrc || null,
-          recordingIds: Array.isArray(track.metadata.musicbrainz.recordingIds)
-            ? track.metadata.musicbrainz.recordingIds.slice(0, 8)
-            : [],
-        },
-      }
-      : null,
+    metadata: compactPolicyTrackMetadata(track.metadata),
   };
+}
+
+function compactPolicyTrackMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const result = {};
+  if (metadata.musicbrainz) {
+    result.musicbrainz = {
+      status: metadata.musicbrainz.status || '',
+      isrc: metadata.musicbrainz.isrc || null,
+      recordingIds: Array.isArray(metadata.musicbrainz.recordingIds)
+        ? metadata.musicbrainz.recordingIds.slice(0, 8)
+        : [],
+    };
+  }
+  if (metadata.appleStorefronts) {
+    result.appleStorefronts = {
+      sourceStorefront: metadata.appleStorefronts.sourceStorefront || '',
+      storefronts: Array.isArray(metadata.appleStorefronts.storefronts)
+        ? metadata.appleStorefronts.storefronts.slice(0, 12)
+        : [],
+      fetchedAt: metadata.appleStorefronts.fetchedAt || null,
+      equivalentCount: Number(metadata.appleStorefronts.equivalentCount || 0),
+      isrcs: Array.isArray(metadata.appleStorefronts.isrcs)
+        ? metadata.appleStorefronts.isrcs.slice(0, 12)
+        : [],
+      equivalents: Array.isArray(metadata.appleStorefronts.equivalents)
+        ? metadata.appleStorefronts.equivalents.slice(0, 24).map((item) => ({
+          storefront: item.storefront || '',
+          id: item.id || '',
+          title: item.title || '',
+          artist: item.artist || '',
+          album: item.album || '',
+          durationMs: Number(item.durationMs || 0),
+          isrc: item.isrc || '',
+          trackNumber: Number(item.trackNumber || 0),
+          discNumber: Number(item.discNumber || 0),
+          releaseDate: item.releaseDate || '',
+          isrcMatch: item.isrcMatch === true,
+          aliasTrusted: item.aliasTrusted === true,
+        }))
+        : [],
+    };
+  }
+  if (metadata.crossPlatformAliases) {
+    result.crossPlatformAliases = {
+      platforms: Array.isArray(metadata.crossPlatformAliases.platforms)
+        ? metadata.crossPlatformAliases.platforms.slice(0, 4)
+        : [],
+      count: Number(metadata.crossPlatformAliases.count || 0),
+    };
+  }
+  if (metadata.providerCatalog) {
+    result.providerCatalog = {
+      platform: metadata.providerCatalog.platform || '',
+      trackNumber: Number(metadata.providerCatalog.trackNumber || 0),
+      discNumber: Number(metadata.providerCatalog.discNumber || 0),
+      albumId: metadata.providerCatalog.albumId || '',
+      albumMid: metadata.providerCatalog.albumMid || '',
+      subtitle: metadata.providerCatalog.subtitle || '',
+      releaseDate: metadata.providerCatalog.releaseDate || '',
+    };
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function normalizePolicy(policy) {

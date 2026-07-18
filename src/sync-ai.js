@@ -1,4 +1,4 @@
-import { buildMatchEvidence, compactTrackForAi } from './evidence.js';
+import { buildMatchEvidence, compactTrackForAi, compareVersionCues } from './evidence.js';
 import { requestAiJson, resolveAiProviderConfig } from './ai-provider.js';
 
 const DEFAULT_MODEL = 'deepseek-v4-pro';
@@ -114,7 +114,7 @@ export function applySyncSuggestionSafety(decision, context = {}) {
   if (facts.durationDeltaSeconds !== null && facts.durationDeltaSeconds > 15) {
     return downgradeAdd(decision, `duration delta ${facts.durationDeltaSeconds}s is too large`, 'duration_delta');
   }
-  if (hasVersionCueConflict(facts.sourceText, facts.targetText)) {
+  if (facts.versionCueConflict) {
     return downgradeAdd(decision, 'version cue appears on only one side', 'version_cue_mismatch');
   }
   if (facts.deterministicSupport !== null && facts.deterministicSupport < 3 && !facts.sameIsrc) {
@@ -164,25 +164,20 @@ function extractSyncFacts(context = {}) {
     Number(algorithmScore.album || 0) >= 0.75,
     Number(algorithmScore.duration || 0) >= 0.75,
   ].filter(Boolean).length : null;
+  const authoritativeFingerprint = algorithmScore?.appleEquivalentFingerprint === true
+    || algorithmScore?.catalogTrackFingerprint === true
+    || context.match_evidence?.support_signals?.includes('apple_storefront_equivalent_fingerprint')
+    || context.match_evidence?.support_signals?.includes('same_album_track_number');
   return {
     targetInLibrary: Boolean(context.target_candidate_in_current_library || context.targetPresence?.inLibrary),
     durationDeltaSeconds: Number.isFinite(durationDeltaSeconds) ? Math.abs(durationDeltaSeconds) : null,
     deterministicSupport: supportDimensions,
     sameIsrc: context.match_evidence?.isrc?.relation === 'same',
     differentIsrc: context.match_evidence?.isrc?.relation === 'different',
-    sourceText: [
-      sourceCluster.title,
-      sourceCluster.artist,
-      sourceCluster.album,
-      source.title,
-      source.artist,
-      source.album,
-    ].filter(Boolean).join(' '),
-    targetText: [
-      target.title,
-      target.artist,
-      target.album,
-    ].filter(Boolean).join(' '),
+    versionCueConflict: !authoritativeFingerprint && compareVersionCues({
+      title: source.title || sourceCluster.title,
+      album: source.album || sourceCluster.album,
+    }, target).length > 0,
   };
 }
 
@@ -191,40 +186,6 @@ function durationDeltaSecondsFromTracks(source, target, sourceCluster = {}) {
   const right = Number(target.duration_ms || target.durationMs || 0);
   if (!left || !right) return null;
   return Math.round(Math.abs(left - right) / 1000);
-}
-
-function hasVersionCueConflict(sourceText, targetText) {
-  const sourceCues = versionCueSet(sourceText);
-  const targetCues = versionCueSet(targetText);
-  for (const cue of sourceCues) {
-    if (!targetCues.has(cue)) return true;
-  }
-  for (const cue of targetCues) {
-    if (!sourceCues.has(cue)) return true;
-  }
-  return false;
-}
-
-function versionCueSet(text) {
-  const value = clean(text).toLowerCase();
-  const cues = new Set();
-  const checks = [
-    ['live', /\b(live|concert|the first take)\b|ライブ/u],
-    ['cover', /\bcover\b|カバー|翻唱/u],
-    ['acoustic', /\bacoustic\b|アコースティック|弾き語り/u],
-    ['piano', /\bpiano\b|ピアノ|钢琴|鋼琴/u],
-    ['instrumental', /\b(instrumental|inst\.?|off vocal|karaoke)\b|伴奏|器乐|器樂/u],
-    ['tv-size', /\b(tv[- ]?size|short[- ]?(?:ver(?:sion)?|edit|size)|edit(?: version)?)\b|テレビサイズ|tvサイズ/u],
-    ['remix', /\b(remix|mixed|dj mix)\b|リミックス/u],
-    ['remaster', /\bremaster(?:ed)?\b|リマスター/u],
-    ['single-version', /\bsingle version\b|シングル.?バージョン/u],
-    ['album-version', /\balbum version\b|アルバム.?バージョン/u],
-    ['movie-version', /\b(movie|film|cinema).?ver(?:sion)?\b/u],
-  ];
-  for (const [name, pattern] of checks) {
-    if (pattern.test(value)) cues.add(name);
-  }
-  return cues;
 }
 
 function compactSyncItem(item) {
@@ -307,15 +268,16 @@ Rules:
 5. Version words matter. live, cover, acoustic, piano, instrumental, remix, movie ver, album version, single version, remaster, karaoke, off vocal, TV size, short, extended, and similar terms can mean a different version.
 6. If source and target are the same song but a different version, reject it for automatic adding unless the supplied evidence clearly says this special version is intended.
 7. If title and artist match but album/duration/version disagree strongly, output uncertain or reject. Do not force an add.
-8. If evidence is insufficient, use decision uncertain and recommended_action needs_human.
-9. Only use recommended_action add when you are confident it is the same recording/version.
+8. If evidence is insufficient, use decision uncertain and recommended_action needs_human. Do not use needs_human when supplied fields directly prove a different artist, song, or explicit version.
+9. Only use recommended_action add when you are confident it is the same recording/version. Use reject + skip for a clearly different song or an explicit different version.
 10. If target_candidate_in_current_library is true, that exact target candidate already exists in the current target library. If it is the same recording, use relation same_recording but recommended_action skip because no write is needed. If it is not the same recording, use reject/uncertain and do not recommend add for that candidate.
 11. Never use outside music knowledge as evidence. Phrases like "known alias", "likely", "seems", "appears on both", "metadata error", "mislabeled", or "album difference is acceptable" mean the evidence is not strong enough; use needs_human.
-12. If a version cue appears on only one side, use needs_human or skip. Examples: remaster, live, cover, acoustic, piano, instrumental, TV size, short edit, remix, mixed, album version, single version.
+12. If a version cue appears on only one side, use reject + skip when the cue is explicit; use needs_human only when the cue itself is ambiguous. Examples: remaster, live, cover, acoustic, piano, instrumental, TV size, short edit, remix, mixed, album version, single version.
 13. Album mismatch is not positive evidence. It is acceptable only when the album names are explicit translations/romanizations/localizations in the supplied fields, or every other field is exact and no version cue differs.
 14. external_evidence.musicbrainz comes from a provider-independent MusicBrainz ISRC lookup. Same ISRC or shared MusicBrainz recording IDs are strong positive evidence. Different ISRC or explicit version cue conflicts are risk signals. A missing or not_found MusicBrainz status is neutral, not negative evidence.
 15. match_evidence.support_signals and match_evidence.risk_signals summarize deterministic checks. Use them as evidence, but do not override a large duration mismatch or one-sided version wording.
 16. exact_recording_fingerprint means normalized title and album are exact, duration differs by no more than 2 seconds, no version cue conflicts exist, and no different ISRC is present. It is strong supplied evidence even when storefront-localized artist credits differ.
+17. confidence is confidence that your decision and relation are correct, not a similarity score or probability that the tracks match. A clearly different artist/song should normally be reject + different_song + skip with high confidence near 1.0.
 
 Local feedback from the user's previous NetEase liked write:
 - 28 write candidates were already present before writing. Most were legitimate aliases: simplified/traditional Chinese, Japanese old/new kanji, kana/romaji/English transliteration, localized artist names, translated parentheses, and group-member artist formatting.

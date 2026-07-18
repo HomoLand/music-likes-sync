@@ -36,7 +36,7 @@ describe('mirror add resolver', () => {
           title: 'New Song Acoustic',
           artists: ['Alice'],
           album: 'Target Album',
-          durationMs: 241000,
+          durationMs: 195000,
         }, 'netease'),
       ],
     });
@@ -47,6 +47,28 @@ describe('mirror add resolver', () => {
     assert.equal(operation.candidateTrack.id, 'n-1');
     assert.equal(resolved.summary.resolvedAdds, 0);
     assert.equal(resolved.summary.unresolvedAdds, 1);
+  });
+
+  it('classifies clearly unrelated search results as not found', async () => {
+    const plan = fixturePlan('New Song', 'Alice');
+    const resolved = await resolveMirrorAddOperations(plan, {
+      searchTracks: async () => [
+        normalizeTrack({
+          id: 'n-wrong',
+          title: 'Completely Different',
+          artists: ['Someone Else'],
+          album: 'Unrelated Album',
+          durationMs: 42000,
+        }, 'netease'),
+      ],
+    });
+
+    const operation = resolved.operations[0];
+    assert.equal(operation.status, 'not_found');
+    assert.equal(operation.candidateTrack, null);
+    assert.equal(operation.resolution.reason, 'target_catalog_low_score');
+    assert.equal(resolved.addResolution.review, 0);
+    assert.equal(resolved.addResolution.notFound, 1);
   });
 
   it('does not page over already reviewed or not-found add operations', async () => {
@@ -112,7 +134,7 @@ describe('mirror add resolver', () => {
           id: 'fresh-candidate',
           title: 'New Song Acoustic',
           artists: ['Alice'],
-          durationMs: 241000,
+          durationMs: 195000,
         }, 'qq'),
       ],
     });
@@ -120,6 +142,34 @@ describe('mirror add resolver', () => {
     assert.equal(resolved.addResolution.processed, 1);
     assert.equal(resolved.operations[0].status, 'needs_review');
     assert.equal(resolved.operations[0].candidateTrack.id, 'fresh-candidate');
+  });
+
+  it('refreshes a stale resolved target when the operation is not ready', async () => {
+    const plan = fixturePlan('New Song', 'Alice');
+    plan.operations[0].status = 'needs_review';
+    plan.operations[0].resolvedTargetTrack = normalizeTrack({
+      id: 'stale-resolved',
+      title: 'Old Candidate',
+      artists: ['Someone Else'],
+      durationMs: 40000,
+    }, 'qq');
+
+    const resolved = await resolveMirrorAddOperations(plan, {
+      refresh: true,
+      searchTracks: async () => [
+        normalizeTrack({
+          id: 'fresh-resolved',
+          title: 'New Song',
+          artists: ['Alice'],
+          album: 'Source Album',
+          durationMs: 180000,
+        }, 'qq'),
+      ],
+    });
+
+    assert.equal(resolved.addResolution.processed, 1);
+    assert.equal(resolved.operations[0].status, 'ready');
+    assert.equal(resolved.operations[0].resolvedTargetTrack.id, 'fresh-resolved');
   });
 
   it('applies offset to the pending resolution queue only', async () => {

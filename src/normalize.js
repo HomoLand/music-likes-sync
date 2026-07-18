@@ -1,8 +1,8 @@
 import { trackArtworkUrl, trackPreviewUrl } from './track-media.js';
 
-const PUNCT_RE = /[\u200b-\u200f\u202a-\u202e'"`’‘“”()[\]{}【】（）<>《》,，.。!！?？:：;；|/\\_-]+/g;
-const FEAT_RE = /\s*(feat\.?|ft\.?|featuring|with|伴奏|纯音乐|伴唱)\s+/gi;
-const VERSION_RE = /\s*(live|remaster(ed)?|remix|mix|伴奏|instrumental|explicit|clean|radio edit|single version|专辑版|现场版|重制版|混音版)\s*/gi;
+const PUNCT_RE = /[\u200b-\u200f\u202a-\u202e'"`’‘“”()[\]{}【】（）<>《》!?！？:：;；,，.。、·•|/\\_—–-]+/g;
+const FEAT_RE = /\s*(feat\.?|ft\.?|featuring|with|伴唱|合作|客串)\s+/gi;
+const VERSION_RE = /\s*(live|concert|remaster(?:ed)?|remix(?:ed)?|instrumental|inst\.?|off vocal|karaoke|acoustic|piano version|cover|explicit|clean|radio edit|single version|album version|现场(?:版)?|現場(?:版)?|实况|實況|重制(?:版)?|重製(?:版)?|修复(?:版)?|修復(?:版)?|混音(?:版)?|伴奏(?:版)?|纯音乐|純音樂|翻唱(?:版)?|健康版|洁净版|潔淨版|不插电|不插電|ライブ|リマスター|リミックス|インスト(?:ゥルメンタル)?|オフボーカル|カラオケ|アコースティック|カバー)\s*/gi;
 
 export function normalizeTrack(input, platform = 'unknown') {
   const title = cleanDisplay(input.title || input.name || input.song || '');
@@ -13,6 +13,7 @@ export function normalizeTrack(input, platform = 'unknown') {
   const raw = input.raw ?? input;
   const isrc = normalizeIsrc(input.isrc ?? input.isrcCode ?? raw?.isrc ?? raw?.raw?.isrc ?? raw?.raw?.catalogIsrc);
   const aliases = normalizeAliases(input.aliases, raw, platform);
+  const metadata = mergeTrackMetadata(input.metadata, providerCatalogMetadata(raw, platform));
   const mediaInput = {
     ...input,
     platform,
@@ -42,9 +43,85 @@ export function normalizeTrack(input, platform = 'unknown') {
         albums: aliases.albums.map((item) => normalizeText(item, { stripVersion: true })).filter(Boolean),
       },
     },
-    metadata: input.metadata || null,
+    metadata,
     raw,
   };
+}
+
+function mergeTrackMetadata(metadata, providerCatalog) {
+  if (!providerCatalog) return metadata || null;
+  return {
+    ...(metadata || {}),
+    providerCatalog: {
+      ...(metadata?.providerCatalog || {}),
+      ...providerCatalog,
+    },
+  };
+}
+
+function providerCatalogMetadata(raw, platform) {
+  const layers = rawObjectLayers(raw);
+  const result = { platform };
+  if (platform === 'qq') {
+    const source = layers.find((value) => value.index_album !== undefined || value.album?.mid) || {};
+    assignPositiveInteger(result, 'trackNumber', source.index_album);
+    assignPositiveInteger(result, 'discNumber', source.index_cd);
+    assignText(result, 'albumId', source.album?.id);
+    assignText(result, 'albumMid', source.album?.mid || source.album?.pmid);
+    assignText(result, 'subtitle', source.subtitle);
+    assignText(result, 'releaseDate', source.time_public);
+  } else if (platform === 'netease') {
+    const source = layers.find((value) => (
+      value.no !== undefined
+      || value.position !== undefined
+      || value.al?.id
+      || value.album?.id
+    )) || {};
+    assignPositiveInteger(
+      result,
+      'trackNumber',
+      source.no ?? source.position ?? (Number(source.album?.size) === 1 ? 1 : undefined),
+    );
+    assignPositiveInteger(result, 'discNumber', source.cd);
+    assignText(result, 'albumId', source.al?.id || source.album?.id);
+    assignText(result, 'subtitle', [...asArray(source.alia), ...asArray(source.tns)].filter(Boolean).join(' / '));
+    const publishTime = Number(source.publishTime || source.album?.publishTime || 0);
+    if (publishTime > 0) {
+      result.releaseDate = new Date(publishTime + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    }
+  } else if (platform === 'apple') {
+    const source = layers.find((value) => value.trackNumber !== undefined || value.discNumber !== undefined) || {};
+    assignPositiveInteger(result, 'trackNumber', source.trackNumber);
+    assignPositiveInteger(result, 'discNumber', source.discNumber);
+    assignText(result, 'releaseDate', source.releaseDate);
+  }
+  return Object.keys(result).length > 1 ? result : null;
+}
+
+function rawObjectLayers(raw) {
+  const result = [];
+  const queue = raw && typeof raw === 'object' ? [raw] : [];
+  const seen = new Set();
+  while (queue.length && result.length < 16) {
+    const value = queue.shift();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+    for (const child of [value.raw, value.data, value.attributes]) {
+      if (child && typeof child === 'object') queue.push(child);
+    }
+  }
+  return result;
+}
+
+function assignPositiveInteger(target, key, value) {
+  const number = Number.parseInt(String(value ?? ''), 10);
+  if (Number.isFinite(number) && number > 0) target[key] = number;
+}
+
+function assignText(target, key, value) {
+  const text = cleanDisplay(value);
+  if (text) target[key] = text;
 }
 
 export function cleanDisplay(value) {

@@ -1,6 +1,8 @@
 import { normalizeText } from './normalize.js';
+import { compareAppleToPlatform } from './match.js';
 
 const STATE_VERSION = 1;
+export const PRODUCT_ADD_MATCHER_VERSION = 4;
 
 export function emptyProductAddState() {
   return {
@@ -81,7 +83,7 @@ export function guardProductAddTargetConflicts(plan = {}) {
     .filter((operation) => operation.action !== 'add')
     .map((operation) => productOperationTargetKey(operation, operation.targetTrack))
     .filter(Boolean));
-  const selectedCounts = new Map();
+  const readySelectedCounts = new Map();
   const referencedTargets = new Set();
   const pendingDecisionKeys = new Set();
   for (const operation of sourceOperations) {
@@ -89,7 +91,12 @@ export function guardProductAddTargetConflicts(plan = {}) {
     const key = productOperationTargetKey(operation, selectedProductAddTrack(operation));
     if (key) {
       referencedTargets.add(key);
-      selectedCounts.set(key, (selectedCounts.get(key) || 0) + 1);
+      if (
+        operation.status === 'ready'
+        || (operation.blockedReason === 'candidate_target_conflict' && operation.resolvedTargetTrack)
+      ) {
+        readySelectedCounts.set(key, (readySelectedCounts.get(key) || 0) + 1);
+      }
     }
     if (operation.decisionKey && (operation.status !== 'ready' || !selectedProductAddTrack(operation))) {
       pendingDecisionKeys.add(operation.decisionKey);
@@ -99,12 +106,14 @@ export function guardProductAddTargetConflicts(plan = {}) {
   let changed = 0;
   const conflictOperationIds = [];
   const operations = sourceOperations.map((operation) => {
-    if (operation.action === 'remove' && operation.status === 'ready') {
+    const staleConflict = operation.blockedReason === 'candidate_target_conflict';
+    if (operation.action === 'remove' && (operation.status === 'ready' || staleConflict)) {
       const targetKey = productOperationTargetKey(operation, operation.targetTrack);
       const pendingPair = operation.manualDecision?.action === 'separate'
         && operation.decisionKey
         && pendingDecisionKeys.has(operation.decisionKey);
       if ((targetKey && referencedTargets.has(targetKey)) || pendingPair) {
+        if (staleConflict && operation.status === 'needs_review') return operation;
         changed += 1;
         conflictOperationIds.push(operation.id);
         return {
@@ -114,20 +123,48 @@ export function guardProductAddTargetConflicts(plan = {}) {
           message: 'This deletion is linked to an unresolved add candidate and must remain in manual review.',
         };
       }
+      if (staleConflict) {
+        changed += 1;
+        return {
+          ...operation,
+          status: 'ready',
+          blockedReason: '',
+          message: '',
+        };
+      }
     }
-    if (operation.action !== 'add' || operation.status !== 'ready') return operation;
+    const readyAdd = operation.action === 'add' && (
+      operation.status === 'ready'
+      || (staleConflict && operation.resolvedTargetTrack)
+    );
+    if (!readyAdd) return operation;
     const key = productOperationTargetKey(operation, selectedProductAddTrack(operation));
-    if (!key || (!occupiedTargets.has(key) && (selectedCounts.get(key) || 0) < 2)) return operation;
+    const conflicting = key && (occupiedTargets.has(key) || (readySelectedCounts.get(key) || 0) >= 2);
+    if (conflicting) {
+      if (staleConflict && operation.status === 'needs_review') return operation;
+      changed += 1;
+      conflictOperationIds.push(operation.id);
+      return {
+        ...operation,
+        status: 'needs_review',
+        blockedReason: 'candidate_target_conflict',
+        resolution: {
+          ...(operation.resolution || {}),
+          reason: 'candidate_target_conflict',
+          message: 'The selected candidate already exists in another target operation and must be reviewed before any add or delete.',
+        },
+      };
+    }
+    if (!staleConflict) return operation;
     changed += 1;
-    conflictOperationIds.push(operation.id);
     return {
       ...operation,
-      status: 'needs_review',
-      blockedReason: 'candidate_target_conflict',
+      status: 'ready',
+      blockedReason: '',
       resolution: {
         ...(operation.resolution || {}),
-        reason: 'candidate_target_conflict',
-        message: 'The selected candidate already exists in another target operation and must be reviewed before any add or delete.',
+        reason: 'resolved_target_match',
+        message: 'A high-confidence target-platform catalog track was found.',
       },
     };
   });
@@ -153,7 +190,9 @@ export function mergeProductAddResolution(operation = {}, resolution = {}) {
   const previousEvidence = operation.resolvedTargetTrack || operation.candidateTrack || null;
   const nextEvidence = resolvedTargetTrack || candidateTrack || null;
   const evidenceChanged = productAddCandidateEvidenceKey(previousEvidence)
-    !== productAddCandidateEvidenceKey(nextEvidence);
+    !== productAddCandidateEvidenceKey(nextEvidence)
+    || productAddScoreEvidenceKey(operation.resolvedScore ?? operation.score)
+      !== productAddScoreEvidenceKey(resolution.resolvedScore ?? operation.resolvedScore ?? operation.score);
 
   return {
     ...operation,
@@ -162,6 +201,7 @@ export function mergeProductAddResolution(operation = {}, resolution = {}) {
     candidateTrack,
     resolvedTargetTrack,
     resolvedScore: resolution.resolvedScore ?? operation.resolvedScore ?? null,
+    matcherVersion: PRODUCT_ADD_MATCHER_VERSION,
     resolution: resolution.resolution || operation.resolution,
     alternatives: hasAlternatives ? resolution.alternatives : operation.alternatives || [],
     aiReview: evidenceChanged ? null : operation.aiReview,
@@ -178,6 +218,47 @@ export function productAddReferencesTarget(plan = {}, targetOperation = {}) {
     && operation.addDecision?.action !== 'skip'
     && productOperationTargetKey(operation, selectedProductAddTrack(operation)) === targetKey
   ));
+}
+
+export function rejectProductAddCandidateFromAi(operation = {}, options = {}) {
+  const candidate = operation.candidateTrack || null;
+  return {
+    ...operation,
+    status: 'not_found',
+    candidateTrack: null,
+    resolvedTargetTrack: null,
+    blockedReason: '',
+    alternatives: [candidate, ...(operation.alternatives || [])].filter(Boolean).slice(0, 5),
+    addDecision: {
+      action: 'skip',
+      batchId: clean(options.batchId, 160),
+      decidedAt: clean(options.decidedAt, 80),
+      source: 'ai_user_approved',
+      aiBatchId: clean(options.aiBatchId, 160),
+      aiModel: clean(options.aiModel, 160),
+      aiConfidence: finiteNumber(options.aiConfidence),
+      userApprovedAt: clean(options.userApprovedAt, 80),
+    },
+    resolution: {
+      ...(operation.resolution || {}),
+      reason: 'ai_rejected_candidate',
+      message: 'The user approved a high-confidence AI rejection of this target candidate.',
+    },
+  };
+}
+
+export function productAddAiSuggestionAlreadyApplied(operation = {}) {
+  const review = operation.aiReview || {};
+  const decision = operation.addDecision || {};
+  if (decision.source !== 'ai_user_approved') return false;
+
+  const reviewBatchId = clean(review.batchId, 160);
+  const decisionBatchId = clean(decision.aiBatchId, 160);
+  if (reviewBatchId && reviewBatchId !== decisionBatchId) return false;
+
+  if (review.recommendedAction === 'skip') return decision.action === 'skip';
+  if (review.recommendedAction === 'add') return decision.action === 'accept_candidate';
+  return false;
 }
 
 function hasPersistableProductAddState(operation = {}) {
@@ -227,8 +308,10 @@ function compactProductAddStateEntry(operation = {}, options = {}) {
     target: clean(operation.targetPlatform, 40).toLowerCase(),
     source: compactSourceIdentity(operation.sourceTrack, operation.sourcePlatform),
     status: normalizeStatus(operation.status),
+    matcherVersion: PRODUCT_ADD_MATCHER_VERSION,
     candidateTrack: compactTrack(operation.candidateTrack),
     resolvedTargetTrack: compactTrack(operation.resolvedTargetTrack),
+    resolvedScore: compactScore(operation.resolvedScore),
     alternatives: Array.isArray(operation.alternatives)
       ? operation.alternatives.slice(0, 12).map(compactTrack).filter(Boolean)
       : [],
@@ -241,23 +324,55 @@ function compactProductAddStateEntry(operation = {}, options = {}) {
 }
 
 function restoreProductAddOperation(operation, saved = {}) {
-  const candidateTrack = compactTrack(saved.candidateTrack);
-  const resolvedTargetTrack = compactTrack(saved.resolvedTargetTrack);
+  let candidateTrack = compactTrack(saved.candidateTrack);
+  let resolvedTargetTrack = compactTrack(saved.resolvedTargetTrack);
   let status = normalizeStatus(saved.status || operation.status);
-  if (status === 'ready' && !resolvedTargetTrack) {
+  const selectedTrack = resolvedTargetTrack || candidateTrack;
+  const revalidation = scoreProductAddCandidate(operation.sourceTrack, selectedTrack);
+  const previousScore = compactScore(saved.resolvedScore || operation.resolvedScore || operation.score);
+  const resolvedScore = revalidation.score || previousScore;
+  const rulesChanged = Number(saved.matcherVersion || 0) !== PRODUCT_ADD_MATCHER_VERSION;
+  const scoreChanged = productAddScoreEvidenceKey(previousScore) !== productAddScoreEvidenceKey(resolvedScore);
+  const staleDerivedDecision = rulesChanged || scoreChanged;
+  const preserveUserDecision = isExplicitUserDecision(saved.addDecision);
+  let aiReview = preserveUserDecision
+    ? saved.aiReview || operation.aiReview
+    : staleDerivedDecision ? null : saved.aiReview || operation.aiReview;
+  let addDecision = preserveUserDecision
+    ? saved.addDecision
+    : staleDerivedDecision ? null : saved.addDecision || operation.addDecision;
+
+  if (preserveUserDecision && saved.addDecision?.action === 'skip') {
+    status = saved.addDecision?.source === 'ai_user_approved' ? 'not_found' : 'blocked';
+    resolvedTargetTrack = null;
+  } else if (revalidation.matched && selectedTrack && !preserveUserDecision) {
+    status = 'ready';
+    resolvedTargetTrack = selectedTrack;
+  } else if (revalidation.status === 'not_found' && selectedTrack && !preserveUserDecision) {
+    status = 'not_found';
+    candidateTrack = null;
+    resolvedTargetTrack = null;
+    aiReview = null;
+    addDecision = null;
+  } else if (status === 'ready' && !preserveUserDecision) {
+    status = candidateTrack ? 'needs_review' : 'needs_resolution';
+    resolvedTargetTrack = null;
+  } else if (status === 'ready' && !resolvedTargetTrack) {
     status = candidateTrack ? 'needs_review' : 'needs_resolution';
   }
   return {
     ...operation,
     status,
+    matcherVersion: PRODUCT_ADD_MATCHER_VERSION,
     candidateTrack: candidateTrack || operation.candidateTrack || null,
     resolvedTargetTrack: resolvedTargetTrack || operation.resolvedTargetTrack || null,
+    resolvedScore,
     alternatives: Array.isArray(saved.alternatives) && saved.alternatives.length
       ? saved.alternatives.map(compactTrack).filter(Boolean)
       : operation.alternatives || [],
     resolution: saved.resolution || operation.resolution,
-    aiReview: saved.aiReview || operation.aiReview,
-    addDecision: saved.addDecision || operation.addDecision,
+    aiReview,
+    addDecision,
     blockedReason: saved.blockedReason || operation.blockedReason || '',
   };
 }
@@ -290,7 +405,74 @@ function compactTrack(track) {
     durationMs: finiteNumber(track.durationMs),
     isrc: clean(track.isrc, 40),
     artworkUrl: clean(track.artworkUrl || track.coverUrl, 2000),
+    aliases: compactAliases(track.aliases),
+    metadata: compactTrackMetadata(track.metadata),
   };
+}
+
+function compactTrackMetadata(metadata) {
+  if (!metadata?.providerCatalog) return null;
+  const value = metadata.providerCatalog;
+  return {
+    providerCatalog: {
+      platform: clean(value.platform, 40),
+      trackNumber: finiteNumber(value.trackNumber),
+      discNumber: finiteNumber(value.discNumber),
+      albumId: clean(value.albumId, 240),
+      albumMid: clean(value.albumMid, 240),
+      subtitle: clean(value.subtitle, 500),
+      releaseDate: clean(value.releaseDate, 40),
+    },
+  };
+}
+
+function scoreProductAddCandidate(sourceTrack, targetTrack) {
+  if (!sourceTrack || !targetTrack) return { matched: false, status: 'not_found', score: null };
+  const comparison = compareAppleToPlatform([sourceTrack], [targetTrack]);
+  const matched = comparison.matches[0];
+  if (matched) return { matched: true, status: 'ready', score: compactScore(matched.score) };
+  const review = comparison.reviewItems[0];
+  if (review) return { matched: false, status: 'needs_review', score: compactScore(review.score) };
+  return {
+    matched: false,
+    status: 'not_found',
+    score: compactScore(comparison.missingItems[0]?.best?.score),
+  };
+}
+
+function isExplicitUserDecision(decision) {
+  if (!decision?.action) return false;
+  const source = clean(decision.source, 80).toLowerCase();
+  return source !== 'ai';
+}
+
+function compactAliases(value = {}) {
+  const result = {};
+  for (const key of ['titles', 'artists', 'albums']) {
+    const values = Array.isArray(value?.[key])
+      ? value[key].map((item) => clean(item, 500)).filter(Boolean).slice(0, 24)
+      : [];
+    if (values.length) result[key] = values;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function compactScore(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result = {};
+  for (const key of ['total', 'title', 'artist', 'album', 'duration', 'isrc']) {
+    const number = Number(value[key]);
+    if (Number.isFinite(number)) result[key] = number;
+  }
+  for (const key of ['isrcConflict', 'recordingFingerprint', 'appleEquivalentFingerprint', 'catalogTrackFingerprint', 'versionCueConflict']) {
+    if (value[key] !== undefined) result[key] = Boolean(value[key]);
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function productAddScoreEvidenceKey(value) {
+  const score = compactScore(value);
+  return score ? JSON.stringify(score) : '';
 }
 
 function compactObject(value) {

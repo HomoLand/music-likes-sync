@@ -74,7 +74,10 @@ export function classifyTrackPair({ source = {}, target = {}, score = null, evid
   const artistOverlap = Boolean(evidence.alias_overlap?.artists?.length);
   const durationDelta = evidence.duration_delta_seconds;
   const total = Number(score?.total ?? evidence.algorithm_score?.total ?? evidence.algorithm_score ?? 0);
-  const hasRecordingIdentity = support.has('same_isrc') || support.has('shared_musicbrainz_recording_id');
+  const hasRecordingIdentity = support.has('same_isrc')
+    || support.has('shared_musicbrainz_recording_id')
+    || support.has('apple_storefront_equivalent_fingerprint')
+    || support.has('same_album_track_number');
   const hasRecordingFingerprint = support.has('exact_recording_fingerprint');
   const hasVersionConflict = risk.has('version_cue_conflict');
   const hasDifferentIsrc = risk.has('different_isrc');
