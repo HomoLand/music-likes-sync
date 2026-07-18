@@ -153,6 +153,43 @@ describe('mirror sync plan', () => {
     );
   });
 
+  it('labels an extra target entry as a possible duplicate after keeping the best match', () => {
+    const source = normalizeTrack({
+      id: 'a-1',
+      title: 'Restore',
+      artists: ['Artist'],
+      album: 'Restore - EP',
+      durationMs: 281887,
+    }, 'apple');
+    const best = normalizeTrack({
+      id: 'q-best',
+      title: 'Restore',
+      artists: ['Artist'],
+      album: 'Restore',
+      durationMs: 281000,
+    }, 'qq');
+    const extra = normalizeTrack({
+      id: 'q-extra',
+      title: 'Restore',
+      artists: ['Artist'],
+      album: '',
+      durationMs: 281000,
+    }, 'qq');
+
+    const plan = buildMirrorSyncPlan({
+      target: 'qq',
+      sourceSnapshot: snapshot('apple', [source]),
+      targetSnapshot: snapshot('qq', [best, extra]),
+    });
+
+    assert.equal(plan.summary.keep, 1);
+    assert.equal(plan.summary.review, 1);
+    const review = plan.operations.find((operation) => operation.action === 'review');
+    assert.equal(review.reason, 'reverse_only_match');
+    assert.equal(review.reviewKind, 'possible_duplicate_target');
+    assert.equal(review.targetTrack.id, 'q-extra');
+  });
+
   it('preserves source aliases and MusicBrainz evidence for mirror review operations', () => {
     const sourceTrack = normalizeTrack({
       id: 'a-1',
@@ -188,6 +225,43 @@ describe('mirror sync plan', () => {
     assert.equal(review.sourceTrack.aliases.artists[0], 'Keyshia Myeshia Cole');
     assert.equal(review.sourceTrack.metadata.musicbrainz.status, 'ok');
     assert.deepEqual(review.sourceTrack.metadata.musicbrainz.recordingIds, ['mbid-1']);
+  });
+
+  it('reuses explicit artist aliases across tracks by the same source artist', () => {
+    const aliasedTrack = normalizeTrack({
+      id: 'a-1',
+      title: 'Known Song',
+      artists: ['Accusefive'],
+      album: 'Known Album',
+      durationMs: 180000,
+      aliases: { artists: ['告五人'] },
+    }, 'apple');
+    const sourceTrack = normalizeTrack({
+      id: 'a-2',
+      title: 'Night Life',
+      artists: ['Accusefive'],
+      album: 'Apple Single',
+      durationMs: 268000,
+    }, 'apple');
+    const targetTrack = normalizeTrack({
+      id: 'n-1',
+      title: 'Night Life',
+      artists: ['告五人'],
+      album: 'Localized Release',
+      durationMs: 268000,
+    }, 'netease');
+
+    const plan = buildMirrorSyncPlan({
+      target: 'netease',
+      sourceSnapshot: snapshot('apple', [aliasedTrack, sourceTrack]),
+      targetSnapshot: snapshot('netease', [targetTrack]),
+    });
+
+    const keep = plan.operations.find((operation) => operation.action === 'keep');
+    assert(keep);
+    assert.equal(keep.sourceTrack.title, 'Night Life');
+    assert(keep.sourceTrack.aliases.artists.includes('告五人'));
+    assert.equal(keep.score.artist, 1);
   });
 
   it('rejects non-target mirror destinations', () => {

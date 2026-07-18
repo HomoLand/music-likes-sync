@@ -170,6 +170,7 @@ Rules:
 9. If evidence is insufficient, output uncertain. Do not force a merge.
 10. external_evidence.musicbrainz comes from a provider-independent MusicBrainz ISRC lookup. Same ISRC or shared MusicBrainz recording IDs are strong positive evidence. Different ISRC or explicit version cue conflicts are risk signals. A missing or not_found MusicBrainz status is neutral, not negative evidence.
 11. match_evidence.support_signals and match_evidence.risk_signals summarize deterministic checks. Use them as evidence, but do not override a large duration mismatch or one-sided version wording.
+12. exact_recording_fingerprint means normalized title and album are exact, duration differs by no more than 2 seconds, no version cue conflicts exist, and no different ISRC is present. It is strong supplied evidence even when storefront-localized artist credits differ.
 
 Output schema:
 {

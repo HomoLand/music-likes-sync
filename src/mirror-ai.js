@@ -136,6 +136,7 @@ function extractMirrorFacts(context = {}) {
   const support = new Set(evidence.support_signals || []);
   const risk = new Set(evidence.risk_signals || []);
   const hasRecordingIdentity = support.has('same_isrc') || support.has('shared_musicbrainz_recording_id');
+  const hasRecordingFingerprint = support.has('exact_recording_fingerprint');
   const hasStrongTextSupport = (
     support.has('duration_within_5_seconds')
     && support.has('title_alias_overlap')
@@ -143,7 +144,7 @@ function extractMirrorFacts(context = {}) {
   );
   return {
     hasRecordingIdentity,
-    hasStrongSupport: hasRecordingIdentity || hasStrongTextSupport,
+    hasStrongSupport: hasRecordingIdentity || hasRecordingFingerprint || hasStrongTextSupport,
     differentIsrc: risk.has('different_isrc'),
     durationOver20: risk.has('duration_over_20_seconds'),
     versionCueConflict: risk.has('version_cue_conflict'),
@@ -226,8 +227,9 @@ Rules:
 7. Duration matters: <= 5 seconds supports same, 5-15 seconds weakly supports same, > 20 seconds is suspicious unless ISRC/shared MusicBrainz recording identity is present.
 8. Version words matter. live, cover, acoustic, piano, instrumental, remix, movie ver, album version, single version, remaster, karaoke, off vocal, TV size, short, extended, and similar terms can mean a different version.
 9. Alias overlap may include deterministic Unicode, Chinese script, kana/romaji normalization plus MusicBrainz or platform aliases. Treat supplied overlap as evidence for localized names, but it is not enough when duration/version risks exist.
-10. If evidence is insufficient, use decision uncertain and recommended_action needs_human.
-11. Do not use speculative wording such as "likely", "known alias", "seems", "metadata error", or "album difference is acceptable" as evidence.
+10. exact_recording_fingerprint means normalized title and album are exact, duration differs by no more than 2 seconds, no version cue conflicts, and no different ISRC is present. Treat it as strong supplied evidence even when storefront-localized artist credits differ.
+11. If evidence is insufficient, use decision uncertain and recommended_action needs_human.
+12. Do not use speculative wording such as "likely", "known alias", "seems", "metadata error", or "album difference is acceptable" as evidence.
 
 Output schema:
 {

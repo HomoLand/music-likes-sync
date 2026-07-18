@@ -43,6 +43,8 @@ Not release-complete yet:
 - `add` means Apple has a track that the target does not have; the target catalog ID must be resolved first.
 - `remove` means the target has a track that Apple does not have.
 - `review` means the matcher found a low-confidence, duplicate, version-sensitive, or reverse-only relationship that should not be mutated automatically.
+- Deterministic matching accepts an exact recording fingerprint when normalized title and album match, duration differs by no more than two seconds, no version cue conflicts, and no different ISRC is present. Explicit artist aliases are reused across tracks by the same artist; multiple fingerprint candidates still require review.
+- AI reviews only the remaining ambiguous relationships from minimized evidence. Its output is an auditable suggestion and cannot bypass ISRC, version, duplicate, write, or deletion gates.
 - Manual `review` decisions are stored locally. `keep` treats the reviewed target as the Apple match; `separate` rebuilds the plan into add and / or remove operations while preserving the destructive confirmation gate.
 - Deletion is destructive and requires both a dry-run and an explicit confirmation string: `REMOVE QQ` or `REMOVE NETEASE`.
 - Delete operations require a target track `id`; QQ mid-only tracks are blocked instead of being guessed or submitted.

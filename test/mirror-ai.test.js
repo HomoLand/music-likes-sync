@@ -92,8 +92,57 @@ describe('mirror AI review payloads', () => {
       'album_alias_overlap',
       'artist_alias_overlap',
       'duration_within_5_seconds',
+      'exact_recording_fingerprint',
       'title_alias_overlap',
     ]);
+    assert.equal(result.decisions[0].recommendedAction, 'keep');
+    assert.equal(result.decisions[0].safety, undefined);
+  });
+
+  it('accepts a high-confidence keep backed by an exact recording fingerprint', () => {
+    const operation = {
+      id: 'mirror-fingerprint-1',
+      action: 'review',
+      status: 'needs_review',
+      reason: 'source_uncertain_match',
+      decisionKey: 'fingerprint-key-1',
+      sourceTrack: {
+        platform: 'apple',
+        id: '1340849221',
+        title: '裁夢為魂',
+        artist: 'Rachel',
+        album: '蚍蜉渡海',
+        durationMs: 270832,
+        isrc: 'CNM691700029',
+      },
+      targetTrack: {
+        platform: 'qq',
+        id: 'q-localized',
+        title: '裁梦为魂',
+        artist: '银临',
+        album: '蚍蜉渡海',
+        durationMs: 270000,
+      },
+    };
+    const batch = buildMirrorReviewBatch([operation], { batchId: 'fingerprint-ai-test' });
+    const result = normalizeMirrorReviewResult({
+      batch_id: 'fingerprint-ai-test',
+      decisions: [{
+        item_id: 'fingerprint-key-1',
+        decision: 'same',
+        relation: 'same_recording',
+        confidence: 0.98,
+        recommended_action: 'keep',
+        evidence: {
+          title: 'normalized titles are exact',
+          album: 'normalized albums are exact',
+          duration: '0.832 seconds apart',
+        },
+        reason: 'The supplied exact recording fingerprint supports the same recording.',
+      }],
+    }, batch);
+
+    assert(batch.items[0].match_evidence.support_signals.includes('exact_recording_fingerprint'));
     assert.equal(result.decisions[0].recommendedAction, 'keep');
     assert.equal(result.decisions[0].safety, undefined);
   });

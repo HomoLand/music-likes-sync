@@ -25,7 +25,10 @@ export function compactTrackForAi(platform, track = {}) {
 export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = null) {
   const sourceMusicBrainz = compactMusicBrainzEvidence(sourceTrack);
   const targetMusicBrainz = compactMusicBrainzEvidence(targetTrack);
-  const durationDeltaSeconds = durationDelta(sourceTrack.durationMs, targetTrack.durationMs);
+  const durationDeltaMilliseconds = durationDeltaMs(sourceTrack.durationMs, targetTrack.durationMs);
+  const durationDeltaSeconds = durationDeltaMilliseconds === null
+    ? null
+    : Math.round(durationDeltaMilliseconds / 1000);
   const isrc = compareIsrc(sourceTrack.isrc, targetTrack.isrc);
   const sharedRecordingIds = intersect(
     sourceMusicBrainz?.recording_ids || [],
@@ -37,10 +40,20 @@ export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = n
     albums: overlapField(sourceTrack, targetTrack, 'albums'),
   };
   const versionCueConflicts = compareVersionCues(sourceTrack, targetTrack);
+  const recordingFingerprint = (
+    aliasOverlap.titles.length > 0
+    && aliasOverlap.albums.length > 0
+    && durationDeltaMilliseconds !== null
+    && durationDeltaMilliseconds <= 2000
+    && isrc.relation !== 'different'
+    && versionCueConflicts.length === 0
+  );
 
   return {
     algorithm_score: score || null,
+    duration_delta_ms: durationDeltaMilliseconds,
     duration_delta_seconds: durationDeltaSeconds,
+    recording_fingerprint: recordingFingerprint,
     isrc,
     musicbrainz: {
       source: sourceMusicBrainz,
@@ -54,6 +67,7 @@ export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = n
       isrc,
       sharedRecordingIds,
       aliasOverlap,
+      recordingFingerprint,
     }),
     risk_signals: riskSignals({
       durationDeltaSeconds,
@@ -102,11 +116,11 @@ function compareIsrc(left, right) {
   return { relation: 'missing', source: null, target: null };
 }
 
-function durationDelta(left, right) {
+function durationDeltaMs(left, right) {
   const a = Number(left || 0);
   const b = Number(right || 0);
   if (!a || !b) return null;
-  return Math.round(Math.abs(a - b) / 1000);
+  return Math.abs(a - b);
 }
 
 function overlapField(sourceTrack, targetTrack, key) {
@@ -168,10 +182,11 @@ function versionCueSet(text) {
   return cues;
 }
 
-function supportSignals({ durationDeltaSeconds, isrc, sharedRecordingIds, aliasOverlap }) {
+function supportSignals({ durationDeltaSeconds, isrc, sharedRecordingIds, aliasOverlap, recordingFingerprint }) {
   const signals = [];
   if (isrc.relation === 'same') signals.push('same_isrc');
   if (sharedRecordingIds.length) signals.push('shared_musicbrainz_recording_id');
+  if (recordingFingerprint) signals.push('exact_recording_fingerprint');
   if (durationDeltaSeconds !== null && durationDeltaSeconds <= 5) signals.push('duration_within_5_seconds');
   if (aliasOverlap.titles.length) signals.push('title_alias_overlap');
   if (aliasOverlap.artists.length) signals.push('artist_alias_overlap');

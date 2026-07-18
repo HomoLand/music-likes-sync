@@ -93,7 +93,7 @@ Required domain tests:
 - Baseline diff must distinguish platform additions, platform deletion signals, unchanged tracks, and sanitized title / artist / evidence examples without exposing raw diff entries.
 - Tombstone lifecycle must cover `confirm_global_delete`, `ignore`, `restore`, `current_platform_only`, and batch non-destructive decisions.
 - AI schema validation must reject malformed provider responses and downgrade risky `keep` suggestions.
-- AI evaluation fixtures must cover same recording, different version, same-title different song, remix/live/cover, transliteration, missing ISRC, duration conflict, and different ISRC cases with human labels, plus model-output gates for profile summaries, recommendation reranking, ordinary-user explanations, and tombstone risk analysis.
+- AI evaluation fixtures must cover same recording, different version, same-title different song, remix/live/cover, transliteration, storefront-localized artist credits, missing ISRC, duration conflict, and different ISRC cases with human labels, plus model-output gates for profile summaries, recommendation reranking, ordinary-user explanations, and tombstone risk analysis.
 - Agent permission tests must prove Agent tools cannot read cookies, write cookies, call direct add/delete provider adapters, or bypass confirmation.
 - Agent per-track evidence tests must prove sync evidence is readable only after a preview exists and does not expose provider track ids, cookies, or API keys.
 - Agent baseline diff and review queue tests must prove read-only access does not expose playlist ids, tombstone keys, baseline tokens, cookies, or API keys.

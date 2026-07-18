@@ -108,6 +108,9 @@ export function applySyncSuggestionSafety(decision, context = {}) {
   if (decision.decision !== 'accept' || decision.relation !== 'same_recording') {
     return downgradeAdd(decision, 'AI add is inconsistent with decision/relation', 'inconsistent_action');
   }
+  if (facts.differentIsrc) {
+    return downgradeAdd(decision, 'source and target have different ISRC values', 'different_isrc');
+  }
   if (facts.durationDeltaSeconds !== null && facts.durationDeltaSeconds > 15) {
     return downgradeAdd(decision, `duration delta ${facts.durationDeltaSeconds}s is too large`, 'duration_delta');
   }
@@ -166,6 +169,7 @@ function extractSyncFacts(context = {}) {
     durationDeltaSeconds: Number.isFinite(durationDeltaSeconds) ? Math.abs(durationDeltaSeconds) : null,
     deterministicSupport: supportDimensions,
     sameIsrc: context.match_evidence?.isrc?.relation === 'same',
+    differentIsrc: context.match_evidence?.isrc?.relation === 'different',
     sourceText: [
       sourceCluster.title,
       sourceCluster.artist,
@@ -311,6 +315,7 @@ Rules:
 13. Album mismatch is not positive evidence. It is acceptable only when the album names are explicit translations/romanizations/localizations in the supplied fields, or every other field is exact and no version cue differs.
 14. external_evidence.musicbrainz comes from a provider-independent MusicBrainz ISRC lookup. Same ISRC or shared MusicBrainz recording IDs are strong positive evidence. Different ISRC or explicit version cue conflicts are risk signals. A missing or not_found MusicBrainz status is neutral, not negative evidence.
 15. match_evidence.support_signals and match_evidence.risk_signals summarize deterministic checks. Use them as evidence, but do not override a large duration mismatch or one-sided version wording.
+16. exact_recording_fingerprint means normalized title and album are exact, duration differs by no more than 2 seconds, no version cue conflicts exist, and no different ISRC is present. It is strong supplied evidence even when storefront-localized artist credits differ.
 
 Local feedback from the user's previous NetEase liked write:
 - 28 write candidates were already present before writing. Most were legitimate aliases: simplified/traditional Chinese, Japanese old/new kanji, kana/romaji/English transliteration, localized artist names, translated parentheses, and group-member artist formatting.

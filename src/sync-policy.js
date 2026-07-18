@@ -567,6 +567,7 @@ function policyOperation(input) {
     status: input.status,
     destructive: Boolean(input.destructive || input.action === 'remove'),
     reason: input.reason || '',
+    reviewKind: input.reviewKind || '',
     message: input.message || '',
     policy: input.policy || '',
     sourcePlatform: input.sourcePlatform || input.source || input.sourceTrack?.platform || '',

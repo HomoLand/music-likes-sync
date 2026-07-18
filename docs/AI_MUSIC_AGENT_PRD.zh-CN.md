@@ -181,8 +181,10 @@ Last updated: 2026-07-08
 - `src/sync-ai.js` 和 `src/ai-review.js` 已把外部证据和匹配证据放入 AI payload。
 - `src/mirror-sync.js` 在镜像计划中保留 alias 和 compact MusicBrainz metadata。
 - `src/transliterate.js` 使用 OpenCC 完整词典统一简繁体，并结合平台 / MusicBrainz 别名、假名与罗马音生成匹配变体；确定性评分与 AI 证据复用同一套变体。
+- `src/match.js` 已加入录音指纹：标准化标题和专辑精确一致、时长差不超过 2 秒、无版本冲突且无不同 ISRC 时可自动匹配；同一源命中多个指纹候选仍留在复核队列。
+- `src/mirror-sync.js` 会在同一艺人键内跨歌曲复用已由平台 / MusicBrainz 提供的显式艺名别名，不根据模型记忆扩散别名。
 - 版本风险按当前标题与专辑发行信息分别提取，支持中英日常见 `live`、`cover`、`instrumental`、`remix` 等提示；历史别名和普通专辑名称不会被误当成当前版本结论。
-- `test/match.test.js` 与 AI evaluation fixtures 已覆盖简繁体、艺名别名、日文转写、候选排序和版本冲突边界。
+- `test/match.test.js` 与 AI evaluation fixtures 已覆盖简繁体、艺名别名、日文转写、Apple storefront 本地化艺名、候选排序、不同 ISRC 和版本冲突边界。
 
 仍需改进：
 

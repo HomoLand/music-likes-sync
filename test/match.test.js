@@ -32,6 +32,8 @@ describe('cross-platform track matching', () => {
       album: 1,
       duration: 1,
       isrc: 0,
+      isrcConflict: false,
+      recordingFingerprint: true,
       versionCueConflict: false,
     });
 
@@ -64,6 +66,111 @@ describe('cross-platform track matching', () => {
     assert.equal(result.matched, 1);
     assert.equal(result.matches[0].score.title, 1);
     assert.equal(result.matches[0].score.artist, 1);
+  });
+
+  it('accepts an exact recording fingerprint across localized artist credits', () => {
+    const apple = track({
+      title: '裁夢為魂',
+      artist: 'Rachel',
+      album: '蚍蜉渡海',
+      durationMs: 270832,
+      isrc: 'CNM691700029',
+    }, 'apple');
+    const qq = track({
+      title: '裁梦为魂',
+      artist: '银临',
+      album: '蚍蜉渡海',
+      durationMs: 270000,
+    }, 'qq');
+
+    const result = compareAppleToPlatform([apple], [qq]);
+
+    assert.equal(result.matched, 1);
+    assert.equal(result.review, 0);
+    assert.equal(result.matches[0].score.artist, 0);
+    assert.equal(result.matches[0].score.total, 0.9);
+    assert.equal(result.matches[0].score.recordingFingerprint, true);
+
+    const evidence = buildMatchEvidence(apple, qq, result.matches[0].score);
+    assert.equal(evidence.recording_fingerprint, true);
+    assert(evidence.support_signals.includes('exact_recording_fingerprint'));
+  });
+
+  it('keeps duplicate exact recording fingerprints in review', () => {
+    const apple = track({
+      title: 'Example',
+      artist: 'Localized Artist',
+      album: 'Example Album',
+      durationMs: 240000,
+    }, 'apple');
+    const targets = ['本地艺人 A', '本地艺人 B'].map((artist, index) => track({
+      id: `target-${index}`,
+      title: 'Example',
+      artist,
+      album: 'Example Album',
+      durationMs: 240000 + index * 500,
+    }, 'qq'));
+
+    const result = compareAppleToPlatform([apple], targets);
+
+    assert.equal(result.matched, 0);
+    assert.equal(result.review, 1);
+    assert.equal(result.reviewItems[0].score.recordingFingerprint, true);
+  });
+
+  it('prefers a same-ISRC candidate over a metadata-only recording fingerprint', () => {
+    const apple = track({
+      title: 'Example',
+      artist: 'Artist',
+      album: 'Original Album',
+      durationMs: 240000,
+      isrc: 'USAAA0000001',
+    }, 'apple');
+    const fingerprintOnly = track({
+      id: 'fingerprint-only',
+      title: 'Example',
+      artist: 'Localized Artist',
+      album: 'Original Album',
+      durationMs: 240500,
+    }, 'qq');
+    const sameIsrc = track({
+      id: 'same-isrc',
+      title: 'Example',
+      artist: 'Artist',
+      album: 'Compilation',
+      durationMs: 243000,
+      isrc: 'USAAA0000001',
+    }, 'qq');
+
+    const result = compareAppleToPlatform([apple], [fingerprintOnly, sameIsrc]);
+
+    assert.equal(result.matched, 1);
+    assert.equal(result.matches[0].target.id, 'same-isrc');
+    assert.equal(result.matches[0].score.isrc, 1);
+  });
+
+  it('does not trust an exact metadata fingerprint when ISRC values conflict', () => {
+    const apple = track({
+      title: 'Example',
+      artist: 'Artist A',
+      album: 'Example Album',
+      durationMs: 240000,
+      isrc: 'USAAA0000001',
+    }, 'apple');
+    const target = track({
+      title: 'Example',
+      artist: 'Artist B',
+      album: 'Example Album',
+      durationMs: 240500,
+      isrc: 'USAAA0000002',
+    }, 'qq');
+
+    const result = compareAppleToPlatform([apple], [target]);
+
+    assert.equal(result.matched, 0);
+    assert.equal(result.review, 1);
+    assert.equal(result.reviewItems[0].score.isrcConflict, true);
+    assert.equal(result.reviewItems[0].score.recordingFingerprint, false);
   });
 
   it('prefers an exact title alias over a different song by the same artist', () => {

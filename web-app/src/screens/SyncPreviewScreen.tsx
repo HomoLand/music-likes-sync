@@ -742,6 +742,7 @@ interface AuditionVersion {
   canChoose: boolean;
   aiReviewed: boolean;
   canDecideIdentity: boolean;
+  possibleDuplicate: boolean;
 }
 
 function VersionAudition({
@@ -987,26 +988,34 @@ function VersionAudition({
             {version.canDecideIdentity ? (
               <div className="audition-decision">
                 <div>
-                  <strong>{platformLabel(version.platform)} 里的这个版本可以代表 Apple Music 源歌曲吗？</strong>
-                  <span>“保留”不会改动该平台；“替换”会补入 Apple 对应版本，旧版本仍需单独确认后才会删除。</span>
+                  <strong>{version.possibleDuplicate
+                    ? `${platformLabel(version.platform)} 里的这个额外版本要保留吗？`
+                    : `${platformLabel(version.platform)} 里的这个版本可以代表 Apple Music 源歌曲吗？`}</strong>
+                  <span>{version.possibleDuplicate
+                    ? '系统已保留另一个匹配版本；移除会把当前额外条目加入待删除，执行前仍需单独确认。'
+                    : '“保留”不会改动该平台；“替换”会补入 Apple 对应版本，旧版本仍需单独确认后才会删除。'}</span>
                 </div>
                 <div className="audition-decision-actions">
                   <button
                     className="keep"
                     disabled={disabled}
                     onClick={() => onIdentityDecision(version.operationId, 'keep')}
-                    title="将它视为同一首录音：保留目标平台现有版本，不新增、不删除"
+                    title={version.possibleDuplicate
+                      ? '保留目标平台里的这个额外版本'
+                      : '将它视为同一首录音：保留目标平台现有版本，不新增、不删除'}
                     type="button"
                   >
-                    <Check size={14} />可以，保留
+                    <Check size={14} />{version.possibleDuplicate ? '保留额外版本' : '可以，保留'}
                   </button>
                   <button
                     disabled={disabled}
                     onClick={() => onIdentityDecision(version.operationId, 'separate')}
-                    title="将它视为不同录音：新增 Apple 对应版本，现有版本进入待删除队列"
+                    title={version.possibleDuplicate
+                      ? '将这个额外版本加入待删除；执行删除前仍需确认'
+                      : '将它视为不同录音：新增 Apple 对应版本，现有版本进入待删除队列'}
                     type="button"
                   >
-                    <X size={14} />不可以，替换
+                    <X size={14} />{version.possibleDuplicate ? '移除重复项' : '不可以，替换'}
                   </button>
                   <button
                     disabled={disabled || version.aiReviewed}
@@ -1237,6 +1246,7 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
       canChoose: false,
       aiReviewed: false,
       canDecideIdentity: false,
+      possibleDuplicate: false,
     });
   }
 
@@ -1278,6 +1288,7 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
         canChoose: match.action === 'add' && role === 'candidate',
         aiReviewed: Boolean(match.aiReview),
         canDecideIdentity: match.action === 'review' && !match.identityDecision,
+        possibleDuplicate: match.operationId === item.id && item.evidence.includes('possible_duplicate_target'),
       });
     }
     for (const [alternativeIndex, track] of (match.alternatives || []).slice(0, 2).entries()) {
@@ -1296,6 +1307,7 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
         canChoose: match.action === 'add',
         aiReviewed: Boolean(match.aiReview),
         canDecideIdentity: false,
+        possibleDuplicate: false,
       });
     }
   }
@@ -1472,9 +1484,11 @@ function evidenceLabel(entry: string): string {
     source_uncertain_match: '来源匹配待确认',
     target_uncertain_orphan: '目标曲目归属待确认',
     duplicate_target_match: '目标平台存在多个候选',
+    possible_duplicate_target: '目标平台可能有重复版本',
     reverse_only_match: '仅目标平台反向命中',
     isrc: 'ISRC 证据',
     musicbrainz: 'MusicBrainz 证据',
+    exact_recording_fingerprint: '标题、专辑与时长一致',
     local_summary: '本地摘要',
   };
   if (entry.startsWith('score:')) return '综合匹配分';
@@ -1482,6 +1496,9 @@ function evidenceLabel(entry: string): string {
 }
 
 function reviewMessage(item: PreviewTrackItem): string {
+  const duplicateContext = item.evidence.includes('possible_duplicate_target')
+    ? '目标平台已有一个版本被保留；当前是额外的相似条目。'
+    : '';
   if (item.aiReview) {
     const action = item.aiReview.recommendedAction === 'add'
       ? '建议新增'
@@ -1494,7 +1511,10 @@ function reviewMessage(item: PreviewTrackItem): string {
         : '仍需人工确认';
     const confidence = `${Math.round(item.aiReview.confidence * 100)}%`;
     const guard = item.aiReview.guarded ? '（安全门禁已降级）' : '';
-    return `AI 草稿：${action}，置信度 ${confidence}${guard}。${item.aiReview.reason || ''}`.trim();
+    return `${duplicateContext} AI 草稿：${action}，置信度 ${confidence}${guard}。${item.aiReview.reason || ''}`.trim();
+  }
+  if (duplicateContext) {
+    return '目标平台已有一个版本被保留；当前这个额外条目可能重复，只有决定是否移除它需要你确认。';
   }
   const messages: Record<string, string> = {
     source_uncertain_match: '目标平台可能已有这首歌，但匹配分低于自动接受阈值，建议核对版本后再决定。',

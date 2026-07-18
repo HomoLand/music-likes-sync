@@ -58,6 +58,28 @@ describe('policy-driven sync core', () => {
     );
   });
 
+  it('preserves duplicate-target review context and its stable decision key', () => {
+    const sourceSnapshot = snapshot('apple', [
+      track('apple', 'a-restore', 'Restore', 'Artist', 281887, { album: 'Restore - EP' }),
+    ]);
+    const targetSnapshot = snapshot('qq', [
+      track('qq', 'q-best', 'Restore', 'Artist', 281000, { album: 'Restore' }),
+      track('qq', 'q-extra', 'Restore', 'Artist', 281000, { album: '' }),
+    ]);
+    const mirror = buildMirrorSyncPlan({ target: 'qq', sourceSnapshot, targetSnapshot });
+    const policy = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['qq'],
+      snapshots: { apple: sourceSnapshot, qq: targetSnapshot },
+    });
+    const mirrorReview = mirror.operations.find((operation) => operation.action === 'review');
+    const policyReview = policy.operations.find((operation) => operation.action === 'review');
+
+    assert.equal(policyReview?.reviewKind, 'possible_duplicate_target');
+    assert.equal(policyReview?.decisionKey, mirrorReview?.decisionKey);
+  });
+
   it('preserves safe source and target artwork in canonical preview operations', () => {
     const plan = buildSyncPolicyPlan({
       policy: 'canonical_mirror',

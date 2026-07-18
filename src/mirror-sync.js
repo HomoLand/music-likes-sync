@@ -7,7 +7,11 @@ const DEFAULT_MATCH_THRESHOLD = 0.82;
 const DEFAULT_REVIEW_THRESHOLD = 0.68;
 const TARGETS = new Set(['qq', 'netease']);
 const SEPARATE_ADDS_SOURCE_REASONS = new Set(['source_uncertain_match', 'duplicate_target_match']);
-const SEPARATE_REMOVES_TARGET_REASONS = new Set(['source_uncertain_match', 'reverse_only_match', 'target_uncertain_orphan']);
+const SEPARATE_REMOVES_TARGET_REASONS = new Set([
+  'source_uncertain_match',
+  'reverse_only_match',
+  'target_uncertain_orphan',
+]);
 export const MIRROR_REVIEW_DECISION_ACTIONS = new Set(['keep', 'separate']);
 
 export function buildMirrorSyncPlan(input = {}) {
@@ -28,8 +32,8 @@ export function buildMirrorSyncPlan(input = {}) {
     throw new Error('Review threshold must be less than or equal to match threshold.');
   }
 
-  const sourceTracks = snapshotTracks(input.sourceSnapshot);
-  const targetTracks = snapshotTracks(input.targetSnapshot);
+  const sourceTracks = shareArtistAliases(snapshotTracks(input.sourceSnapshot));
+  const targetTracks = shareArtistAliases(snapshotTracks(input.targetSnapshot));
   const comparisonThresholds = {
     threshold: thresholds.match,
     reviewThreshold: thresholds.review,
@@ -128,24 +132,34 @@ export function buildMirrorSyncPlan(input = {}) {
       const reverse = compareAppleToPlatform([targetTracks[index]], sourceTracks, comparisonThresholds);
       const reverseMatch = reverse.matches[0];
       if (reverseMatch) {
+        const reverseSource = sourceIndex.get(reverseMatch.target);
+        const possibleDuplicate = reverseSource !== undefined && keptSources.has(reverseSource);
         operations.push(makeOperation('review', {
           source: reverseMatch.target,
           target: targetTracks[index],
           score: reverseMatch.score,
           reason: 'reverse_only_match',
-          message: 'The target track resembles Apple source data but was not selected by the forward match pass.',
+          reviewKind: possibleDuplicate ? 'possible_duplicate_target' : '',
+          message: possibleDuplicate
+            ? 'Another target track already represents this Apple source track; this extra target entry may be a duplicate.'
+            : 'The target track resembles Apple source data but was not selected by the forward match pass.',
         }));
         continue;
       }
 
       const reverseReview = reverse.reviewItems[0];
       if (reverseReview) {
+        const reverseSource = sourceIndex.get(reverseReview.target);
+        const possibleDuplicate = reverseSource !== undefined && keptSources.has(reverseSource);
         operations.push(makeOperation('review', {
           source: reverseReview.target,
           target: targetTracks[index],
           score: reverseReview.score,
           reason: 'target_uncertain_orphan',
-          message: 'The target-only track is similar to Apple source data, so deletion needs review.',
+          reviewKind: possibleDuplicate ? 'possible_duplicate_target' : '',
+          message: possibleDuplicate
+            ? 'Another target track already represents this Apple source track; this extra target entry may be a duplicate.'
+            : 'The target-only track is similar to Apple source data, so deletion needs review.',
         }));
         continue;
       }
@@ -213,6 +227,60 @@ export function summarizeMirrorOperations(operations = []) {
   return summary;
 }
 
+function shareArtistAliases(tracks) {
+  const aliasesByArtist = new Map();
+  for (const track of tracks) {
+    const key = normalizeText(track.artist);
+    if (!key) continue;
+    const explicitAliases = [
+      ...(track.aliases?.artists || []),
+      ...(track.artists || []).filter((artist) => normalizeText(artist) !== key),
+    ].filter(Boolean);
+    if (!explicitAliases.length) continue;
+    const aliases = aliasesByArtist.get(key) || [];
+    aliasesByArtist.set(key, uniqueText([...aliases, ...explicitAliases]));
+  }
+
+  if (!aliasesByArtist.size) return tracks;
+  return tracks.map((track) => {
+    const key = normalizeText(track.artist);
+    const sharedAliases = aliasesByArtist.get(key) || [];
+    if (!sharedAliases.length) return track;
+    const artists = uniqueText([...(track.aliases?.artists || []), ...sharedAliases]);
+    const normalizedArtists = uniqueText([
+      ...(track.normalized?.aliases?.artists || []),
+      ...artists.map((artist) => normalizeText(artist)),
+    ]);
+    return {
+      ...track,
+      aliases: {
+        ...(track.aliases || {}),
+        artists,
+      },
+      normalized: {
+        ...(track.normalized || {}),
+        aliases: {
+          ...(track.normalized?.aliases || {}),
+          artists: normalizedArtists,
+        },
+      },
+    };
+  });
+}
+
+function uniqueText(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || '').trim();
+    const key = normalizeText(text);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
+}
+
 export function summarizeMirrorConvergence(plan, options = {}) {
   const summary = plan?.summary || summarizeMirrorOperations(plan?.operations || []);
   const add = summary.add || 0;
@@ -250,6 +318,7 @@ function makeOperation(action, input) {
     status: operationStatus(action, input),
     destructive,
     reason: input.reason,
+    reviewKind: input.reviewKind || '',
     message: input.message || defaultMessage(action, input.reason),
     confidence: confidenceLabel(action, input.score),
     score: input.score || null,

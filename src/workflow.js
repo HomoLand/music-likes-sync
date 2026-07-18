@@ -5942,9 +5942,12 @@ function productBucketForOperation(operation) {
 }
 
 function productEvidenceForOperation(operation) {
+  const score = productScoreValue(operation.resolvedScore ?? operation.score);
   return [
+    operation.reviewKind,
     operation.reason,
-    operation.score !== null && operation.score !== undefined ? `score:${operation.score}` : '',
+    score !== null ? `score:${score}` : '',
+    operation.score?.recordingFingerprint ? 'exact_recording_fingerprint' : '',
     operation.sourceTrack?.isrc ? 'isrc' : '',
     operation.sourceTrack?.metadata?.musicbrainz?.recordingIds?.length ? 'musicbrainz' : '',
   ].filter(Boolean);

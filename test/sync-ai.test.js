@@ -39,9 +39,21 @@ describe('sync AI deterministic safety gates', () => {
     assert.equal(result.decisions[0].recommendedAction, 'needs_human');
     assert.equal(result.decisions[0].safety.code, 'low_model_confidence');
   });
+
+  it('never accepts an add when source and target ISRC values differ', () => {
+    const result = normalizeSyncReviewResult(response('add', 0.99), batch({
+      title: 1,
+      artist: 1,
+      album: 1,
+      duration: 1,
+    }, { isrc: { relation: 'different' } }));
+
+    assert.equal(result.decisions[0].recommendedAction, 'needs_human');
+    assert.equal(result.decisions[0].safety.code, 'different_isrc');
+  });
 });
 
-function batch(score) {
+function batch(score, matchEvidence = { isrc: { relation: 'source_only' } }) {
   return {
     batch_id: 'batch-1',
     items: [{
@@ -53,7 +65,7 @@ function batch(score) {
       source_track: { title: 'Song', artist: 'Artist', duration_ms: 180000 },
       target_candidate: { title: 'Song', artist: 'Artist', duration_ms: 181000 },
       duration_delta_seconds: 1,
-      match_evidence: { isrc: { relation: 'source_only' } },
+      match_evidence: matchEvidence,
     }],
   };
 }
