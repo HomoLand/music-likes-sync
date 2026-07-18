@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { buildMirrorSyncPlan, summarizeMirrorConvergence } from '../src/mirror-sync.js';
+import {
+  applyMirrorReviewDecisions,
+  buildMirrorSyncPlan,
+  mirrorReviewDecisionKey,
+  summarizeMirrorConvergence,
+} from '../src/mirror-sync.js';
 import { normalizeTrack } from '../src/normalize.js';
 
 describe('mirror sync plan', () => {
@@ -163,6 +168,57 @@ describe('mirror sync plan', () => {
     assert.equal(plan.operations.find((operation) => operation.action === 'add').status, 'needs_resolution');
     assert.equal(plan.operations.find((operation) => operation.action === 'remove').status, 'ready');
     assert.equal(plan.operations.every((operation) => operation.manualDecision?.action === 'separate'), true);
+  });
+
+  it('inherits a review decision when only the transient match reason changes', () => {
+    const sourceTrack = track('apple', 'a-1', 'Night Drive', 'Alice', 180000);
+    const targetTrack = track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000);
+    const beforeWrite = {
+      action: 'review',
+      status: 'needs_review',
+      reason: 'source_uncertain_match',
+      sourceTrack,
+      targetTrack,
+    };
+    const key = mirrorReviewDecisionKey(beforeWrite);
+    const afterWrite = {
+      ...beforeWrite,
+      reason: 'target_uncertain_orphan',
+      decisionKey: mirrorReviewDecisionKey({ ...beforeWrite, reason: 'target_uncertain_orphan' }),
+    };
+
+    const decided = applyMirrorReviewDecisions([afterWrite], {
+      items: {
+        [key]: { key, action: 'separate', decidedAt: '2026-07-18T00:00:00.000Z' },
+      },
+    });
+
+    assert.equal(decided.length, 1);
+    assert.equal(decided[0].action, 'remove');
+    assert.equal(decided[0].reason, 'manual_separate_remove');
+    assert.equal(decided[0].manualDecision.key, key);
+  });
+
+  it('does not inherit conflicting decisions for the same source and target identity', () => {
+    const operation = {
+      action: 'review',
+      status: 'needs_review',
+      reason: 'target_uncertain_orphan',
+      sourceTrack: track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
+      targetTrack: track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000),
+    };
+    const separateKey = mirrorReviewDecisionKey({ ...operation, reason: 'source_uncertain_match' });
+    const keepKey = mirrorReviewDecisionKey({ ...operation, reason: 'reverse_only_match' });
+    const decided = applyMirrorReviewDecisions([operation], {
+      items: {
+        [separateKey]: { key: separateKey, action: 'separate', decidedAt: '2026-07-18T00:00:00.000Z' },
+        [keepKey]: { key: keepKey, action: 'keep', decidedAt: '2026-07-18T00:01:00.000Z' },
+      },
+    });
+
+    assert.equal(decided.length, 1);
+    assert.equal(decided[0].action, 'review');
+    assert.equal(decided[0].manualDecision, undefined);
   });
 
   it('marks duplicate target matches for review', () => {

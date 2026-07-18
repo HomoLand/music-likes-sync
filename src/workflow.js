@@ -118,6 +118,7 @@ import {
   productAddAiSuggestionAlreadyApplied,
   normalizeProductAddState,
   productAddReferencesTarget,
+  productRejectedAddCandidateKeys,
   rejectProductAddCandidateFromAi,
   upsertProductAddState,
 } from './product-add-state.js';
@@ -1692,9 +1693,10 @@ export async function resolveProductSyncMedia(options = {}, dependencies = {}) {
 
 export async function resolveProductSyncAdditions(options = {}) {
   await ensureDirs();
-  const [plan, policyState] = await Promise.all([
+  const [plan, policyState, reviewDecisions] = await Promise.all([
     readJsonIfExists(FILES.syncPreview),
     readSyncPolicyState(),
+    readMirrorDecisionState(),
   ]);
   if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
   assertValidState(validateSyncPreviewState(plan), 'sync-preview');
@@ -2332,8 +2334,45 @@ export async function checkProductSyncConvergence(options = {}) {
   const policyState = await readSyncPolicyState();
   const policy = policyState?.policy || 'canonical_mirror';
   if (policy === 'canonical_mirror') {
+    const requestedTargets = normalizeProductTargets(
+      Array.isArray(options.targets) && options.targets.length
+        ? options.targets
+        : options.target
+          ? [options.target]
+          : policyState.targets || ['qq', 'netease'],
+    );
+    if (requestedTargets.length > 1) {
+      let snapshots = null;
+      if (options.refreshTarget !== false) {
+        snapshots = await refreshProductPolicyTargetSnapshots(requestedTargets, {}, {
+          playlistId: options.playlistId,
+        });
+      }
+      const preview = await refreshProductPreviewFromPolicy({
+        policyState: {
+          ...policyState,
+          targets: requestedTargets,
+          participants: ['apple', ...requestedTargets],
+        },
+      });
+      const convergence = summarizeProductPolicyConvergence(preview, {
+        refreshedAt: new Date().toISOString(),
+        refreshedTargets: options.refreshTarget === false ? [] : requestedTargets,
+        snapshots: snapshots || {},
+      });
+      await persistProductPreviewConvergence(convergence);
+      return {
+        mode: 'canonical_mirror',
+        convergence,
+        preview: preview ? summarizeProductPreview(preview.plan || preview) : null,
+        mirror: {
+          persisted: true,
+          targets: requestedTargets,
+        },
+      };
+    }
     const result = await checkMirrorConvergence({
-      target: options.target,
+      target: requestedTargets[0] || options.target,
       playlistId: options.playlistId,
       refreshTarget: options.refreshTarget !== false,
       persist: options.persist,
@@ -6030,6 +6069,7 @@ function productTombstoneDecisionForOperation(operation, tombstones) {
 }
 
 function productBucketForOperation(operation) {
+  if (operation.action === 'add' && operation.addDecision?.action === 'skip') return 'not_found';
   if (operation.status === 'not_found') return 'not_found';
   if (operation.action === 'remove' && operation.blockedReason === 'candidate_target_conflict') return 'may_delete';
   if (operation.action === 'review' || operation.status !== 'ready') return 'needs_confirmation';
@@ -6412,6 +6452,10 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
       minimumScoreMargin: options.minimumScoreMargin,
       onProgress: options.onProgress,
       refresh: options.refresh === true,
+      excludedCandidateKeysByOperationId: Object.fromEntries(selectedOperations.map((operation) => [
+        operation.id,
+        productRejectedAddCandidateKeys({ operations, reviewDecisions }, operation),
+      ])),
       searchTracks: (query, searchOptions) => (
         target === 'qq'
           ? searchQQTracks(cookie, query, searchOptions)
@@ -7006,6 +7050,7 @@ function canonicalRemoveHasPendingReplacement(plan = {}, operation = {}) {
     candidate.action === 'add'
     && candidate.targetPlatform === operation.targetPlatform
     && candidate.decisionKey === operation.decisionKey
+    && candidate.addDecision?.action !== 'skip'
     && (candidate.status !== 'ready' || !(candidate.resolvedTargetTrack || candidate.targetTrack))
   ));
 }

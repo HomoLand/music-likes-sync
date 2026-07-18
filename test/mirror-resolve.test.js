@@ -27,6 +27,34 @@ describe('mirror add resolver', () => {
     assert.equal(resolved.summary.unresolvedAdds, 0);
   });
 
+  it('does not propose a provider track already judged to be a different recording', async () => {
+    const plan = fixturePlan('New Song', 'Alice');
+    const resolved = await resolveMirrorAddOperations(plan, {
+      searchTracks: async () => [
+        normalizeTrack({
+          id: 'q-rejected',
+          title: 'New Song',
+          artists: ['Alice'],
+          album: 'Target Album',
+          durationMs: 180500,
+        }, 'qq'),
+        normalizeTrack({
+          id: 'q-replacement',
+          title: 'New Song',
+          artists: ['Alice'],
+          album: 'Target Album',
+          durationMs: 180500,
+        }, 'qq'),
+      ],
+      excludedCandidateKeysByOperationId: {
+        'mirror-00001': ['qq:q-rejected'],
+      },
+    });
+
+    assert.equal(resolved.operations[0].status, 'ready');
+    assert.equal(resolved.operations[0].resolvedTargetTrack.id, 'q-replacement');
+  });
+
   it('keeps low-confidence candidates blocked for review', async () => {
     const plan = fixturePlan('New Song', 'Alice');
     const resolved = await resolveMirrorAddOperations(plan, {

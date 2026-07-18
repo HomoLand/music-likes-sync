@@ -596,6 +596,7 @@ Actions:
 - `accept_candidate`: uses the current `candidateTrack` as `resolvedTargetTrack` and marks the add operation `ready`.
 - `select_alternative`: uses `alternatives[alternativeIndex]` as `resolvedTargetTrack` and marks the add operation `ready`.
 - `skip`: marks the add operation `blocked` with `blockedReason = "user_skipped_add_candidate"`.
+- A skipped add remains write-blocked, but product preview groups it under `not_found` instead of returning it to `needs_confirmation`.
 - `clear`: clears the manual add decision and returns the item to review / resolution state.
 
 Rules:
@@ -625,6 +626,7 @@ Actions:
 
 - `accept_candidate`: accepts each selected operation's current `candidateTrack`.
 - `skip`: marks each selected operation blocked with `blockedReason = "user_skipped_add_candidate"`.
+- Skipped operations are final user decisions for the current candidate set, so preview counts place them in `not_found` while keeping provider writes blocked.
 - `clear`: clears selected manual add decisions.
 
 Rules:
@@ -783,7 +785,7 @@ Request:
 Rules:
 
 - This endpoint does not mutate provider libraries.
-- In `canonical_mirror`, it delegates to the existing mirror convergence check for the current mirror target.
+- In `canonical_mirror`, one requested target keeps the existing single-target mirror compatibility path; multiple requested targets refresh and rebuild one combined product preview so checking consistency cannot silently drop QQ or NetEase from the result.
 - In policy modes, it optionally refreshes selected target snapshots, rebuilds the current `sync-preview`, and stores `sync-preview.convergence`.
 - `refreshTarget: false` is allowed for local non-mutating smoke checks that only recompute from existing snapshots.
 - Responses use summary-only counts and sanitized snapshot summaries; they must not expose credentials or raw provider payloads.

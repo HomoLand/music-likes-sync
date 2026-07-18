@@ -8,6 +8,7 @@ import {
   mergeProductAddResolution,
   productAddAiSuggestionAlreadyApplied,
   productAddReferencesTarget,
+  productRejectedAddCandidateKeys,
   productAddStateKey,
   rejectProductAddCandidateFromAi,
   upsertProductAddState,
@@ -278,7 +279,6 @@ describe('product add state', () => {
       status: 'ready',
       candidateTrack: candidate(),
       resolvedTargetTrack: candidate(),
-      addDecision: { action: 'accept_candidate' },
     };
     const removal = {
       id: 'sync-qq-remove-1',
@@ -296,6 +296,128 @@ describe('product add state', () => {
     assert.equal(guarded.plan.operations[1].status, 'needs_review');
     assert.equal(guarded.plan.operations[1].blockedReason, 'candidate_target_conflict');
     assert.equal(productAddReferencesTarget(guarded.plan, removal), true);
+  });
+
+  it('keeps an accepted candidate already present in the target instead of adding then deleting it', () => {
+    const ready = {
+      ...addOperation(),
+      status: 'ready',
+      candidateTrack: candidate(),
+      resolvedTargetTrack: candidate(),
+      addDecision: { action: 'accept_candidate' },
+    };
+    const removal = {
+      id: 'sync-qq-remove-existing',
+      action: 'remove',
+      status: 'needs_review',
+      blockedReason: 'candidate_target_conflict',
+      targetPlatform: 'qq',
+      targetTrack: candidate(),
+    };
+
+    const guarded = guardProductAddTargetConflicts({ operations: [ready, removal] });
+
+    assert.equal(guarded.changed, 2);
+    assert.equal(guarded.plan.operations.length, 1);
+    assert.equal(guarded.plan.operations[0].action, 'keep');
+    assert.equal(guarded.plan.operations[0].reason, 'accepted_existing_target');
+    assert.equal(guarded.plan.operations[0].targetTrack.id, 'qq-1');
+
+    const persisted = upsertProductAddState(emptyProductAddState(), guarded.plan.operations);
+    assert.equal(persisted.changed, 1);
+    const restored = attachProductAddState({ operations: [addOperation()] }, persisted.state);
+    assert.equal(restored.plan.operations[0].status, 'ready');
+    assert.equal(restored.plan.operations[0].addDecision.action, 'accept_candidate');
+    assert.equal(restored.plan.operations[0].resolvedTargetTrack.id, 'qq-1');
+  });
+
+  it('drops a removal when another source mapping explicitly keeps the same target track', () => {
+    const keep = {
+      id: 'sync-qq-keep-existing',
+      action: 'keep',
+      status: 'ready',
+      sourcePlatform: 'apple',
+      targetPlatform: 'qq',
+      sourceTrack: { ...addOperation().sourceTrack, id: 'apple-kept' },
+      targetTrack: candidate(),
+    };
+    const removal = {
+      id: 'sync-qq-remove-separated',
+      action: 'remove',
+      status: 'ready',
+      targetPlatform: 'qq',
+      targetTrack: candidate(),
+      manualDecision: { action: 'separate' },
+    };
+
+    const guarded = guardProductAddTargetConflicts({ operations: [keep, removal] });
+
+    assert.equal(guarded.changed, 1);
+    assert.deepEqual(guarded.plan.operations.map((operation) => operation.id), [keep.id]);
+  });
+
+  it('clears a candidate already judged to be a different recording for the same source', () => {
+    const sourceTrack = addOperation().sourceTrack;
+    const ready = {
+      ...addOperation(),
+      status: 'ready',
+      candidateTrack: candidate(),
+      resolvedTargetTrack: candidate(),
+      addDecision: { action: 'accept_candidate' },
+    };
+    const removal = {
+      id: 'sync-qq-remove-separated',
+      action: 'remove',
+      status: 'ready',
+      targetPlatform: 'qq',
+      targetTrack: candidate(),
+      identityDecisionOrigin: { sourceTrack },
+      manualDecision: { action: 'separate' },
+    };
+
+    const plan = { operations: [ready, removal] };
+    const guarded = guardProductAddTargetConflicts(plan);
+
+    assert.deepEqual(productRejectedAddCandidateKeys(plan, ready), ['qq:qq-1', 'qq:mid-1']);
+    assert.equal(guarded.changed, 1);
+    assert.equal(guarded.plan.operations[0].status, 'needs_resolution');
+    assert.equal(guarded.plan.operations[0].candidateTrack, null);
+    assert.equal(guarded.plan.operations[0].resolvedTargetTrack, null);
+    assert.equal(guarded.plan.operations[0].resolution.reason, 'candidate_rejected_by_identity_decision');
+    assert.equal(guarded.plan.operations[1].status, 'ready');
+    assert.equal(productAddReferencesTarget(guarded.plan, removal), false);
+  });
+
+  it('excludes a durable separate decision after the rejected target leaves the playlist', () => {
+    const operation = addOperation();
+    const decisionKey = 'review|source_uncertain_match|apple:apple-1:song|qq:qq-1:song';
+
+    const keys = productRejectedAddCandidateKeys({
+      operations: [operation],
+      reviewDecisions: {
+        items: {
+          [decisionKey]: { action: 'separate' },
+        },
+      },
+    }, operation);
+
+    assert.deepEqual(keys, ['qq:qq-1']);
+  });
+
+  it('does not exclude a durable target when identity decisions conflict', () => {
+    const operation = addOperation();
+
+    const keys = productRejectedAddCandidateKeys({
+      operations: [operation],
+      reviewDecisions: {
+        items: {
+          'review|source_uncertain_match|apple:apple-1:song|qq:qq-1:song': { action: 'separate' },
+          'review|target_uncertain_orphan|apple:apple-1:song|qq:qq-1:song': { action: 'keep' },
+        },
+      },
+    }, operation);
+
+    assert.deepEqual(keys, []);
   });
 
   it('blocks two additions from claiming the same provider track', () => {
@@ -362,6 +484,32 @@ describe('product add state', () => {
 
     assert.equal(guarded.changed, 1);
     assert.equal(guarded.plan.operations[1].status, 'needs_review');
+  });
+
+  it('unblocks a manually separated deletion after the user skips its unavailable replacement', () => {
+    const skippedAdd = {
+      ...addOperation(),
+      status: 'blocked',
+      candidateTrack: null,
+      resolvedTargetTrack: null,
+      addDecision: { action: 'skip' },
+    };
+    const removal = {
+      id: 'sync-qq-remove-skipped',
+      decisionKey: skippedAdd.decisionKey,
+      action: 'remove',
+      status: 'needs_review',
+      blockedReason: 'candidate_target_conflict',
+      targetPlatform: 'qq',
+      targetTrack: candidate(),
+      manualDecision: { action: 'separate' },
+    };
+
+    const guarded = guardProductAddTargetConflicts({ operations: [skippedAdd, removal] });
+
+    assert.equal(guarded.changed, 1);
+    assert.equal(guarded.plan.operations[1].status, 'ready');
+    assert.equal(guarded.plan.operations[1].blockedReason, '');
   });
 
   it('clears a stale delete conflict after the candidate is no longer referenced', () => {

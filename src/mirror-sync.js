@@ -371,11 +371,12 @@ function makeOperation(action, input) {
 
 export function applyMirrorReviewDecisions(operations = [], decisionState = {}) {
   const decisions = decisionState?.items || decisionState || {};
+  const decisionIdentityIndex = buildMirrorDecisionIdentityIndex(decisions);
   const result = [];
   for (const operation of operations) {
     if (operation.action !== 'review') {
       const key = operation.decisionKey || mirrorReviewDecisionKey(operation);
-      const decision = decisions[key];
+      const decision = resolveMirrorReviewDecision(decisions, decisionIdentityIndex, operation, key);
       const action = normalizeMirrorReviewDecisionAction(decision?.action);
       if (operation.action === 'keep' && action === 'keep') {
         result.push({
@@ -383,7 +384,7 @@ export function applyMirrorReviewDecisions(operations = [], decisionState = {}) 
           decisionKey: key,
           manualDecision: compactManualDecision(operation, {
             ...decision,
-            key,
+            key: decision?.key || key,
             action,
           }),
         });
@@ -394,7 +395,7 @@ export function applyMirrorReviewDecisions(operations = [], decisionState = {}) 
     }
 
     const key = operation.decisionKey || mirrorReviewDecisionKey(operation);
-    const decision = decisions[key];
+    const decision = resolveMirrorReviewDecision(decisions, decisionIdentityIndex, operation, key);
     const action = normalizeMirrorReviewDecisionAction(decision?.action);
     if (!action) {
       result.push({
@@ -409,7 +410,7 @@ export function applyMirrorReviewDecisions(operations = [], decisionState = {}) 
       decisionKey: key,
     }, {
       ...decision,
-      key,
+      key: decision?.key || key,
       action,
     }));
   }
@@ -423,6 +424,51 @@ export function mirrorReviewDecisionKey(operation = {}) {
     compactDecisionTrackIdentity(operation.sourceTrack),
     compactDecisionTrackIdentity(operation.targetTrack || operation.candidateTrack),
   ].join('|');
+}
+
+function buildMirrorDecisionIdentityIndex(decisions) {
+  const index = new Map();
+  for (const [key, decision] of Object.entries(decisions || {})) {
+    const identity = mirrorDecisionIdentityFromKey(key);
+    const action = normalizeMirrorReviewDecisionAction(decision?.action);
+    if (!identity || !action) continue;
+    const entries = index.get(identity) || [];
+    entries.push({ key, decision: { ...decision, key, action } });
+    index.set(identity, entries);
+  }
+  return index;
+}
+
+function resolveMirrorReviewDecision(decisions, index, operation, key) {
+  const direct = decisions[key];
+  if (normalizeMirrorReviewDecisionAction(direct?.action)) {
+    return { ...direct, key, action: normalizeMirrorReviewDecisionAction(direct.action) };
+  }
+
+  const identity = mirrorReviewDecisionIdentity(operation);
+  const matches = index.get(identity) || [];
+  const actions = new Set(matches.map((entry) => entry.decision.action));
+  if (actions.size !== 1) return null;
+  return matches
+    .slice()
+    .sort((left, right) => decisionTimestamp(right.decision).localeCompare(decisionTimestamp(left.decision)))[0]?.decision || null;
+}
+
+function mirrorReviewDecisionIdentity(operation) {
+  return [
+    compactDecisionTrackIdentity(operation.sourceTrack),
+    compactDecisionTrackIdentity(operation.targetTrack || operation.candidateTrack),
+  ].join('|');
+}
+
+function mirrorDecisionIdentityFromKey(key) {
+  const parts = String(key || '').split('|');
+  if (parts.length !== 4 || parts[0] !== 'review') return '';
+  return `${parts[2]}|${parts[3]}`;
+}
+
+function decisionTimestamp(decision = {}) {
+  return String(decision.updatedAt || decision.decidedAt || '');
 }
 
 export function normalizeMirrorReviewDecisionAction(action) {

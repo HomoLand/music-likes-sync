@@ -293,6 +293,23 @@ try {
     assert(productCheck.ok, 'product sync check should return ok');
     assert(productCheck.data?.mode === 'canonical_mirror', 'product sync check should use canonical mirror mode');
     assert(productCheck.data?.counts?.will_add >= 0, 'product sync check should return grouped counts');
+    const productMultiTargetConvergence = await postJson('/api/sync/convergence', {
+      targets: ['qq', 'netease'],
+      refreshTarget: false,
+    });
+    assert(productMultiTargetConvergence.ok, 'canonical multi-target convergence should return ok');
+    assert(
+      productMultiTargetConvergence.data?.mirror?.targets?.join(',') === 'qq,netease',
+      'canonical multi-target convergence should preserve every requested target',
+    );
+    assert(
+      productMultiTargetConvergence.data?.preview?.counts?.will_add >= 0,
+      'canonical multi-target convergence should return the rebuilt product preview',
+    );
+    assert(
+      !Object.prototype.hasOwnProperty.call(productMultiTargetConvergence.data || {}, 'snapshots'),
+      'canonical multi-target convergence must not expose raw provider snapshots',
+    );
     const addAiReviewGuard = await postJsonStatus('/api/ai/additions/review', {
       consent: false,
       targets: ['qq', 'netease'],

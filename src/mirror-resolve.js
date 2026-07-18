@@ -54,6 +54,9 @@ export async function resolveMirrorAddOperations(plan, options = {}) {
       targetPlatform: plan.target?.platform || operation.targetPlatform || '',
       searchCache,
       searchTracks: options.searchTracks,
+      excludedCandidateKeys: new Set(
+        options.excludedCandidateKeysByOperationId?.[operation.id] || [],
+      ),
       onProgress: options.onProgress,
     });
     Object.assign(next, resolution);
@@ -138,6 +141,7 @@ async function resolveOneAdd(operation, context) {
         searchErrors.push({ strategy: step.strategy, code: outcome.error.code });
       }
       for (const [providerRank, track] of results.entries()) {
+        if (isExcludedCandidate(track, context.excludedCandidateKeys)) continue;
         const key = trackKey(track);
         recordCandidateSearchEvidence(candidateSearchEvidence, key, step, providerRank);
         if (seen.has(key)) continue;
@@ -416,6 +420,16 @@ function compactAliases(aliases = {}) {
 
 function trackKey(track = {}) {
   return `${track.platform || ''}:${track.id || track.mid || normalizeText(`${track.title} ${track.artist} ${track.album}`)}`;
+}
+
+function isExcludedCandidate(track, excludedKeys) {
+  if (!excludedKeys?.size) return false;
+  const platform = String(track?.platform || '').trim().toLowerCase();
+  if (!platform) return false;
+  return [track?.id, track?.mid]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .some((value) => excludedKeys.has(`${platform}:${value}`));
 }
 
 function summarizeResolvedOperations(operations = []) {

@@ -181,9 +181,16 @@ try {
   assert(skippedBatch.data?.operations?.[0]?.addDecision?.action === 'skip', 'batch candidate decision should return skip metadata');
 
   const tombstoneIds = await markReactTombstones(tempRoot);
-  const tombstonePreview = await fetchJson('/api/sync/preview?bucket=needs_confirmation&limit=30');
+  const tombstonePreview = await fetchJson('/api/sync/preview?bucket=may_delete&limit=30');
   assert(tombstonePreview.ok, 'tombstone preview should return ok after local fixture marking');
-  assert(tombstonePreview.data.items.filter((item) => item.tombstoneKey).length >= 2, 'React preview should expose tombstone keys');
+  assert(
+    tombstonePreview.data.items.filter((item) => item.tombstoneKey).length >= 2,
+    `React preview should expose tombstone keys: ${JSON.stringify(tombstonePreview.data.items.map((item) => ({
+      id: item.id,
+      bucket: item.bucket,
+      tombstoneKey: item.tombstoneKey,
+    })))}`,
+  );
 
   const batchTombstone = await postJson('/api/sync/tombstones', {
     action: 'current_platform_only',
@@ -211,7 +218,7 @@ try {
     `/api/sync/tombstones should confirm one global delete with exact text: ${JSON.stringify(confirmedTombstone)}`,
   );
   assert(confirmedTombstone.data?.decision?.action === 'confirm_global_delete', 'global tombstone confirmation should return decision metadata');
-  const decidedTombstonePreview = await fetchJson('/api/sync/preview?bucket=needs_confirmation&limit=30');
+  const decidedTombstonePreview = await fetchJson('/api/sync/preview?bucket=may_delete&limit=30');
   assert(decidedTombstonePreview.data.items.some((item) => item.tombstoneAction === 'confirm_global_delete'), 'React preview should expose confirmed global tombstone decisions');
   assert(decidedTombstonePreview.data.items.some((item) => item.tombstoneAction === 'current_platform_only'), 'React preview should expose batch non-destructive tombstone decisions');
 
@@ -464,14 +471,8 @@ function policySummary(operations, previous = {}) {
 async function markReactTombstones(root) {
   const previewPath = path.join(root, 'data', 'sync-preview.json');
   const preview = JSON.parse(await fs.readFile(previewPath, 'utf8'));
-  const removals = preview.operations.filter((operation) => operation.action === 'remove').slice(0, 2);
-  assert(removals.length >= 2, 'React app smoke fixture should produce at least two remove operations');
-  removals.forEach((operation, index) => {
-    const platform = operation.sourcePlatform || operation.targetPlatform || (index === 0 ? 'qq' : 'netease');
-    operation.reason = 'tombstone_candidate';
-    operation.tombstoneKey = `web-app-smoke:tombstone:${platform}:${index + 1}`;
-    operation.sourcePlatform = platform;
-    operation.sourceTrack = operation.sourceTrack || operation.targetTrack || operation.candidateTrack || {
+  const removals = ['qq', 'netease'].map((platform, index) => {
+    const targetTrack = {
       platform,
       id: `deleted-${index + 1}`,
       title: `Deleted Fixture ${index + 1}`,
@@ -480,7 +481,22 @@ async function markReactTombstones(root) {
       album: 'Web App Smoke Fixture',
       durationMs: 200000,
     };
+    return {
+      id: `web-app-smoke-remove-${platform}`,
+      action: 'remove',
+      status: 'ready',
+      destructive: true,
+      sourcePlatform: platform,
+      targetPlatform: platform,
+      sourceTrack: targetTrack,
+      targetTrack,
+      reason: 'tombstone_candidate',
+      message: 'Web app smoke creates an independent deletion signal.',
+      blockedReason: '',
+      tombstoneKey: `web-app-smoke:tombstone:${platform}:${index + 1}`,
+    };
   });
+  preview.operations.push(...removals);
   preview.summary = policySummary(preview.operations, preview.summary);
   await fs.writeFile(previewPath, JSON.stringify(preview), 'utf8');
   return removals.map((operation) => ({

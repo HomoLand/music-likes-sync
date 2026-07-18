@@ -78,15 +78,47 @@ export function attachProductAddState(plan = {}, state = {}) {
 }
 
 export function guardProductAddTargetConflicts(plan = {}) {
-  const sourceOperations = Array.isArray(plan.operations) ? plan.operations : [];
-  const occupiedTargets = new Set(sourceOperations
+  const protectedTargets = dropRemovalsForKeptTargets(
+    Array.isArray(plan.operations) ? plan.operations : [],
+  );
+  const collapsed = collapseAcceptedExistingTargets(protectedTargets.operations);
+  const sourceOperations = collapsed.operations;
+  const structuralChanges = protectedTargets.changed + collapsed.changed;
+  const decisionPlan = structuralChanges ? { ...plan, operations: sourceOperations } : plan;
+  let changed = structuralChanges;
+  const operationsWithRejectedCandidatesCleared = sourceOperations.map((operation) => {
+    if (operation.action !== 'add') return operation;
+    const selected = selectedProductAddTrack(operation);
+    const rejectedKeys = new Set(productRejectedAddCandidateKeys(decisionPlan, operation));
+    if (!selected || !trackMatchesCandidateKeys(selected, rejectedKeys)) return operation;
+
+    changed += 1;
+    return {
+      ...operation,
+      status: 'needs_resolution',
+      candidateTrack: null,
+      resolvedTargetTrack: null,
+      blockedReason: '',
+      alternatives: (operation.alternatives || [])
+        .filter((track) => !trackMatchesCandidateKeys(track, rejectedKeys)),
+      aiReview: null,
+      addDecision: null,
+      resolution: {
+        reason: 'candidate_rejected_by_identity_decision',
+        message: 'This target version was already marked as a different recording and will not be proposed again.',
+      },
+    };
+  });
+  const workingPlan = changed ? { ...plan, operations: operationsWithRejectedCandidatesCleared } : plan;
+  const workingOperations = workingPlan.operations || [];
+  const occupiedTargets = new Set(workingOperations
     .filter((operation) => operation.action !== 'add')
     .map((operation) => productOperationTargetKey(operation, operation.targetTrack))
     .filter(Boolean));
   const readySelectedCounts = new Map();
   const referencedTargets = new Set();
   const pendingDecisionKeys = new Set();
-  for (const operation of sourceOperations) {
+  for (const operation of workingOperations) {
     if (operation.action !== 'add' || operation.addDecision?.action === 'skip') continue;
     const key = productOperationTargetKey(operation, selectedProductAddTrack(operation));
     if (key) {
@@ -103,9 +135,8 @@ export function guardProductAddTargetConflicts(plan = {}) {
     }
   }
 
-  let changed = 0;
   const conflictOperationIds = [];
-  const operations = sourceOperations.map((operation) => {
+  const operations = workingOperations.map((operation) => {
     const staleConflict = operation.blockedReason === 'candidate_target_conflict';
     if (operation.action === 'remove' && (operation.status === 'ready' || staleConflict)) {
       const targetKey = productOperationTargetKey(operation, operation.targetTrack);
@@ -170,10 +201,119 @@ export function guardProductAddTargetConflicts(plan = {}) {
   });
 
   return {
-    plan: changed ? { ...plan, operations } : plan,
+    plan: changed ? { ...workingPlan, operations } : plan,
     changed,
     conflictOperationIds,
   };
+}
+
+export function productRejectedAddCandidateKeys(plan = {}, operation = {}) {
+  const sourceKey = productOperationSourceKey(operation);
+  if (!sourceKey) return [];
+
+  const keys = new Set();
+  for (const candidate of plan.operations || []) {
+    if (candidate.manualDecision?.action !== 'separate') continue;
+    if (productOperationSourceKey(candidate) !== sourceKey) continue;
+    for (const key of productTrackCandidateKeys(candidate.targetTrack || candidate.identityDecisionOrigin?.targetTrack)) {
+      keys.add(key);
+    }
+  }
+  const decisionGroups = new Map();
+  const decisionItems = plan.reviewDecisions?.items || plan.identityDecisions?.items || {};
+  for (const [decisionKey, decision] of Object.entries(decisionItems)) {
+    const action = String(decision?.action || '').trim().toLowerCase();
+    if (action !== 'keep' && action !== 'separate') continue;
+    const parts = String(decisionKey || '').split('|');
+    if (parts.length !== 4 || decisionTrackKey(parts[2]) !== sourceKey) continue;
+    const targetKey = decisionTrackKey(parts[3]);
+    if (!targetKey) continue;
+    const actions = decisionGroups.get(targetKey) || new Set();
+    actions.add(action);
+    decisionGroups.set(targetKey, actions);
+  }
+  for (const [targetKey, actions] of decisionGroups) {
+    if (actions.size === 1 && actions.has('separate')) keys.add(targetKey);
+  }
+  return [...keys];
+}
+
+function dropRemovalsForKeptTargets(operations) {
+  const keptTargets = new Set(operations
+    .filter((operation) => operation.action === 'keep' && operation.status === 'ready')
+    .map((operation) => productOperationTargetKey(operation, operation.targetTrack))
+    .filter(Boolean));
+  if (!keptTargets.size) return { operations, changed: 0 };
+  const filtered = operations.filter((operation) => (
+    operation.action !== 'remove'
+    || !keptTargets.has(productOperationTargetKey(operation, operation.targetTrack))
+  ));
+  return {
+    operations: filtered,
+    changed: operations.length - filtered.length,
+  };
+}
+
+function collapseAcceptedExistingTargets(operations) {
+  const removalsByTarget = new Map();
+  const acceptedAddsByTarget = new Map();
+  for (const operation of operations) {
+    if (operation.action === 'remove' && operation.manualDecision?.action !== 'separate') {
+      appendOperationByTarget(removalsByTarget, operation, operation.targetTrack);
+      continue;
+    }
+    if (
+      operation.action === 'add'
+      && operation.status === 'ready'
+      && operation.addDecision?.action === 'accept_candidate'
+    ) {
+      appendOperationByTarget(acceptedAddsByTarget, operation, selectedProductAddTrack(operation));
+    }
+  }
+
+  const replacements = new Map();
+  const removedIds = new Set();
+  for (const [key, additions] of acceptedAddsByTarget) {
+    const removals = removalsByTarget.get(key) || [];
+    if (additions.length !== 1 || removals.length !== 1) continue;
+    const addition = additions[0];
+    const removal = removals[0];
+    const targetTrack = removal.targetTrack || selectedProductAddTrack(addition);
+    replacements.set(addition.id, {
+      ...addition,
+      action: 'keep',
+      status: 'ready',
+      destructive: false,
+      reason: 'accepted_existing_target',
+      message: 'The accepted candidate already exists in the target playlist and is kept in place.',
+      targetTrack,
+      candidateTrack: targetTrack,
+      resolvedTargetTrack: targetTrack,
+      blockedReason: '',
+      resolution: {
+        ...(addition.resolution || {}),
+        reason: 'accepted_existing_target',
+        message: 'The accepted target version is already present, so no add or delete is needed.',
+      },
+    });
+    removedIds.add(removal.id);
+  }
+
+  if (!replacements.size) return { operations, changed: 0 };
+  return {
+    operations: operations
+      .filter((operation) => !removedIds.has(operation.id))
+      .map((operation) => replacements.get(operation.id) || operation),
+    changed: replacements.size + removedIds.size,
+  };
+}
+
+function appendOperationByTarget(index, operation, track) {
+  const key = productOperationTargetKey(operation, track);
+  if (!key) return;
+  const items = index.get(key) || [];
+  items.push(operation);
+  index.set(key, items);
 }
 
 export function mergeProductAddResolution(operation = {}, resolution = {}) {
@@ -262,7 +402,10 @@ export function productAddAiSuggestionAlreadyApplied(operation = {}) {
 }
 
 function hasPersistableProductAddState(operation = {}) {
-  if (operation.action !== 'add') return false;
+  const acceptedExistingTarget = operation.action === 'keep'
+    && operation.reason === 'accepted_existing_target'
+    && operation.addDecision?.action === 'accept_candidate';
+  if (operation.action !== 'add' && !acceptedExistingTarget) return false;
   return Boolean(
     operation.candidateTrack
     || operation.resolvedTargetTrack
@@ -286,6 +429,48 @@ function productOperationTargetKey(operation = {}, track = null) {
   const target = clean(operation.targetPlatform || track.platform, 40).toLowerCase();
   const providerId = clean(track.id || track.mid, 240);
   return target && providerId ? `${target}:${providerId}` : '';
+}
+
+function productOperationSourceKey(operation = {}) {
+  const track = operation.sourceTrack || operation.identityDecisionOrigin?.sourceTrack;
+  const platform = clean(operation.sourcePlatform || track?.platform || 'apple', 40).toLowerCase();
+  const providerId = clean(track?.id || track?.mid || track?.isrc, 240);
+  if (platform && providerId) return `${platform}:${providerId}`;
+
+  const decisionKey = clean(operation.decisionKey || operation.manualDecision?.key, 4000);
+  const identity = decisionKey.split('|')[2] || '';
+  const firstSeparator = identity.indexOf(':');
+  const secondSeparator = identity.indexOf(':', firstSeparator + 1);
+  if (firstSeparator <= 0 || secondSeparator <= firstSeparator) return '';
+  const decisionPlatform = identity.slice(0, firstSeparator).toLowerCase();
+  const decisionProviderId = identity.slice(firstSeparator + 1, secondSeparator);
+  return decisionPlatform && decisionProviderId && decisionProviderId !== 'none'
+    ? `${decisionPlatform}:${decisionProviderId}`
+    : '';
+}
+
+function decisionTrackKey(identity) {
+  const text = String(identity || '');
+  const firstSeparator = text.indexOf(':');
+  const secondSeparator = text.indexOf(':', firstSeparator + 1);
+  if (firstSeparator <= 0 || secondSeparator <= firstSeparator) return '';
+  const platform = text.slice(0, firstSeparator).toLowerCase();
+  const providerId = text.slice(firstSeparator + 1, secondSeparator);
+  return platform && providerId && providerId !== 'none' ? `${platform}:${providerId}` : '';
+}
+
+function productTrackCandidateKeys(track = {}) {
+  if (!track || typeof track !== 'object') return [];
+  const platform = clean(track.platform, 40).toLowerCase();
+  if (!platform) return [];
+  return [...new Set([track.id, track.mid]
+    .map((value) => clean(value, 240))
+    .filter(Boolean)
+    .map((value) => `${platform}:${value}`))];
+}
+
+function trackMatchesCandidateKeys(track, keys) {
+  return productTrackCandidateKeys(track).some((key) => keys.has(key));
 }
 
 function productAddCandidateEvidenceKey(track) {
