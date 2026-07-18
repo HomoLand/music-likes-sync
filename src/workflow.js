@@ -29,6 +29,7 @@ import { buildMatchEvidence, compactTrackForAi } from './evidence.js';
 import { enrichAppleSnapshotWithMusicBrainz } from './metadata/musicbrainz.js';
 import { enrichAppleSnapshotWithStorefrontAliases } from './metadata/apple-storefronts.js';
 import { compareAppleToPlatform } from './match.js';
+import { guardTargetIdentityCollisions } from './match-audit.js';
 import { buildMirrorRunIdentity, executeMirrorSyncPlan } from './mirror-apply.js';
 import { requestDeepSeekMirrorReview } from './mirror-ai.js';
 import { resolveMirrorAddOperations } from './mirror-resolve.js';
@@ -3415,6 +3416,10 @@ export async function resolveMirrorAdds(options = {}) {
     limit: options.limit,
     offset: options.offset,
     searchLimit: options.searchLimit,
+    queryLimit: options.queryLimit,
+    queryConcurrency: options.queryConcurrency,
+    searchTimeoutMs: options.searchTimeoutMs,
+    minimumScoreMargin: options.minimumScoreMargin,
     searchTracks: (query, searchOptions) => (
       target === 'qq'
         ? searchQQTracks(cookie, query, searchOptions)
@@ -6358,6 +6363,11 @@ async function resolveProductPolicyAdditions(plan, options = {}) {
       reviewThreshold: options.reviewThreshold ?? plan.thresholds?.review,
       limit: options.resolveLimit || options.limit,
       searchLimit: options.searchLimit,
+      queryLimit: options.queryLimit,
+      queryConcurrency: options.queryConcurrency,
+      searchTimeoutMs: options.searchTimeoutMs,
+      minimumScoreMargin: options.minimumScoreMargin,
+      onProgress: options.onProgress,
       refresh: options.refresh === true,
       searchTracks: (query, searchOptions) => (
         target === 'qq'
@@ -6920,8 +6930,18 @@ function canonicalProductDeletionKey(operation = {}) {
 }
 
 function applyProductAddConflictGuards(plan = {}) {
-  const guarded = guardProductAddTargetConflicts(plan);
-  if (!guarded.changed) return guarded;
+  const addGuard = guardProductAddTargetConflicts(plan);
+  const identityGuard = guardTargetIdentityCollisions(addGuard.plan);
+  const changed = addGuard.changed + identityGuard.changed;
+  const guarded = {
+    ...identityGuard,
+    changed,
+    conflictOperationIds: [
+      ...(addGuard.conflictOperationIds || []),
+      ...(identityGuard.conflictOperationIds || []),
+    ],
+  };
+  if (!changed) return guarded;
   return {
     ...guarded,
     plan: {

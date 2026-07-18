@@ -1488,7 +1488,7 @@ function evidenceLabel(entry: string): string {
     reverse_only_match: '仅目标平台反向命中',
     isrc: 'ISRC 证据',
     musicbrainz: 'MusicBrainz 证据',
-    exact_recording_fingerprint: '标题、专辑与时长一致',
+    exact_recording_fingerprint: '歌名、歌手别名、专辑与时长一致',
     local_summary: '本地摘要',
   };
   if (entry.startsWith('score:')) return '综合匹配分';

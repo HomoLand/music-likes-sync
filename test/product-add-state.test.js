@@ -217,6 +217,7 @@ describe('product add state', () => {
 
     assert.equal(restored.status, 'needs_review');
     assert.equal(restored.resolvedTargetTrack, null);
+    assert.equal(restored.resolution.reason, 'low_confidence_target_match');
     assert.equal(restored.resolvedScore.versionCueConflict, true);
   });
 

@@ -45,10 +45,13 @@
     "prepack": "tsc --project web-app/tsconfig.json --noEmit && vite build --config web-app/vite.config.ts --logLevel error",
     "snapshot": "node ./src/cli.js snapshot",
     "match": "node ./src/cli.js match",
+    "match:shadow": "node ./scripts/match-shadow.mjs",
+    "match:shadow:live": "node ./scripts/match-shadow.mjs --live",
     "check": "node ./src/cli.js check",
     "web": "node ./src/server.js",
     "check:ci": "node ./scripts/check-ci-workflow.mjs",
     "check:ai-eval": "node ./scripts/ai-eval.mjs --json",
+    "check:match-eval": "node ./scripts/match-eval.mjs --json",
     "check:syntax": "node ./scripts/check-js-syntax.mjs",
     "check:web-app": "tsc --project web-app/tsconfig.json --noEmit && vite build --config web-app/vite.config.ts",
     "check:state": "node ./scripts/check-state.mjs",
@@ -67,7 +70,7 @@
     "audit": "npm audit --omit=dev",
     "check:release": "npm run check:ci && npm run check:privacy && npm run verify && npm run migrate:state && npm run smoke:package && npm run smoke:fresh-install && npm run validate:live && npm run audit && npm run smoke:http && npm run smoke:web-app && npm run smoke:agent-mcp && npm run smoke:react-ui && npm run smoke:ui && npm run smoke:docker",
     "check:release:strict": "node ./scripts/release-readiness.mjs",
-    "verify": "npm run check:syntax && npm run check:web-app && npm run check:state && npm test && npm run check:ai-eval",
+    "verify": "npm run check:syntax && npm run check:web-app && npm run check:state && npm test && npm run check:match-eval && npm run check:ai-eval",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

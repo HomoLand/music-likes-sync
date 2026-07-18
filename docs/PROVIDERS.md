@@ -118,6 +118,16 @@ Current NetEase API surface after a cookie exists:
 - Add/delete tracks: `playlist_tracks`
 - Review media: artwork uses `al.picUrl`. Playback prefers `song_url_v1` at `standard` quality and falls back to `song_url` when the installed dependency cannot initialize its `xeapi` key; no unblock source is enabled.
 
+## Catalog Resolution And Match Safety
+
+- Catalog lookup is a query plan, not one raw `title + artist` request. It prioritizes trusted Apple equivalents for the target storefront, then source metadata, paired title / artist aliases, album aliases, and title-only fallbacks.
+- QQ prefers `cn`, `hk`, and `tw` Apple equivalents. NetEase prefers `cn`. If a preferred equivalent exists, unrelated storefront variants do not consume the query budget.
+- Queries run with bounded concurrency and a per-query timeout. A timeout makes the operation `target_catalog_search_incomplete`; it is never reported as a missing song, and a non-authoritative candidate from an incomplete search cannot auto-resolve.
+- Results from every executed query are deduplicated and ranked together. Automatic selection considers recording evidence, score margin to the runner-up, version / ISRC conflicts, provider album position, and search provenance rather than provider result order.
+- A metadata recording fingerprint requires exact normalized title and album, trusted or strongly matching artist identity, no more than two seconds of duration drift, no one-sided version cue, and no conflicting ISRC.
+- A target track claimed by multiple Apple sources is audited at recording level. Same ISRC, a shared MusicBrainz recording id, or an explicit per-source keep approval can collapse safely; otherwise every mapping in the group is blocked for identity review.
+- `npm run check:match-eval` runs the public synthetic labeled baseline. `npm run match:shadow` is offline; `npm run match:shadow:live -- --target qq|netease --json` performs real provider search without writing playlists or replacing the local sync preview.
+
 ## Human Review Media
 
 - The review screen compares the Apple source, QQ candidate or existing version, NetEase candidate or existing version, and up to two alternatives per target.

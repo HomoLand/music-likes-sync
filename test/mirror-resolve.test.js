@@ -106,8 +106,8 @@ describe('mirror add resolver', () => {
       },
     });
 
-    assert.equal(queries.length, 1);
-    assert.match(queries[0], /Resolvable Song/);
+    assert(queries.length >= 1);
+    assert(queries.every((query) => /Resolvable Song/.test(query)));
     assert.equal(resolved.addResolution.totalAdd, 3);
     assert.equal(resolved.addResolution.pendingAdd, 1);
     assert.equal(resolved.addResolution.remaining, 0);
@@ -196,13 +196,154 @@ describe('mirror add resolver', () => {
       },
     });
 
-    assert.equal(queries.length, 1);
-    assert.match(queries[0], /Second Pending/);
+    assert(queries.length >= 1);
+    assert(queries.every((query) => /Second Pending/.test(query)));
     assert.equal(resolved.operations[1].status, 'needs_resolution');
     assert.equal(resolved.operations[2].status, 'ready');
     assert.equal(resolved.addResolution.totalAdd, 3);
     assert.equal(resolved.addResolution.pendingAdd, 2);
     assert.equal(resolved.addResolution.remaining, 0);
+  });
+
+  it('finds a target through a trusted localized Apple storefront query', async () => {
+    const plan = fixturePlan('Ai Ren Cuo Guo', 'Accusefive');
+    plan.operations[0].sourceTrack = normalizeTrack({
+      ...plan.operations[0].sourceTrack,
+      durationMs: 292075,
+      isrc: 'TWEXAMPLE001',
+      aliases: {
+        titles: ['爱人错过'],
+        artists: ['告五人'],
+        albums: ['我肯定在几百年前就说过爱你'],
+      },
+      metadata: {
+        appleStorefronts: {
+          equivalents: [{
+            storefront: 'cn',
+            id: 'cn-1',
+            title: '爱人错过',
+            artist: '告五人',
+            album: '我肯定在几百年前就说过爱你',
+            durationMs: 292075,
+            isrc: 'TWEXAMPLE001',
+            trackNumber: 1,
+            discNumber: 1,
+            releaseDate: '2019-06-14',
+            isrcMatch: true,
+            aliasTrusted: true,
+          }],
+        },
+      },
+    }, 'apple');
+    const queries = [];
+
+    const resolved = await resolveMirrorAddOperations(plan, {
+      searchTracks: async (query) => {
+        queries.push(query);
+        if (!query.includes('爱人错过')) return [];
+        return [normalizeTrack({
+          id: 'q-localized',
+          title: '爱人错过',
+          artists: ['告五人'],
+          album: '我肯定在几百年前就说过爱你',
+          durationMs: 292000,
+          metadata: {
+            providerCatalog: {
+              trackNumber: 1,
+              discNumber: 1,
+              releaseDate: '2019-06-14',
+            },
+          },
+        }, 'qq')];
+      },
+    });
+
+    const operation = resolved.operations[0];
+    assert.equal(queries[0], '爱人错过 告五人');
+    assert.equal(operation.status, 'ready');
+    assert.equal(operation.resolvedTargetTrack.id, 'q-localized');
+    assert.equal(operation.resolvedScore.appleEquivalentFingerprint, true);
+    assert(operation.resolution.searchStrategies.includes('apple_storefront_title_artist'));
+  });
+
+  it('ranks alternatives by match evidence instead of provider result order', async () => {
+    const plan = fixturePlan('New Song', 'Alice');
+    const resolved = await resolveMirrorAddOperations(plan, {
+      searchTracks: async () => [
+        normalizeTrack({
+          id: 'wrong',
+          title: 'Different Song',
+          artists: ['Someone Else'],
+          album: 'Wrong Album',
+          durationMs: 45000,
+        }, 'qq'),
+        normalizeTrack({
+          id: 'near',
+          title: 'New Song Acoustic',
+          artists: ['Alice'],
+          album: 'Source Album',
+          durationMs: 195000,
+        }, 'qq'),
+        normalizeTrack({
+          id: 'exact',
+          title: 'New Song',
+          artists: ['Alice'],
+          album: 'Source Album',
+          durationMs: 180000,
+        }, 'qq'),
+      ],
+    });
+
+    const operation = resolved.operations[0];
+    assert.equal(operation.resolvedTargetTrack.id, 'exact');
+    assert.equal(operation.alternatives[0].id, 'near');
+    assert(!operation.alternatives.some((item) => item.id === 'wrong'));
+    assert(operation.alternatives[0].match.score.total < operation.resolvedTargetTrack.match.score.total);
+    assert.equal(operation.resolvedTargetTrack.match.rank, 1);
+  });
+
+  it('keeps close non-authoritative candidates in review', async () => {
+    const plan = fixturePlan('New Song', 'Alice');
+    const resolved = await resolveMirrorAddOperations(plan, {
+      searchTracks: async () => [
+        normalizeTrack({
+          id: 'best',
+          title: 'New Song',
+          artists: ['Alice'],
+          album: 'Target Album',
+          durationMs: 180000,
+        }, 'qq'),
+        normalizeTrack({
+          id: 'close',
+          title: 'New Song',
+          artists: ['Alice B'],
+          album: 'Target Album',
+          durationMs: 180000,
+        }, 'qq'),
+      ],
+    });
+
+    const operation = resolved.operations[0];
+    assert.equal(operation.status, 'needs_review');
+    assert.equal(operation.resolution.reason, 'close_competing_candidates');
+    assert(operation.resolvedScore.scoreMargin < 0.04);
+    assert.equal(operation.resolvedScore.candidateCount, 2);
+  });
+
+  it('keeps a timed-out catalog search in review instead of classifying it as missing', async () => {
+    const plan = fixturePlan('Slow Search', 'Fixture Artist');
+    const resolved = await resolveMirrorAddOperations(plan, {
+      queryLimit: 1,
+      queryConcurrency: 1,
+      searchTimeoutMs: 50,
+      searchTracks: () => new Promise(() => {}),
+    });
+
+    const operation = resolved.operations[0];
+    assert.equal(operation.status, 'needs_review');
+    assert.equal(operation.resolution.reason, 'target_catalog_search_incomplete');
+    assert.equal(operation.resolution.queryErrorCount, 1);
+    assert.deepEqual(operation.resolution.searchErrorCodes, ['timeout']);
   });
 });
 

@@ -323,23 +323,33 @@ function buildCanonicalMirrorPlan(input) {
 
 function enrichCanonicalSourceWithTargetAliases(sourceSnapshot, mirrors) {
   const aliasesBySource = new Map();
+  const corroboratedBySource = new Map();
   for (const { target, mirror } of mirrors) {
     for (const operation of mirror.operations || []) {
-      if (!trustedCrossTargetMatch(operation)) continue;
       const sourceId = String(operation.sourceTrack?.id || '').trim();
       if (!sourceId) continue;
-      const evidence = aliasesBySource.get(sourceId) || {
-        platforms: new Set(),
-        titles: [],
-        artists: [],
-        albums: [],
-      };
-      const track = operation.targetTrack;
-      evidence.platforms.add(target);
-      evidence.titles.push(track.title, ...(track.aliases?.titles || []));
-      evidence.artists.push(track.artist, ...(track.artists || []), ...(track.aliases?.artists || []));
-      evidence.albums.push(track.album, ...(track.aliases?.albums || []));
-      aliasesBySource.set(sourceId, evidence);
+      if (trustedCrossTargetMatch(operation)) {
+        addCrossTargetAliasEvidence(aliasesBySource, sourceId, target, operation.targetTrack);
+        continue;
+      }
+      const track = operation.targetTrack || operation.candidateTrack;
+      if (!strictCrossTargetAliasCandidate(operation, track)) continue;
+      const artistKey = normalizeText(track.artist || track.artists?.[0]);
+      if (!artistKey) continue;
+      const sourceGroups = corroboratedBySource.get(sourceId) || new Map();
+      const group = sourceGroups.get(artistKey) || { platforms: new Set(), tracks: [] };
+      group.platforms.add(target);
+      group.tracks.push({ target, track });
+      sourceGroups.set(artistKey, group);
+      corroboratedBySource.set(sourceId, sourceGroups);
+    }
+  }
+  for (const [sourceId, groups] of corroboratedBySource) {
+    for (const group of groups.values()) {
+      if (group.platforms.size < 2) continue;
+      for (const item of group.tracks) {
+        addCrossTargetAliasEvidence(aliasesBySource, sourceId, item.target, item.track);
+      }
     }
   }
   if (!aliasesBySource.size) return { snapshot: sourceSnapshot, changed: 0 };
@@ -370,6 +380,33 @@ function enrichCanonicalSourceWithTargetAliases(sourceSnapshot, mirrors) {
     snapshot: { ...sourceSnapshot, tracks },
     changed,
   };
+}
+
+function addCrossTargetAliasEvidence(index, sourceId, target, track) {
+  if (!track) return;
+  const evidence = index.get(sourceId) || {
+    platforms: new Set(),
+    titles: [],
+    artists: [],
+    albums: [],
+  };
+  evidence.platforms.add(target);
+  evidence.titles.push(track.title, ...(track.aliases?.titles || []));
+  evidence.artists.push(track.artist, ...(track.artists || []), ...(track.aliases?.artists || []));
+  evidence.albums.push(track.album, ...(track.aliases?.albums || []));
+  index.set(sourceId, evidence);
+}
+
+function strictCrossTargetAliasCandidate(operation, track) {
+  const score = operation?.score || {};
+  return Boolean(
+    track
+    && !score.isrcConflict
+    && !score.versionCueConflict
+    && Number(score.title || 0) >= 0.8
+    && Number(score.album || 0) >= 0.95
+    && Number(score.duration || 0) >= 0.92
+  );
 }
 
 function trustedCrossTargetMatch(operation) {

@@ -93,6 +93,40 @@ describe('mirror sync plan', () => {
     assert.equal(plan.operations[0].manualDecision.originalReason, 'source_uncertain_match');
   });
 
+  it('retains an explicit keep approval on an already matched operation', () => {
+    const input = {
+      target: 'qq',
+      sourceSnapshot: snapshot('apple', [
+        track('apple', 'a-1', 'Already There', 'Alice', 180000),
+      ]),
+      targetSnapshot: snapshot('qq', [
+        track('qq', 'q-1', 'Already There', 'Alice', 180000),
+      ]),
+    };
+    const initial = buildMirrorSyncPlan(input);
+    const key = initial.operations[0].decisionKey;
+
+    const plan = buildMirrorSyncPlan({
+      ...input,
+      reviewDecisions: {
+        version: 1,
+        items: {
+          [key]: {
+            key,
+            action: 'keep',
+            source: 'ai_user_approved',
+            decidedAt: '2026-07-18T00:00:00.000Z',
+          },
+        },
+      },
+    });
+
+    assert.equal(plan.operations[0].action, 'keep');
+    assert.equal(plan.operations[0].status, 'ready');
+    assert.equal(plan.operations[0].manualDecision.action, 'keep');
+    assert.equal(plan.operations[0].manualDecision.originalAction, 'keep');
+  });
+
   it('turns a manually separated source review into add and confirmed-delete plan items', () => {
     const input = {
       target: 'netease',

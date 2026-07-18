@@ -75,6 +75,7 @@ describe('cross-platform track matching', () => {
       album: '蚍蜉渡海',
       durationMs: 270832,
       isrc: 'CNM691700029',
+      aliases: { artists: ['银临'] },
     }, 'apple');
     const qq = track({
       title: '裁梦为魂',
@@ -87,8 +88,8 @@ describe('cross-platform track matching', () => {
 
     assert.equal(result.matched, 1);
     assert.equal(result.review, 0);
-    assert.equal(result.matches[0].score.artist, 0);
-    assert.equal(result.matches[0].score.total, 0.9);
+    assert.equal(result.matches[0].score.artist, 1);
+    assert.equal(result.matches[0].score.total, 1);
     assert.equal(result.matches[0].score.recordingFingerprint, true);
 
     const evidence = buildMatchEvidence(apple, qq, result.matches[0].score);
@@ -102,6 +103,9 @@ describe('cross-platform track matching', () => {
       artist: 'Localized Artist',
       album: 'Example Album',
       durationMs: 240000,
+      aliases: {
+        artists: ['本地艺人 A', '本地艺人 B'],
+      },
     }, 'apple');
     const targets = ['本地艺人 A', '本地艺人 B'].map((artist, index) => track({
       id: `target-${index}`,
@@ -643,6 +647,48 @@ describe('cross-platform track matching', () => {
 
     assert.equal(result.matched, 0);
     assert.equal(result.reviewItems[0].score.versionCueConflict, true);
+  });
+
+  it('does not infer a recording identity from title, album, and duration when artists conflict', () => {
+    const apple = track({
+      title: 'Shared Title',
+      artist: 'Artist One',
+      album: 'Shared Album',
+      durationMs: 210000,
+    }, 'apple');
+    const target = track({
+      title: 'Shared Title',
+      artist: 'Artist Two',
+      album: 'Shared Album',
+      durationMs: 210000,
+    }, 'qq');
+
+    const result = compareAppleToPlatform([apple], [target]);
+
+    assert.equal(result.matched, 0);
+    assert.equal(result.review, 1);
+    assert.equal(result.reviewItems[0].score.recordingFingerprint, false);
+  });
+
+  it('keeps a greater-than-five-second duration difference out of automatic metadata matches', () => {
+    const apple = track({
+      title: 'Long Intro',
+      artist: 'Example Artist',
+      album: 'Example Album',
+      durationMs: 240000,
+    }, 'apple');
+    const target = track({
+      title: 'Long Intro',
+      artist: 'Example Artist',
+      album: 'Example Album',
+      durationMs: 247000,
+    }, 'netease');
+
+    const result = compareAppleToPlatform([apple], [target]);
+
+    assert.equal(result.matched, 0);
+    assert.equal(result.review, 1);
+    assert(result.reviewItems[0].score.total < 0.82);
   });
 });
 

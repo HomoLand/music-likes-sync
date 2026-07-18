@@ -335,6 +335,7 @@ function restoreProductAddOperation(operation, saved = {}) {
   const scoreChanged = productAddScoreEvidenceKey(previousScore) !== productAddScoreEvidenceKey(resolvedScore);
   const staleDerivedDecision = rulesChanged || scoreChanged;
   const preserveUserDecision = isExplicitUserDecision(saved.addDecision);
+  let resolution = saved.resolution || operation.resolution;
   let aiReview = preserveUserDecision
     ? saved.aiReview || operation.aiReview
     : staleDerivedDecision ? null : saved.aiReview || operation.aiReview;
@@ -348,12 +349,27 @@ function restoreProductAddOperation(operation, saved = {}) {
   } else if (revalidation.matched && selectedTrack && !preserveUserDecision) {
     status = 'ready';
     resolvedTargetTrack = selectedTrack;
+    resolution = {
+      reason: 'resolved_target_match',
+      message: 'A high-confidence target-platform catalog track was found.',
+    };
   } else if (revalidation.status === 'not_found' && selectedTrack && !preserveUserDecision) {
     status = 'not_found';
     candidateTrack = null;
     resolvedTargetTrack = null;
     aiReview = null;
     addDecision = null;
+    resolution = {
+      reason: 'target_catalog_low_score',
+      message: 'The saved target candidate no longer satisfies the current matching rules.',
+    };
+  } else if (revalidation.status === 'needs_review' && selectedTrack && !preserveUserDecision) {
+    status = 'needs_review';
+    resolvedTargetTrack = null;
+    resolution = {
+      reason: 'low_confidence_target_match',
+      message: 'The saved target candidate requires review under the current matching rules.',
+    };
   } else if (status === 'ready' && !preserveUserDecision) {
     status = candidateTrack ? 'needs_review' : 'needs_resolution';
     resolvedTargetTrack = null;
@@ -370,7 +386,7 @@ function restoreProductAddOperation(operation, saved = {}) {
     alternatives: Array.isArray(saved.alternatives) && saved.alternatives.length
       ? saved.alternatives.map(compactTrack).filter(Boolean)
       : operation.alternatives || [],
-    resolution: saved.resolution || operation.resolution,
+    resolution,
     aiReview,
     addDecision,
     blockedReason: saved.blockedReason || operation.blockedReason || '',

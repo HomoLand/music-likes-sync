@@ -4,10 +4,21 @@ import { compareVersionCues, versionCueSet } from './evidence.js';
 
 const trackValueCache = new WeakMap();
 
-export function compareAppleToPlatform(appleTracks, platformTracks, options = {}) {
-  const threshold = Number(options.threshold ?? 0.82);
-  const reviewThreshold = Number(options.reviewThreshold ?? 0.68);
+export function rankTrackCandidates(sourceTrack, candidateTracks = []) {
+  const preparedSource = prepareCandidateTrack(sourceTrack);
+  const preparedCandidates = candidateTracks.map(prepareCandidateTrack);
+  return rankPreparedTrackCandidates(preparedSource, preparedCandidates);
+}
 
+export function classifyTrackCandidates(sourceTrack, candidateTracks = [], options = {}) {
+  return classifyPreparedTrackCandidates(
+    prepareCandidateTrack(sourceTrack),
+    candidateTracks.map(prepareCandidateTrack),
+    options,
+  );
+}
+
+export function compareAppleToPlatform(appleTracks, platformTracks, options = {}) {
   const matches = [];
   const review = [];
   const missing = [];
@@ -15,39 +26,35 @@ export function compareAppleToPlatform(appleTracks, platformTracks, options = {}
 
   for (const apple of appleTracks) {
     const preparedApple = prepareCandidateTrack(apple);
-    const pool = selectCandidatePool(preparedApple, preparedPlatformTracks);
-    const candidates = pool
-      .map((candidate) => ({
-        track: candidate.track,
-        score: scoreTrack(apple, candidate.track),
-      }))
-      .sort((a, b) => (
-        b.score.isrc - a.score.isrc
-        || Number(b.score.catalogTrackFingerprint) - Number(a.score.catalogTrackFingerprint)
-        || Number(b.score.appleEquivalentFingerprint) - Number(a.score.appleEquivalentFingerprint)
-        || Number(b.score.recordingFingerprint) - Number(a.score.recordingFingerprint)
-        || b.score.total - a.score.total
-      ));
-
-    const best = candidates[0] || null;
-    const fingerprintCandidates = candidates.filter((candidate) => candidate.score.recordingFingerprint);
-    const ambiguousFingerprint = Boolean(
-      options.allowAmbiguousFingerprint !== true
-      && best?.score.recordingFingerprint
-      && fingerprintCandidates.length > 1
-    );
-    if (
-      best
-      && best.score.total >= threshold
-      && !best.score.versionCueConflict
-      && !best.score.isrcConflict
-      && !ambiguousFingerprint
-    ) {
-      matches.push({ apple, target: best.track, score: best.score });
-    } else if (best && best.score.total >= reviewThreshold) {
-      review.push({ apple, target: best.track, score: best.score });
+    const decision = classifyPreparedTrackCandidates(preparedApple, preparedPlatformTracks, options);
+    const best = decision.best;
+    const result = best ? {
+      apple,
+      target: best.track,
+      score: best.score,
+      scoreMargin: decision.scoreMargin,
+      candidateCount: decision.candidateCount,
+      ambiguityReason: decision.ambiguityReason,
+      runnerUp: decision.runnerUp ? {
+        target: decision.runnerUp.track,
+        score: decision.runnerUp.score,
+      } : null,
+    } : null;
+    if (decision.status === 'match') {
+      matches.push(result);
+    } else if (decision.status === 'review') {
+      review.push(result);
     } else {
-      missing.push({ apple, best: best ? { target: best.track, score: best.score } : null });
+      missing.push({
+        apple,
+        best: result ? {
+          target: result.target,
+          score: result.score,
+          scoreMargin: result.scoreMargin,
+          candidateCount: result.candidateCount,
+          runnerUp: result.runnerUp,
+        } : null,
+      });
     }
   }
 
@@ -63,7 +70,114 @@ export function compareAppleToPlatform(appleTracks, platformTracks, options = {}
   };
 }
 
-function prepareCandidateTrack(track) {
+function classifyPreparedTrackCandidates(source, preparedCandidates, options = {}) {
+  const threshold = Number(options.threshold ?? 0.82);
+  const reviewThreshold = Number(options.reviewThreshold ?? 0.68);
+  const rankedCandidates = rankPreparedTrackCandidates(source, preparedCandidates);
+  const best = rankedCandidates[0] || null;
+  const runnerUp = rankedCandidates[1] || null;
+  const scoreMargin = best && runnerUp ? round(best.score.total - runnerUp.score.total) : null;
+  const fingerprintCandidates = rankedCandidates.filter((candidate) => candidate.score.recordingFingerprint);
+  const ambiguousFingerprint = Boolean(
+    options.allowAmbiguousFingerprint !== true
+    && best?.score.recordingFingerprint
+    && fingerprintCandidates.length > 1
+  );
+  const closeCompetitor = hasCloseCompetingCandidate(
+    source.track,
+    best,
+    runnerUp,
+    reviewThreshold,
+    options,
+  );
+  const ambiguityReason = ambiguousFingerprint
+    ? 'multiple_metadata_identity_candidates'
+    : closeCompetitor ? 'close_competing_candidates' : '';
+  const hasIdentityEvidence = Boolean(
+    best
+    && (
+      best.score.isrc === 1
+      || best.score.recordingFingerprint
+      || best.score.appleEquivalentFingerprint
+      || best.score.catalogTrackFingerprint
+      || (
+        best.score.title >= 0.8
+        && best.score.artist >= 0.8
+        && best.score.duration >= 0.75
+      )
+    )
+  );
+  const decisionReason = ambiguityReason || (
+    best?.score.total >= threshold && !hasIdentityEvidence
+      ? 'insufficient_identity_evidence'
+      : ''
+  );
+  const safeMatch = Boolean(
+    best
+    && best.score.total >= threshold
+    && !best.score.versionCueConflict
+    && !best.score.isrcConflict
+    && !decisionReason
+  );
+
+  return {
+    status: safeMatch ? 'match' : best && best.score.total >= reviewThreshold ? 'review' : 'missing',
+    best,
+    runnerUp,
+    scoreMargin,
+    candidateCount: rankedCandidates.length,
+    ambiguityReason: decisionReason,
+    rankedCandidates,
+  };
+}
+
+function rankPreparedTrackCandidates(source, preparedCandidates) {
+  const pool = selectCandidatePool(source, preparedCandidates);
+  return pool
+    .map((candidate) => ({
+      track: candidate.track,
+      score: scoreTrack(source.track, candidate.track),
+      providerRank: candidate.providerRank,
+    }))
+    .sort((left, right) => compareCandidateScores(left, right));
+}
+
+function compareCandidateScores(left, right) {
+  return (
+    right.score.isrc - left.score.isrc
+    || Number(right.score.catalogTrackFingerprint) - Number(left.score.catalogTrackFingerprint)
+    || Number(right.score.appleEquivalentFingerprint) - Number(left.score.appleEquivalentFingerprint)
+    || Number(right.score.recordingFingerprint) - Number(left.score.recordingFingerprint)
+    || right.score.total - left.score.total
+    || left.providerRank - right.providerRank
+  );
+}
+
+function hasCloseCompetingCandidate(source, best, runnerUp, reviewThreshold, options) {
+  const minimumMargin = Number(options.minimumScoreMargin || 0);
+  if (!best || !runnerUp || !Number.isFinite(minimumMargin) || minimumMargin <= 0) return false;
+  if (best.score.isrc === 1 || best.score.appleEquivalentFingerprint || best.score.catalogTrackFingerprint) return false;
+  if (runnerUp.score.total < reviewThreshold) return false;
+  if (runnerUp.score.versionCueConflict || runnerUp.score.isrcConflict) return false;
+  if (best.score.total - runnerUp.score.total >= minimumMargin) return false;
+  return !interchangeableRecordingCandidates(source, best, runnerUp);
+}
+
+function interchangeableRecordingCandidates(source, left, right) {
+  if (!left.score.recordingFingerprint || !right.score.recordingFingerprint) return false;
+  if (left.score.versionCueConflict || right.score.versionCueConflict) return false;
+  if (left.score.isrcConflict || right.score.isrcConflict) return false;
+  return scoreTrack(left.track, right.track).recordingFingerprint
+    || (
+      bestFieldSimilarity(source, left.track, 'title') >= 0.95
+      && bestFieldSimilarity(source, right.track, 'title') >= 0.95
+      && artistScore(source, left.track) >= 0.95
+      && artistScore(source, right.track) >= 0.95
+      && durationScore(left.track.durationMs, right.track.durationMs) >= 0.92
+    );
+}
+
+function prepareCandidateTrack(track, providerRank = 0) {
   const titleValues = fieldValues(track, 'title');
   const artistValuesList = artistValues(track);
   return {
@@ -74,6 +188,7 @@ function prepareCandidateTrack(track) {
     artistSet: new Set(artistValuesList),
     normalizedTitle: track.normalized?.title || '',
     normalizedArtist: track.normalized?.artist || '',
+    providerRank,
   };
 }
 
@@ -160,8 +275,10 @@ function scoreTrack(a, b) {
   const versionCueConflicts = authoritativeFingerprint ? [] : rawVersionCueConflicts;
   const versionCueConflict = versionCueConflicts.length > 0;
   const differentIsrc = Boolean(a.isrc && b.isrc && a.isrc !== b.isrc);
+  const durationDeltaMs = durationDifferenceMs(a.durationMs, b.durationMs);
   const recordingFingerprint = authoritativeFingerprint || (
     title === 1
+    && artist >= 0.8
     && album === 1
     && duration === 1
     && versionCueConflicts.length === 0
@@ -170,6 +287,12 @@ function scoreTrack(a, b) {
   let total = clamp(title * 0.52 + artist * 0.28 + duration * 0.15 + album * 0.05, 0, 1);
   if (isrc !== 1 && title < 0.7 && album < 0.5) total = Math.min(total, 0.67);
   if (isrc !== 1 && duration === 0.15 && !authoritativeFingerprint) total = Math.min(total, 0.67);
+  if (
+    isrc !== 1
+    && durationDeltaMs !== null
+    && durationDeltaMs > 5000
+    && !authoritativeFingerprint
+  ) total = Math.min(total, 0.81);
   if (isrc === 1) total = Math.max(total, 0.98);
   if (recordingFingerprint) total = Math.max(total, 0.9);
   return {
@@ -407,6 +530,12 @@ function durationScore(a, b) {
   if (diff <= 10000) return 0.75;
   if (diff <= 20000) return 0.45;
   return 0.15;
+}
+
+function durationDifferenceMs(a, b) {
+  const left = Number(a || 0);
+  const right = Number(b || 0);
+  return left > 0 && right > 0 ? Math.abs(left - right) : null;
 }
 
 function similarity(a, b) {

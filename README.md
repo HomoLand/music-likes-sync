@@ -43,7 +43,7 @@ Not release-complete yet:
 - `add` means Apple has a track that the target does not have; the target catalog ID must be resolved first.
 - `remove` means the target has a track that Apple does not have.
 - `review` means the matcher found a low-confidence, duplicate, version-sensitive, or reverse-only relationship that should not be mutated automatically.
-- Deterministic matching combines exact recording fingerprints with Apple catalog equivalents, provider album positions and release dates, full Chinese/Japanese character folding, and explicit aliases. One-to-two-second duration drift is treated as provider rounding, while conflicting version cues or ISRCs still block automatic merging.
+- Deterministic matching builds target-localized search queries from trusted Apple storefront equivalents and explicit aliases, ranks the full candidate set, and combines artist identity, recording fingerprints, provider album positions, release dates, full Chinese/Japanese character folding, and score margins. One-to-two-second duration drift is treated as provider rounding, while conflicting version cues or ISRCs still block automatic merging.
 - AI reviews only the remaining ambiguous relationships from minimized evidence. Its output is an auditable suggestion and cannot bypass ISRC, version, duplicate, write, or deletion gates.
 - Manual `review` decisions are stored locally. `keep` treats the reviewed target as the Apple match; `separate` rebuilds the plan into add and / or remove operations while preserving the destructive confirmation gate.
 - Deletion is destructive and requires both a dry-run and an explicit confirmation string: `REMOVE QQ` or `REMOVE NETEASE`.
@@ -225,6 +225,8 @@ Current automated coverage includes:
 - Mirror plan construction.
 - Low-confidence and duplicate-match safety behavior.
 - Mirror add resolution.
+- Human-labeled deterministic match evaluation with zero unsafe auto-accepts.
+- Read-only live match shadow runs and cross-recording target-collision audits.
 - Dry-run and destructive-confirmation contracts.
 - Add-only execution separation from delete execution.
 - Mirror run idempotency keys and operation-key propagation.

@@ -374,7 +374,22 @@ export function applyMirrorReviewDecisions(operations = [], decisionState = {}) 
   const result = [];
   for (const operation of operations) {
     if (operation.action !== 'review') {
-      result.push(operation);
+      const key = operation.decisionKey || mirrorReviewDecisionKey(operation);
+      const decision = decisions[key];
+      const action = normalizeMirrorReviewDecisionAction(decision?.action);
+      if (operation.action === 'keep' && action === 'keep') {
+        result.push({
+          ...operation,
+          decisionKey: key,
+          manualDecision: compactManualDecision(operation, {
+            ...decision,
+            key,
+            action,
+          }),
+        });
+      } else {
+        result.push(operation);
+      }
       continue;
     }
 
@@ -490,7 +505,7 @@ function compactManualDecision(operation, decision) {
     action: decision.action || '',
     decidedAt: decision.decidedAt || decision.updatedAt || '',
     note: decision.note || '',
-    originalAction: 'review',
+    originalAction: operation.action || 'review',
     originalReason: operation.reason || '',
     source: decision.source || 'manual',
     aiBatchId: decision.aiBatchId || '',
