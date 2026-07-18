@@ -368,6 +368,7 @@ export async function resolveAdditions(options: {
   targets?: PlatformKey[];
   resolveLimit?: number;
   searchLimit?: number;
+  refresh?: boolean;
 } = {}): Promise<ResolveAdditionsResult> {
   const response = await fetch('/api/sync/resolve-additions', {
     method: 'POST',
@@ -378,6 +379,7 @@ export async function resolveAdditions(options: {
       bucket: options.bucket || 'will_add',
       resolveLimit: options.resolveLimit || 50,
       searchLimit: options.searchLimit || 12,
+      refresh: options.refresh === true,
       previewLimit: 30,
     }),
   });
@@ -497,6 +499,7 @@ export async function applyIdentityDecision(options: {
     previewId: stringValue(data.previewId),
     action: stringValue(data.action),
     decisionKey: stringValue(data.decisionKey),
+    resolutionOperationIds: arrayValue(data.resolutionOperationIds).map(stringValue).filter(Boolean),
     updateMode: stringValue(data.updateMode),
     preview: normalizePreviewDetails(data, options.bucket || 'needs_confirmation'),
   };

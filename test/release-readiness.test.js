@@ -524,6 +524,8 @@ describe('release readiness metadata', () => {
     assert.match(reactScreen, /audition-decision/);
     assert.match(reactScreen, /可以，保留/);
     assert.match(reactScreen, /不可以，替换/);
+    assert.match(reactScreen, /查找候选/);
+    assert.match(reactScreen, /还缺少目标平台版本/);
     assert.match(reactScreen, /不会自动播放/);
     assert.match(reactScreen, /继续加载/);
     assert.match(reactScreen, /仅补回缺失歌曲/);

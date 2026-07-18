@@ -394,16 +394,18 @@ export function App() {
     }
   }
 
-  async function handleResolveAdditions() {
+  async function handleResolveAdditions(operationIds?: string[], refresh = false) {
     setSyncBusy(true);
     setSyncError('');
-    setSyncMessage('正在查找目标平台对应歌曲...');
+    setSyncMessage(operationIds?.length === 1 ? '正在为这首歌查找目标平台候选...' : '正在查找目标平台对应歌曲...');
     try {
       const result = await resolveAdditions({
         bucket: activePreviewBucket,
+        operationIds,
         targets: WRITE_TARGETS,
-        resolveLimit: 50,
+        resolveLimit: operationIds?.length || 50,
         searchLimit: 12,
+        refresh,
       });
       setPreviewDetails(result.preview);
       setAppStateFromPreview(result.preview, result.preview.nextCursor ? undefined : result.preview.buckets);
@@ -537,6 +539,25 @@ export function App() {
       });
       setPreviewDetails(result.preview);
       setAppStateFromPreview(result.preview);
+      if (action === 'separate' && result.resolutionOperationIds.length) {
+        setSyncMessage('版本判断已保存，正在目标平台重新查找对应版本...');
+        try {
+          const resolution = await resolveAdditions({
+            bucket: activePreviewBucket,
+            operationIds: result.resolutionOperationIds,
+            targets: WRITE_TARGETS,
+            resolveLimit: result.resolutionOperationIds.length,
+            searchLimit: 12,
+          });
+          setPreviewDetails(resolution.preview);
+          setAppStateFromPreview(resolution.preview, resolution.preview.nextCursor ? undefined : resolution.preview.buckets);
+          setSyncMessage(`版本判断已保存。${addResolutionMessage(resolution.preview)}`);
+        } catch (error) {
+          setSyncError(`版本判断已保存，但候选查找失败：${errorMessage(error)}`);
+          setSyncMessage('可在该条目点击“重新查找候选”继续。');
+        }
+        return;
+      }
       const message = action === 'keep'
         ? '已保留目标平台现有版本：它会代表 Apple Music 源歌曲，不产生新增或删除。'
         : action === 'separate'

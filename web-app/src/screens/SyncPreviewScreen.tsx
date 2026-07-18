@@ -77,7 +77,7 @@ interface ScreenProps {
   onConfirmDeletions: (confirmText: string) => Promise<boolean>;
   onExecuteAdditions: (dryRun: boolean) => void;
   onExecuteDeletions: () => void;
-  onResolveAdditions: () => void;
+  onResolveAdditions: (operationIds?: string[], refresh?: boolean) => void;
   onReviewItems: (operationIds?: string[]) => void;
   onRunCheck: () => void;
   onSaveBaseline: () => void;
@@ -132,7 +132,14 @@ export function SyncPreviewScreen({
   const buckets = previewDetails?.buckets.length ? previewDetails.buckets : appState?.preview.buckets || [];
   const current = buckets.find((bucket) => bucket.id === activeBucket) || buckets[0];
   const items = previewDetails?.items || [];
-  const visibleCandidates = items.filter((item) => item.action === 'add' && (item.candidateTarget || item.resolvedTarget));
+  const visibleCandidates = items.filter((item) => item.action === 'add' && (item.candidateTarget || item.resolvedTarget || item.alternatives.length));
+  const candidateSearchItems = items.filter((item) => (
+    item.action === 'add'
+    && !item.candidateTarget
+    && !item.resolvedTarget
+    && !item.alternatives.length
+    && (item.status === 'needs_resolution' || item.status === 'not_found')
+  ));
   const reviewableItems = items.filter((item) => !item.aiReview && (
     (item.action === 'add' && Boolean(item.candidateTarget))
     || (item.action === 'review' && Boolean(item.sourceTrack) && Boolean(item.targetTrack || item.candidateTarget))
@@ -237,6 +244,7 @@ export function SyncPreviewScreen({
                     onApplyAdditionDecision={onApplyAdditionDecision}
                     onApplyIdentityDecision={onApplyIdentityDecision}
                     onApplyTombstoneDecision={onApplyTombstoneDecision}
+                    onResolveAdditions={onResolveAdditions}
                     onReviewItems={onReviewItems}
                     onSelect={() => setSelectedId(item.id)}
                     selected={(selectedItem?.id || '') === item.id}
@@ -266,6 +274,7 @@ export function SyncPreviewScreen({
           onAuditionPlaybackChange={onAuditionPlaybackChange}
           onApplyAdditionDecision={onApplyAdditionDecision}
           onApplyIdentityDecision={onApplyIdentityDecision}
+          onResolveAdditions={onResolveAdditions}
           onReviewItems={onReviewItems}
           previewId={previewDetails?.previewId || ''}
           syncBusy={syncBusy}
@@ -290,6 +299,7 @@ export function SyncPreviewScreen({
         onResolveAdditions={onResolveAdditions}
         onSaveBaseline={onSaveBaseline}
         previewDetails={previewDetails}
+        candidateSearchItems={candidateSearchItems}
         syncBusy={syncBusy}
         visibleCandidates={visibleCandidates.length}
         writeReadiness={writeReadiness}
@@ -495,6 +505,7 @@ function PreviewItem({
   onApplyAdditionDecision,
   onApplyIdentityDecision,
   onApplyTombstoneDecision,
+  onResolveAdditions,
   onReviewItems,
   onSelect,
   selected,
@@ -511,6 +522,7 @@ function PreviewItem({
     platform?: string;
     confirmText?: string;
   }) => void;
+  onResolveAdditions: (operationIds?: string[], refresh?: boolean) => void;
   onReviewItems: (operationIds?: string[]) => void;
   onSelect: () => void;
   selected: boolean;
@@ -535,8 +547,8 @@ function PreviewItem({
         </div>
       </div>
       <PlatformStack platforms={item.sourcePlatforms} />
-      <CandidateCell track={qqMatch} fallback={item.targetPlatforms.includes('qq') ? '待匹配' : '无需写入'} />
-      <CandidateCell track={neteaseMatch} fallback={item.targetPlatforms.includes('netease') ? '待匹配' : '无需写入'} />
+      <CandidateCell track={qqMatch} fallback={candidateFallback(item, 'qq')} />
+      <CandidateCell track={neteaseMatch} fallback={candidateFallback(item, 'netease')} />
       <span className={`score-pill ${scoreTone(item.score)}`}>
         {typeof item.score === 'number' ? `${Math.round(item.score * 100)}%` : '-'}
       </span>
@@ -550,7 +562,9 @@ function PreviewItem({
         onApplyAdditionDecision={onApplyAdditionDecision}
         onApplyIdentityDecision={onApplyIdentityDecision}
         onApplyTombstoneDecision={onApplyTombstoneDecision}
+        onResolveAdditions={onResolveAdditions}
         onReviewItems={onReviewItems}
+        onSelect={onSelect}
         syncBusy={syncBusy}
       />
     </article>
@@ -562,7 +576,9 @@ function RowActions({
   onApplyAdditionDecision,
   onApplyIdentityDecision,
   onApplyTombstoneDecision,
+  onResolveAdditions,
   onReviewItems,
+  onSelect,
   syncBusy,
 }: {
   item: PreviewTrackItem;
@@ -575,7 +591,9 @@ function RowActions({
     platform?: string;
     confirmText?: string;
   }) => void;
+  onResolveAdditions: (operationIds?: string[], refresh?: boolean) => void;
   onReviewItems: (operationIds?: string[]) => void;
+  onSelect: () => void;
   syncBusy: boolean;
 }) {
   if (item.tombstoneKey) {
@@ -617,6 +635,43 @@ function RowActions({
       </div>
     );
   }
+  if (item.action === 'add' && !item.candidateTarget && !item.resolvedTarget && !item.alternatives.length) {
+    const retry = item.status === 'not_found';
+    return (
+      <div className="row-actions candidate-search-actions">
+        <button
+          className="accept"
+          disabled={syncBusy}
+          onClick={() => onResolveAdditions([item.id], retry)}
+          type="button"
+        >
+          <Search size={13} />{retry ? '重新查找' : '查找候选'}
+        </button>
+        <button disabled={syncBusy} onClick={() => onApplyAdditionDecision(item.id, 'skip')} type="button">跳过</button>
+        {item.identityDecision ? (
+          <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'clear')} type="button">撤销判断</button>
+        ) : null}
+      </div>
+    );
+  }
+  if (item.action === 'add' && !item.candidateTarget && item.alternatives.length) {
+    return (
+      <div className="row-actions candidate-search-actions">
+        <button
+          className="accept"
+          disabled={syncBusy}
+          onClick={onSelect}
+          type="button"
+        >
+          <Headphones size={13} />查看 {item.alternatives.length} 个候选
+        </button>
+        <button disabled={syncBusy} onClick={() => onApplyAdditionDecision(item.id, 'skip')} type="button">跳过</button>
+        {item.identityDecision ? (
+          <button disabled={syncBusy} onClick={() => onApplyIdentityDecision(item.id, 'clear')} type="button">撤销判断</button>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div className="row-actions">
       <button
@@ -627,8 +682,8 @@ function RowActions({
       >
         接受
       </button>
-      <button disabled={syncBusy || !item.alternatives.length} onClick={() => onApplyAdditionDecision(item.id, 'select_alternative', 0)} type="button">
-        换一个
+      <button disabled={syncBusy || !item.alternatives.length} onClick={onSelect} type="button">
+        查看候选
       </button>
       <button disabled={syncBusy} onClick={() => onApplyAdditionDecision(item.id, 'skip')} type="button">跳过</button>
       {item.identityDecision ? (
@@ -647,6 +702,7 @@ function MatchInspector({
   onAuditionPlaybackChange,
   onApplyAdditionDecision,
   onApplyIdentityDecision,
+  onResolveAdditions,
   onReviewItems,
   previewId,
   syncBusy,
@@ -655,6 +711,7 @@ function MatchInspector({
   onAuditionPlaybackChange: (state: AuditionPlaybackState | null) => void;
   onApplyAdditionDecision: (operationId: string, action: AdditionDecisionAction, alternativeIndex?: number) => void;
   onApplyIdentityDecision: (operationId: string, action: IdentityDecisionAction) => void;
+  onResolveAdditions: (operationIds?: string[], refresh?: boolean) => void;
   onReviewItems: (operationIds?: string[]) => void;
   previewId: string;
   syncBusy: boolean;
@@ -687,6 +744,28 @@ function MatchInspector({
           <span>目标平台里的候选，能否代表上面这首 Apple Music 喜欢歌曲？每个决定只影响它所在的平台。</span>
         </div>
       ) : null}
+      {item.action === 'add' && !item.candidateTarget && !item.resolvedTarget && !item.alternatives.length ? (
+        <div className="identity-task-intro candidate-task-intro">
+          <strong>还缺少目标平台版本</strong>
+          <span>
+            你已确认原候选不是同一版本。让系统重新搜索
+            {item.targetPlatforms.map(platformLabel).join('、') || '目标平台'}，找到后再试听选择；找不到也可以跳过。
+          </span>
+          <button
+            disabled={syncBusy}
+            onClick={() => onResolveAdditions([item.id], item.status === 'not_found')}
+            type="button"
+          >
+            <Search size={14} />{item.status === 'not_found' ? '重新查找候选' : '查找候选'}
+          </button>
+        </div>
+      ) : null}
+      {item.blockedReason === 'candidate_target_conflict' ? (
+        <div className="identity-task-intro candidate-task-intro conflict-task-intro">
+          <strong>这个候选已被另一首源歌曲占用</strong>
+          <span>请试听下面的备选并为这首歌选择不同版本；如果两首源歌曲其实应共用同一录音，请撤销之前的“不同版本”判断。</span>
+        </div>
+      ) : null}
       <div className="audition-section" data-testid="react-version-audition">
         <div className="audition-heading">
           <span><Headphones size={15} />版本试听对比</span>
@@ -714,7 +793,9 @@ function MatchInspector({
       </div>
       <div className="evidence-list">
         <h3>证据</h3>
-        {(item.evidence.length ? item.evidence : ['本地标题相似', '等待候选查找']).slice(0, 5).map((entry) => (
+        {(item.blockedReason
+          ? [item.blockedReason, ...item.evidence]
+          : item.evidence.length ? item.evidence : ['本地标题相似', '等待候选查找']).slice(0, 5).map((entry) => (
           <div key={entry}>
             <Check size={15} />
             <span>{evidenceLabel(entry)}</span>
@@ -1049,6 +1130,7 @@ function VersionAudition({
 }
 
 function WriteActionBar({
+  candidateSearchItems,
   lastConvergence,
   onCheckConvergence,
   onConfirmDeletions,
@@ -1061,12 +1143,13 @@ function WriteActionBar({
   visibleCandidates,
   writeReadiness,
 }: {
+  candidateSearchItems: PreviewTrackItem[];
   lastConvergence: ConvergenceSummary | null;
   onCheckConvergence: () => void;
   onConfirmDeletions: (confirmText: string) => Promise<boolean>;
   onExecuteAdditions: (dryRun: boolean) => void;
   onExecuteDeletions: () => void;
-  onResolveAdditions: () => void;
+  onResolveAdditions: (operationIds?: string[], refresh?: boolean) => void;
   onSaveBaseline: () => void;
   previewDetails: SyncPreviewDetails | null;
   syncBusy: boolean;
@@ -1078,6 +1161,9 @@ function WriteActionBar({
   const expectedDelete = 'DELETE FROM SELECTED TARGETS';
   const hasPreview = Boolean(previewDetails);
   const canSaveBaseline = Boolean(lastConvergence?.converged || lastConvergence?.status === 'converged');
+  const pendingSearchItems = candidateSearchItems.filter((item) => item.status === 'needs_resolution');
+  const requestedSearchItems = pendingSearchItems.length ? pendingSearchItems : candidateSearchItems;
+  const refreshSearch = pendingSearchItems.length === 0 && requestedSearchItems.length > 0;
 
   async function handleConfirmDeletion() {
     const ok = await onConfirmDeletions(deleteConfirmText);
@@ -1102,9 +1188,20 @@ function WriteActionBar({
         <ShieldAlert size={20} />
         <span>保存同步基线<small>用于后续变化对比</small></span>
       </button>
-      <button disabled={syncBusy || !previewDetails} onClick={onResolveAdditions} type="button">
+      <button
+        disabled={syncBusy || !previewDetails || !requestedSearchItems.length}
+        onClick={() => onResolveAdditions(requestedSearchItems.map((item) => item.id), refreshSearch)}
+        type="button"
+      >
         <Search size={20} />
-        <span>查找对应歌曲<small>{visibleCandidates ? `${visibleCandidates} 个可见候选` : '从目标平台查找'}</small></span>
+        <span>
+          {refreshSearch ? '重新查找未命中' : requestedSearchItems.length ? '查找缺失候选' : '候选已处理'}
+          <small>
+            {requestedSearchItems.length
+              ? `${requestedSearchItems.length} 首等待搜索`
+              : visibleCandidates ? `${visibleCandidates} 个候选可判断` : '当前页无需查找'}
+          </small>
+        </span>
       </button>
       <div className="delete-confirm-inline">
         <input
@@ -1276,15 +1373,16 @@ function buildAuditionVersions(item: PreviewTrackItem): AuditionVersion[] {
     const role: TrackMediaRole = match.resolvedTarget ? 'resolved' : match.candidateTarget ? 'candidate' : 'target';
     if (primary) {
       const accepted = match.addDecision?.action === 'accept_candidate';
+      const targetConflict = match.operationId === item.id && item.blockedReason === 'candidate_target_conflict';
       versions.push({
         key: `${match.operationId}:${role}`,
         operationId: match.operationId,
         role,
-        label: `${platformLabel(targetPlatform)} ${role === 'target' ? '现有版本' : '当前候选'}`,
+        label: `${platformLabel(targetPlatform)} ${targetConflict ? '冲突候选' : role === 'target' ? '现有版本' : '当前候选'}`,
         track: primary,
         platform: targetPlatform,
         score: match.score,
-        selected: role === 'resolved' || accepted,
+        selected: !targetConflict && (role === 'resolved' || accepted),
         canChoose: match.action === 'add' && role === 'candidate',
         aiReviewed: Boolean(match.aiReview),
         canDecideIdentity: match.action === 'review' && !match.identityDecision,
@@ -1415,6 +1513,13 @@ function candidateForPlatform(item: PreviewTrackItem, platform: PlatformKey): Tr
   return candidates.find((track) => track.platform === platform) || null;
 }
 
+function candidateFallback(item: PreviewTrackItem, platform: PlatformKey): string {
+  if (!item.targetPlatforms.includes(platform)) return '无需写入';
+  if (item.status === 'not_found') return '未找到';
+  if (item.action === 'add' && !item.candidateTarget && !item.resolvedTarget && !item.alternatives.length) return '等待查找';
+  return '待匹配';
+}
+
 function filterTombstoneItems(items: PreviewTrackItem[], filter: TombstoneFilter): PreviewTrackItem[] {
   if (filter === 'all') return items;
   if (filter === 'decided') return items.filter((item) => Boolean(item.tombstoneAction));
@@ -1484,6 +1589,7 @@ function evidenceLabel(entry: string): string {
     source_uncertain_match: '来源匹配待确认',
     target_uncertain_orphan: '目标曲目归属待确认',
     duplicate_target_match: '目标平台存在多个候选',
+    candidate_target_conflict: '同一目标歌曲被多个源条目占用',
     possible_duplicate_target: '目标平台可能有重复版本',
     reverse_only_match: '仅目标平台反向命中',
     isrc: 'ISRC 证据',

@@ -1927,11 +1927,21 @@ async function performProductIdentityDecision(options = {}) {
     bucket: options.bucket || 'needs_confirmation',
     limit: options.previewLimit || 30,
   });
+  const resolutionOperationIds = nextPlan.operations
+    .filter((operation) => (
+      operation.decisionKey === key
+      && operation.action === 'add'
+      && operation.status === 'needs_resolution'
+      && !operation.targetTrack
+      && !operation.resolvedTargetTrack
+    ))
+    .map((operation) => operation.id);
   return {
     previewId: productPreviewId(nextPlan),
     action,
     decisionKey: key,
     decision: decisions.items[key] || null,
+    resolutionOperationIds,
     counts: productPreviewCounts(nextPlan),
     blocked: productPreviewBlocked(nextPlan),
     updateMode: 'incremental',

@@ -655,6 +655,7 @@ Rules:
 - A `separate` judgment cannot execute deletion. The resulting removal remains behind dry-run, live-validation, recovery-point, and explicit deletion-confirmation gates.
 - The stable `decisionKey` is derived from review reason plus source / target identities, so the decision survives preview regeneration and operation-id changes.
 - Identity-decision mutations are serialized locally to avoid lost updates from rapid repeated clicks. The response reports `updateMode = "incremental"` and returns the requested preview bucket directly from the updated in-memory plan.
+- A `separate` response also returns `resolutionOperationIds`. The web client immediately searches those target-platform additions and shows an explicit per-row retry when no candidate is available; candidate search is read-only and does not execute playlist writes.
 
 ### `POST /api/sync/confirm-deletions`
 

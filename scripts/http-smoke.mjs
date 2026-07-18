@@ -330,9 +330,27 @@ try {
       previewLimit: 20,
     });
     assert(clearedIdentity.ok, 'product identity decision should support undo');
-    assert(clearedIdentity.data?.preview?.items?.some((item) => item.action === 'review'), 'undo should restore the identity review queue');
+    const restoredIdentity = clearedIdentity.data?.preview?.items?.find((item) => item.action === 'review');
+    assert(restoredIdentity?.id, 'undo should restore the identity review queue');
+    const separatedIdentity = await postJson('/api/sync/identity-decision', {
+      operationId: restoredIdentity.id,
+      action: 'separate',
+      bucket: 'needs_confirmation',
+      previewLimit: 20,
+    });
+    assert(separatedIdentity.data?.resolutionOperationIds?.length === 1, 'different-version decisions should expose the add operation that needs candidate search');
+    const pendingIdentityAddId = separatedIdentity.data.resolutionOperationIds[0];
+    assert(separatedIdentity.data?.preview?.items?.some((item) => item.id === pendingIdentityAddId && item.status === 'needs_resolution'), 'candidate-search operation should remain visible in the review queue');
+    const clearedSeparateIdentity = await postJson('/api/sync/identity-decision', {
+      operationId: pendingIdentityAddId,
+      action: 'clear',
+      bucket: 'needs_confirmation',
+      previewLimit: 20,
+    });
+    const restoredSeparateIdentity = clearedSeparateIdentity.data?.preview?.items?.find((item) => item.id === pendingIdentityAddId && item.action === 'review');
+    assert(restoredSeparateIdentity?.id, 'undo should restore a review after a different-version decision');
     const identityPlan = JSON.parse(await fs.readFile(path.join(tempRoot, 'data', 'sync-preview.json'), 'utf8'));
-    const identityOperation = identityPlan.operations.find((item) => item.id === identityReview.id);
+    const identityOperation = identityPlan.operations.find((item) => item.id === restoredSeparateIdentity.id);
     assert(identityOperation?.decisionKey, 'identity review operation should retain a stable decision key');
     await fs.writeFile(path.join(tempRoot, 'data', 'mirror-ai-suggestions.json'), JSON.stringify({
       version: 1,
