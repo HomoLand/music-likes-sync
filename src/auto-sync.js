@@ -89,6 +89,10 @@ export function nextAutoSyncRunAt(state, from = new Date().toISOString()) {
   return new Date(Date.parse(from) + intervalMinutes * 60 * 1000).toISOString();
 }
 
+export function autoSyncRequiresBaseline(state, policy) {
+  return state?.requireBaseline !== false && String(policy || '').trim() !== 'canonical_mirror';
+}
+
 export function isAutoSyncDue(state, now = new Date().toISOString()) {
   if (!state?.enabled) return false;
   const next = Date.parse(state.nextRunAt || '');

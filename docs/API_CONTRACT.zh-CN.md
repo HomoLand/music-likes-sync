@@ -798,7 +798,7 @@ Purpose:
 Rules:
 
 - Responses must not expose cookies, API keys, playlist ids, provider track ids, raw snapshots, or the execution-lock token.
-- Readiness must explain missing baseline, stale / missing snapshots, read-only policy, and missing target live validation in ordinary-user language.
+- Readiness must explain a missing required baseline, stale / missing snapshots, read-only policy, and missing target live validation in ordinary-user language. `readiness.baseline` exposes only `exists`, `savedAt`, and policy-scoped `required` fields.
 
 ### `POST /api/auto-sync`
 
@@ -823,7 +823,7 @@ Request:
 
 Rules:
 
-- Enabling fails closed unless the baseline, policy, snapshot freshness, and live-validation readiness gates all pass.
+- Enabling fails closed unless the policy, snapshot freshness, live-validation, and any policy-required baseline gates all pass. `canonical_mirror` does not require a historical baseline; baseline-dependent policies still do when `requireBaseline` is true.
 - Apple is not an accepted target.
 - The interval is limited to 15 minutes through 24 hours.
 - This endpoint saves local settings only; it does not run a sync or mutate a provider.

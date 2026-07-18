@@ -18,6 +18,7 @@ export async function acquireRunLock(filePath, options = {}) {
   if (!filePath) throw new Error('Run lock path is required.');
   const clock = options.clock || (() => Date.now());
   const staleAfterMs = positiveInteger(options.staleAfterMs, DEFAULT_RUN_LOCK_STALE_MS);
+  const isProcessAlive = options.isProcessAlive || processIsAlive;
   const heartbeatMs = options.heartbeatMs === 0
     ? 0
     : positiveInteger(options.heartbeatMs, DEFAULT_RUN_LOCK_HEARTBEAT_MS);
@@ -41,12 +42,42 @@ export async function acquireRunLock(filePath, options = {}) {
       return createRunLockHandle(filePath, token, startedAt, heartbeatMs);
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
+      if (await reclaimOrphanedRunLock(filePath, isProcessAlive)) continue;
       if (await reclaimStaleRunLock(filePath, staleAfterMs, clock())) continue;
       const owner = await readRunLockOwner(filePath);
       throw new RunLockError('Another auto-sync run owns the execution lock.', owner);
     }
   }
   throw new RunLockError('Could not acquire the auto-sync execution lock.', await readRunLockOwner(filePath));
+}
+
+async function reclaimOrphanedRunLock(filePath, isProcessAlive) {
+  let firstStat;
+  let firstOwner;
+  try {
+    [firstStat, firstOwner] = await Promise.all([
+      fs.stat(filePath),
+      readRunLockOwner(filePath),
+    ]);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    throw error;
+  }
+  if (!Number.isInteger(firstOwner?.pid) || await isProcessAlive(firstOwner.pid)) return false;
+
+  const [secondStat, secondOwner] = await Promise.all([
+    fs.stat(filePath),
+    readRunLockOwner(filePath),
+  ]);
+  if (secondStat.mtimeMs !== firstStat.mtimeMs || secondOwner?.token !== firstOwner?.token) return false;
+  if (!Number.isInteger(secondOwner?.pid) || await isProcessAlive(secondOwner.pid)) return false;
+  try {
+    await fs.unlink(filePath);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    throw error;
+  }
 }
 
 async function createRunLockHandle(filePath, token, startedAt, heartbeatMs) {
@@ -132,4 +163,13 @@ async function readRunLockOwner(filePath) {
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
 }

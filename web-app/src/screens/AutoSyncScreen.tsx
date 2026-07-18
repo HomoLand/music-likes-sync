@@ -111,6 +111,8 @@ export function AutoSyncScreen({ appState, onRefresh }: AutoSyncScreenProps) {
 
   const automation = state?.automation || appState?.autoSync;
   const readiness = state?.readiness;
+  const baselineRequired = readiness?.baseline.required ?? readiness?.policy.id !== 'canonical_mirror';
+  const baselineReady = !baselineRequired || Boolean(readiness?.baseline.exists);
   const canExecute = Boolean(automation?.enabled && readiness?.ok && autoExecuteAdditions && !busy);
 
   return (
@@ -183,7 +185,11 @@ export function AutoSyncScreen({ appState, onRefresh }: AutoSyncScreenProps) {
           </div>
 
           <div className="automation-readiness-list" data-testid="react-auto-sync-readiness">
-            <ReadinessItem ok={Boolean(readiness?.baseline.exists)} label="同步基线" detail={readiness?.baseline.exists ? '已保存' : '需要先完成收敛同步'} />
+            <ReadinessItem
+              detail={!baselineRequired ? 'Apple 可信源模式无需基线' : readiness?.baseline.exists ? '已保存' : '需要先完成收敛同步'}
+              label="同步基线"
+              ok={baselineReady}
+            />
             <ReadinessItem ok={snapshotReady(readiness, 'apple')} label="Apple Music" detail={snapshotDetail(readiness, 'apple')} />
             <ReadinessItem ok={snapshotReady(readiness, 'qq')} label="QQ 音乐" detail={snapshotDetail(readiness, 'qq')} />
             <ReadinessItem ok={snapshotReady(readiness, 'netease')} label="网易云音乐" detail={snapshotDetail(readiness, 'netease')} />

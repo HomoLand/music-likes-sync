@@ -23,7 +23,7 @@ Stable today:
 - Refresh target snapshots and regenerate the mirror plan to produce post-run convergence checks.
 - Run live provider validation with disposable-playlist safeguards that choose a candidate absent from the target playlist and verify snapshots after add and remove.
 - Surface stale snapshots and post-run convergence status in the Web UI.
-- Configure guarded automatic sync from a dedicated screen: refresh snapshots, execute ready additions, keep deletion signals pending for manual confirmation, and audit bounded run history.
+- Configure guarded automatic sync from a dedicated screen: Apple-canonical mirrors can start without a historical baseline, while baseline-dependent policies remain gated; ready additions can execute automatically, deletion signals stay pending for manual confirmation, and run history is bounded and sanitized.
 - Validate local mirror state with `npm run check:state`.
 - Keep GitHub Actions release gates aligned with `npm run check:ci`.
 - Run local tests and syntax checks with `npm run verify`.

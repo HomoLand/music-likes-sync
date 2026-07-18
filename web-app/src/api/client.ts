@@ -995,6 +995,7 @@ function normalizeAutoSyncStateResult(raw: Record<string, unknown>): AutoSyncSta
   const baseline = isRecord(readiness.baseline) ? readiness.baseline : {};
   const liveValidation = isRecord(readiness.liveValidation) ? readiness.liveValidation : {};
   const history = arrayValue(raw.history).filter(isRecord).map(normalizeAutoSyncRun);
+  const policyId = stringValue(policy.id || 'canonical_mirror');
   return {
     automation: normalizeAutoSyncSummary(automation),
     readiness: {
@@ -1005,12 +1006,13 @@ function normalizeAutoSyncStateResult(raw: Record<string, unknown>): AutoSyncSta
         message: stringValue(reason.message),
       })),
       policy: {
-        id: stringValue(policy.id || 'canonical_mirror'),
+        id: policyId,
         label: stringValue(policy.label || '以 Apple Music 为准'),
       },
       baseline: {
         exists: Boolean(baseline.exists),
         savedAt: stringValue(baseline.savedAt),
+        required: typeof baseline.required === 'boolean' ? baseline.required : policyId !== 'canonical_mirror',
       },
       snapshots: normalizeAutoSyncSnapshots(readiness.snapshots),
       liveValidation: {

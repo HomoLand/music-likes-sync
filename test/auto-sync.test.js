@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   assessAppleAutoSyncCapture,
   appendAutoSyncRun,
+  autoSyncRequiresBaseline,
   defaultAutoSyncState,
   emptyAutoSyncRunLog,
   isAutoSyncDue,
@@ -25,6 +26,13 @@ describe('auto-sync state', () => {
     assert.equal(state.requireBaseline, true);
     assert.deepEqual(state.targets, ['qq', 'netease']);
     assert.equal(validateAutoSyncState(state).ok, true);
+  });
+
+  it('requires a baseline only for policies that depend on historical state', () => {
+    assert.equal(autoSyncRequiresBaseline({ requireBaseline: true }, 'canonical_mirror'), false);
+    assert.equal(autoSyncRequiresBaseline({ requireBaseline: true }, 'managed_bidirectional'), true);
+    assert.equal(autoSyncRequiresBaseline({ requireBaseline: true }, 'union_convergence'), true);
+    assert.equal(autoSyncRequiresBaseline({ requireBaseline: false }, 'managed_bidirectional'), false);
   });
 
   it('normalizes intervals, targets, and the next run timestamp', () => {

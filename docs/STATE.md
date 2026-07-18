@@ -318,11 +318,11 @@ Purpose:
 
 Rules:
 
-- Automatic sync starts disabled and cannot be enabled until the selected snapshots are fresh, a baseline exists, the policy allows writes, and each selected target has fresh live add/remove validation evidence.
+- Automatic sync starts disabled and cannot be enabled until the selected snapshots are fresh, the policy allows writes, and each selected target has fresh live add/remove validation evidence. `canonical_mirror` does not require a historical baseline because it derives additions from the current Apple source; policies that depend on cross-run deletion state still require one when `requireBaseline` is enabled.
 - `targets` may contain only `qq` and `netease`; Apple is never a write target.
 - `autoExecuteAdditions` can enable ready additions after all gates pass. There is intentionally no automatic-delete setting.
 - `nextRunAt` is recalculated when automation is enabled or its interval / targets change.
-- Scheduled Apple refresh accepts only the MusicKit API result for the same playlist. DOM fallback results and large track-count drops fail closed and require manual review.
+- Scheduled Apple refresh accepts only the MusicKit API result for the same playlist. Each MusicKit request, the CDP evaluation, and the single recovery retry are time-bounded; DOM fallback results and large track-count drops fail closed and require manual review.
 - Automatic Apple refresh reapplies the local MusicBrainz ISRC cache before matching; it does not perform unbounded metadata-network lookups during a scheduled run.
 - Cookies, API keys, provider payloads, playlist ids, and raw snapshots are forbidden.
 

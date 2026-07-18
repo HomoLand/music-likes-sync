@@ -43,6 +43,22 @@ describe('cross-process run lock', () => {
     await lock.release();
   });
 
+  it('reclaims a fresh lock when its owning process has exited', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'music-likes-sync-orphan-lock-'));
+    const filePath = path.join(root, 'auto-sync.lock');
+    await fs.writeFile(filePath, JSON.stringify({ token: 'orphaned', pid: 424242, startedAt: new Date().toISOString() }));
+
+    const lock = await acquireRunLock(filePath, {
+      heartbeatMs: 0,
+      token: 'replacement',
+      isProcessAlive: async (pid) => pid !== 424242,
+    });
+
+    const stored = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    assert.equal(stored.token, 'replacement');
+    await lock.release();
+  });
+
   it('does not remove a lock that no longer belongs to the releasing owner', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'music-likes-sync-owner-lock-'));
     const filePath = path.join(root, 'auto-sync.lock');

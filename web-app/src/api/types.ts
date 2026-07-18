@@ -97,7 +97,7 @@ export interface AutoSyncReadiness {
   ok: boolean;
   reasons: AutoSyncReadinessReason[];
   policy: { id: SyncModeId | string; label: string };
-  baseline: { exists: boolean; savedAt?: string };
+  baseline: { exists: boolean; savedAt?: string; required: boolean };
   snapshots: Partial<Record<PlatformKey, {
     available: boolean;
     fetchedAt?: string;

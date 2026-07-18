@@ -448,6 +448,9 @@ describe('release readiness metadata', () => {
     assert.match(appleEdge, /\/v1\/me\/library\/playlists\/\$\{playlistId\}\/tracks/);
     assert.match(appleEdge, /method: 'musickit-api'/);
     assert.match(appleEdge, /method: 'dom-scroll'/);
+    assert.match(appleEdge, /requireMusicKit/);
+    assert.match(appleEdge, /Promise\.race/);
+    assert.match(appleEdge, /pageHasReadyMusicKit/);
   });
 
   it('keeps automatic sync additions-only, readiness-gated, and cross-process locked', () => {
@@ -468,13 +471,16 @@ describe('release readiness metadata', () => {
     assert.match(workflow, /acquireRunLock/);
     assert.match(workflow, /deletionSignals/);
     assert.match(workflow, /enrichMetadata: true, metadataLimit: 0/);
+    assert.match(workflow, /requireMusicKit: true/);
     assert.doesNotMatch(workflow.slice(workflow.indexOf('async function performProductAutoSync'), workflow.indexOf('export async function getProductLiveValidationState')), /executeProductSyncDeletions/);
     assert.match(autoSync, /AUTO_SYNC_MIN_INTERVAL_MINUTES = 15/);
     assert.match(autoSync, /assessAppleAutoSyncCapture/);
+    assert.match(autoSync, /autoSyncRequiresBaseline/);
     assert.match(autoSync, /apple_capture_not_authoritative/);
     assert.match(autoSync, /apple_capture_large_drop/);
     assert.match(runLock, /fs\.open\(filePath, 'wx'\)/);
     assert.match(runLock, /DEFAULT_RUN_LOCK_HEARTBEAT_MS/);
+    assert.match(runLock, /reclaimOrphanedRunLock/);
     assert.match(workflow, /reviewProductAddCandidates/);
     assert.match(workflow, /reviewProductIdentityCandidates/);
     assert.match(workflow, /applyProductIdentityDecision/);

@@ -54,8 +54,9 @@ try {
   const initialAutoSync = await getJson('/api/auto-sync');
   assert(initialAutoSync.ok, '/api/auto-sync should return ok');
   assert(initialAutoSync.data?.automation?.enabled === false, 'auto-sync should default to disabled');
-  assert(initialAutoSync.data?.readiness?.ok === false, 'auto-sync should remain blocked before baseline and fresh-source gates pass');
-  const blockedAutoSyncEnable = await postJsonStatus('/api/auto-sync', {
+  assert(initialAutoSync.data?.readiness?.baseline?.required === false, 'canonical mirror should not require a historical baseline');
+  assert(initialAutoSync.data?.readiness?.ok === true, 'canonical mirror should be ready with fresh snapshots and live validation');
+  const canonicalAutoSyncEnable = await postJson('/api/auto-sync', {
     enabled: true,
     intervalMinutes: 60,
     targets: ['qq', 'netease'],
@@ -63,8 +64,8 @@ try {
     refreshTargets: false,
     autoExecuteAdditions: false,
     requireBaseline: true,
-  }, 409);
-  assert(blockedAutoSyncEnable.ok === false, 'auto-sync enable should fail before readiness gates pass');
+  });
+  assert(canonicalAutoSyncEnable.data?.automation?.enabled === true, 'canonical mirror should enable without a historical baseline');
   const savedDisabledAutoSync = await postJson('/api/auto-sync', {
     enabled: false,
     intervalMinutes: 30,
@@ -75,11 +76,12 @@ try {
     requireBaseline: true,
   });
   assert(savedDisabledAutoSync.data?.automation?.intervalMinutes === 30, 'disabled auto-sync settings should persist safely');
-  const blockedAutoSyncRun = await postJson('/api/auto-sync/run', { dryRun: true, executeAdditions: false });
-  assert(blockedAutoSyncRun.data?.run?.status === 'attention', 'manual auto-sync check should record readiness blockers without provider writes');
-  assert(blockedAutoSyncRun.data?.run?.dryRun === true, 'manual auto-sync check should default to dry-run');
-  assert(blockedAutoSyncRun.data?.history?.length === 1, 'manual auto-sync check should append scheduler history');
-  assert(!JSON.stringify(blockedAutoSyncRun.data).includes('fixture-playlist'), 'auto-sync API must not expose playlist ids');
+  const canonicalAutoSyncRun = await postJson('/api/auto-sync/run', { dryRun: true, executeAdditions: false });
+  assert(canonicalAutoSyncRun.data?.run?.status === 'attention', 'manual canonical check should preserve unresolved review items without provider writes');
+  assert(canonicalAutoSyncRun.data?.run?.dryRun === true, 'manual auto-sync check should default to dry-run');
+  assert(canonicalAutoSyncRun.data?.run?.preview?.previewId, 'canonical auto-sync should generate a preview without a historical baseline');
+  assert(canonicalAutoSyncRun.data?.history?.length === 1, 'manual auto-sync check should append scheduler history');
+  assert(!JSON.stringify(canonicalAutoSyncRun.data).includes('fixture-playlist'), 'auto-sync API must not expose playlist ids');
   const liveValidation = await getJson('/api/validation/live');
   assert(liveValidation.ok, '/api/validation/live should return ok');
   assert(liveValidation.data?.targets?.qq?.status === 'verified', '/api/validation/live should report verified QQ evidence');
@@ -853,11 +855,13 @@ try {
       maxSourceAgeMinutes: 10080,
     });
     assert(enabledAutoSync.data?.automation?.enabled === true, 'auto-sync should enable after baseline and readiness gates pass');
+    assert(enabledAutoSync.data?.readiness?.baseline?.required === true, 'managed sync should require its saved baseline');
+    assert(!JSON.stringify(enabledAutoSync.data?.readiness?.baseline).includes('fixture-playlist'), 'auto-sync readiness must not expose baseline playlist ids');
     assert(enabledAutoSync.data?.automation?.nextRunAt, 'enabled auto-sync should persist the next run time');
     const autoSyncCheck = await postJson('/api/auto-sync/run', { dryRun: true, executeAdditions: false });
     assert(autoSyncCheck.data?.run?.dryRun === true, 'manual scheduled-flow check must remain non-mutating without explicit execute');
     assert(autoSyncCheck.data?.run?.preview?.previewId, 'manual scheduled-flow check should generate a sync preview');
-    assert(autoSyncCheck.data?.history?.length >= 2, 'auto-sync history should retain blocked and ready checks');
+    assert(autoSyncCheck.data?.history?.length >= 2, 'auto-sync history should retain canonical and managed checks');
     const appStateWithAutoSync = await getJson('/api/app/state');
     assert(appStateWithAutoSync.data?.autoSync?.enabled === true, '/api/app/state should expose enabled auto-sync state');
     assert(!JSON.stringify(appStateWithAutoSync.data?.autoSync).includes('operationId'), 'app auto-sync summary must not expose operation ids');

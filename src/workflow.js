@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import {
   assessAppleAutoSyncCapture,
   appendAutoSyncRun,
+  autoSyncRequiresBaseline,
   defaultAutoSyncState,
   emptyAutoSyncRunLog,
   nextAutoSyncRunAt,
@@ -4895,7 +4896,8 @@ async function evaluateProductAutoSyncReadiness(state, options = {}) {
     readProductSnapshots(),
   ]);
   const reasons = [...(options.extraReasons || [])];
-  if (state.requireBaseline && !baseline) {
+  const baselineRequired = autoSyncRequiresBaseline(state, policyState.policy);
+  if (baselineRequired && !baseline) {
     reasons.push({ code: 'missing_baseline', platform: '', message: '请先完成一次收敛同步并保存基线。' });
   }
   if (policyState.policy === 'read_only_analysis') {
@@ -4949,7 +4951,11 @@ async function evaluateProductAutoSyncReadiness(state, options = {}) {
       id: policyState.policy || 'canonical_mirror',
       label: productPolicyLabel(policyState.policy || 'canonical_mirror'),
     },
-    baseline: summarizeProductBaseline(baseline),
+    baseline: {
+      exists: Boolean(baseline),
+      savedAt: baseline?.savedAt || '',
+      required: baselineRequired,
+    },
     snapshots: snapshotStatus,
     liveValidation: {
       ok: state.targets.every((target) => Boolean(liveValidation.targets?.[target]?.ok)),
@@ -4970,11 +4976,14 @@ async function refreshAppleSnapshotForAutoSync() {
   const reference = await readAppleAutoSyncReference(current);
 
   let capture = null;
-  let capturedPage = false;
   let lastError = null;
+  const captureOptions = {
+    requireMusicKit: true,
+    timeoutMs: 60000,
+    apiRequestTimeoutMs: 15000,
+  };
   try {
-    capture = await captureAppleMusicPage();
-    capturedPage = true;
+    capture = await captureAppleMusicPage(captureOptions);
     const assessment = assessAppleAutoSyncCapture(capture, reference);
     if (!assessment.ok) {
       lastError = new Error(assessment.message);
@@ -4988,11 +4997,11 @@ async function refreshAppleSnapshotForAutoSync() {
     if (!sourceUrl) {
       throw new Error('当前 Apple 快照不是浏览器来源。请在连接管理中从浏览器重新读取一次“喜欢的歌曲”。');
     }
-    if (!capturedPage) await openAppleMusicBrowser(sourceUrl, { headless: true });
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    await openAppleMusicBrowser(sourceUrl, { headless: true });
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       await sleep(1200 + attempt * 500);
       try {
-        const candidate = await captureAppleMusicPage();
+        const candidate = await captureAppleMusicPage(captureOptions);
         const assessment = assessAppleAutoSyncCapture(candidate, reference);
         if (assessment.ok) {
           capture = candidate;
