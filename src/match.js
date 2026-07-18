@@ -1,5 +1,6 @@
 import { durationLabel, normalizeText } from './normalize.js';
 import { matchingTextVariants } from './transliterate.js';
+import { compareVersionCues } from './evidence.js';
 
 const trackValueCache = new WeakMap();
 
@@ -23,7 +24,7 @@ export function compareAppleToPlatform(appleTracks, platformTracks, options = {}
       .sort((a, b) => b.score.total - a.score.total);
 
     const best = candidates[0] || null;
-    if (best && best.score.total >= threshold) {
+    if (best && best.score.total >= threshold && !best.score.versionCueConflict) {
       matches.push({ apple, target: best.track, score: best.score });
     } else if (best && best.score.total >= reviewThreshold) {
       review.push({ apple, target: best.track, score: best.score });
@@ -94,7 +95,11 @@ function scoreTrack(a, b) {
   const album = hasFieldValue(a, 'album') && hasFieldValue(b, 'album') ? bestFieldSimilarity(a, b, 'album') : 0.5;
   const duration = durationScore(a.durationMs, b.durationMs);
   const isrc = isrcScore(a, b);
+  const titleVersionCueConflict = compareVersionCues(a, b).some((item) => item.field === 'title');
+  const strongMetadataAgreement = title >= 0.95 && artist >= 0.9 && album >= 0.8 && duration >= 0.92;
+  const versionCueConflict = titleVersionCueConflict && !strongMetadataAgreement;
   let total = clamp(title * 0.52 + artist * 0.28 + duration * 0.15 + album * 0.05, 0, 1);
+  if (isrc !== 1 && title < 0.7 && album < 0.5) total = Math.min(total, 0.67);
   if (isrc === 1) total = Math.max(total, 0.98);
   return {
     total: round(total),
@@ -103,6 +108,7 @@ function scoreTrack(a, b) {
     album: round(album),
     duration: round(duration),
     isrc,
+    versionCueConflict,
   };
 }
 

@@ -225,7 +225,7 @@ Rules:
 6. match_evidence.support_signals and match_evidence.risk_signals summarize deterministic checks. Use them as evidence, but do not override a large duration mismatch or one-sided version wording.
 7. Duration matters: <= 5 seconds supports same, 5-15 seconds weakly supports same, > 20 seconds is suspicious unless ISRC/shared MusicBrainz recording identity is present.
 8. Version words matter. live, cover, acoustic, piano, instrumental, remix, movie ver, album version, single version, remaster, karaoke, off vocal, TV size, short, extended, and similar terms can mean a different version.
-9. Alias overlap from MusicBrainz or platform metadata is useful evidence, especially for localized artist/title names, but alias overlap alone is not enough when duration/version risks exist.
+9. Alias overlap may include deterministic Unicode, Chinese script, kana/romaji normalization plus MusicBrainz or platform aliases. Treat supplied overlap as evidence for localized names, but it is not enough when duration/version risks exist.
 10. If evidence is insufficient, use decision uncertain and recommended_action needs_human.
 11. Do not use speculative wording such as "likely", "known alias", "seems", "metadata error", or "album difference is acceptable" as evidence.
 

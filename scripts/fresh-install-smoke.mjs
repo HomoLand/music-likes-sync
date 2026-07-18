@@ -18,6 +18,14 @@ try {
   for (const file of pack.files || []) {
     copyPackedFile(file.path);
   }
+  runNpm([
+    'install',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--no-package-lock',
+    '--no-audit',
+    '--no-fund',
+  ], packageRoot);
 
   const help = runNode(['src/cli.js', 'help']);
   assertIncludes(help.stdout, 'music-likes-sync mirror-plan --target qq|netease', 'CLI help should expose public mirror commands.');

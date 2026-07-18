@@ -1,4 +1,5 @@
 import { durationLabel, normalizeText } from './normalize.js';
+import { matchingTextVariants } from './transliterate.js';
 
 const ALIAS_LIMIT = 8;
 const RECORDING_ID_LIMIT = 8;
@@ -111,7 +112,7 @@ function durationDelta(left, right) {
 function overlapField(sourceTrack, targetTrack, key) {
   const source = normalizedFieldValues(sourceTrack, key);
   const target = normalizedFieldValues(targetTrack, key);
-  return intersect(source, target).slice(0, ALIAS_LIMIT);
+  return uniqueTextEvidence(intersect(source, target)).slice(0, ALIAS_LIMIT);
 }
 
 function normalizedFieldValues(track = {}, key) {
@@ -121,28 +122,26 @@ function normalizedFieldValues(track = {}, key) {
       ? [track.artist, ...(track.artists || [])]
       : [track.album];
   const aliases = Array.isArray(track.aliases?.[key]) ? track.aliases[key] : [];
-  return unique([...base, ...aliases].map((value) => normalizeText(value)).filter(Boolean));
+  return unique([...base, ...aliases]
+    .flatMap((value) => [normalizeText(value), ...matchingTextVariants(value)])
+    .filter(Boolean));
 }
 
-function compareVersionCues(sourceTrack = {}, targetTrack = {}) {
-  const source = versionCueSet([
-    sourceTrack.title,
-    sourceTrack.album,
-    ...(sourceTrack.aliases?.titles || []),
-    ...(sourceTrack.aliases?.albums || []),
-  ].join(' '));
-  const target = versionCueSet([
-    targetTrack.title,
-    targetTrack.album,
-    ...(targetTrack.aliases?.titles || []),
-    ...(targetTrack.aliases?.albums || []),
-  ].join(' '));
+export function compareVersionCues(sourceTrack = {}, targetTrack = {}) {
+  const fields = [
+    ['title', sourceTrack.title, targetTrack.title],
+    ['album', sourceTrack.album, targetTrack.album],
+  ];
   const conflicts = [];
-  for (const cue of source) {
-    if (!target.has(cue)) conflicts.push({ cue, source: true, target: false });
-  }
-  for (const cue of target) {
-    if (!source.has(cue)) conflicts.push({ cue, source: false, target: true });
+  for (const [field, sourceValue, targetValue] of fields) {
+    const source = versionCueSet(sourceValue);
+    const target = versionCueSet(targetValue);
+    for (const cue of source) {
+      if (!target.has(cue)) conflicts.push({ field, cue, source: true, target: false });
+    }
+    for (const cue of target) {
+      if (!source.has(cue)) conflicts.push({ field, cue, source: false, target: true });
+    }
   }
   return conflicts;
 }
@@ -151,13 +150,13 @@ function versionCueSet(text) {
   const value = String(text || '').toLowerCase().normalize('NFKC');
   const cues = new Set();
   const checks = [
-    ['live', /\b(live|concert|the first take)\b|现场|ライブ/u],
+    ['live', /\blive(?:\s+(?:at|from|in)\b|$)|[\[(]\s*live[\])]|\bconcert\b|the first take|现场|現場|ライブ/u],
     ['cover', /\bcover\b|翻唱|カバー/u],
-    ['acoustic', /\bacoustic\b|不插电|アコースティック/u],
-    ['piano', /\bpiano\b|钢琴|ピアノ/u],
-    ['instrumental', /\b(instrumental|inst|off vocal|karaoke)\b|伴奏|器乐|カラオケ/u],
+    ['acoustic', /\bacoustic\b|不插电|不插電|アコースティック/u],
+    ['piano', /\bpiano\s+(?:version|ver|cover|solo)\b|[\[(]\s*piano\s*[\])]|钢琴(?:版|演奏|伴奏)|鋼琴(?:版|演奏|伴奏)|ピアノ(?:版|バージョン|アレンジ)/u],
+    ['instrumental', /\b(instrumental|inst\.?|off vocal|karaoke)\b|伴奏|器乐|器樂|纯音乐|純音樂|インスト(?:ゥルメンタル)?|オフボーカル|カラオケ/u],
     ['tv-size', /\b(tv size|tv ver|short ver|short edit|edit version)\b|tvサイズ|テレビサイズ/u],
-    ['remix', /\b(remix|mixed|dj mix)\b|混音|リミックス/u],
+    ['remix', /\bremix(?:ed)?\b|\b(?:club|dance|radio|extended|china|dj)\s+mix\b|混音|リミックス/u],
     ['remaster', /\bremaster(?:ed)?\b|重制|リマスター/u],
     ['single-version', /\bsingle version\b|单曲版|シングルバージョン/u],
     ['album-version', /\balbum version\b|专辑版|アルバムバージョン/u],
@@ -201,6 +200,18 @@ function unique(values) {
     if (!text || seen.has(text)) continue;
     seen.add(text);
     result.push(text);
+  }
+  return result;
+}
+
+function uniqueTextEvidence(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const key = String(value || '').replace(/\s+/g, '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
   }
   return result;
 }

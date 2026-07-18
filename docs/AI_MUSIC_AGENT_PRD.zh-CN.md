@@ -180,12 +180,15 @@ Last updated: 2026-07-08
 - `src/evidence.js` 聚合 `external_evidence.musicbrainz`、`match_evidence`、duration delta、ISRC relation、alias overlap、version cue conflicts、support signals、risk signals。
 - `src/sync-ai.js` 和 `src/ai-review.js` 已把外部证据和匹配证据放入 AI payload。
 - `src/mirror-sync.js` 在镜像计划中保留 alias 和 compact MusicBrainz metadata。
+- `src/transliterate.js` 使用 OpenCC 完整词典统一简繁体，并结合平台 / MusicBrainz 别名、假名与罗马音生成匹配变体；确定性评分与 AI 证据复用同一套变体。
+- 版本风险按当前标题与专辑发行信息分别提取，支持中英日常见 `live`、`cover`、`instrumental`、`remix` 等提示；历史别名和普通专辑名称不会被误当成当前版本结论。
+- `test/match.test.js` 与 AI evaluation fixtures 已覆盖简繁体、艺名别名、日文转写、候选排序和版本冲突边界。
 
 仍需改进：
 
 - 外部音乐数据库目前以 MusicBrainz 为主，还没有形成 provider-agnostic evidence registry。
 - 平台返回字段不稳定，QQ / NetEase 很多候选没有 ISRC，需要更强的 fallback evidence。
-- 缺少一套固定的“人工标注黄金集”，用于衡量 AI 判断准确率。
+- 现有黄金集仍以合成公开样本为主，需要继续加入脱敏后的真实跨语言、同曲不同版本和错误候选案例。
 
 ### 4.4 AI 复核
 

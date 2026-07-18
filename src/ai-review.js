@@ -160,8 +160,8 @@ Return strict JSON only. The word json is intentionally included here because re
 
 Rules:
 1. Same ISRC strongly supports same, unless the version or title clearly contradicts it.
-2. Titles may be equivalent across Chinese, Japanese, English, kana, romaji, pinyin, and parenthesized translations.
-3. Artist names may differ by alias, transliteration, or localized spelling.
+2. Titles may be equivalent across Chinese, Japanese, English, kana, romaji, pinyin, and parenthesized translations. Deterministic normalized overlap is supplied in match_evidence.
+3. Artist names may differ by alias, transliteration, or localized spelling. Use supplied aliases and overlap rather than model memory.
 4. Duration difference <= 5 seconds strongly supports same; 5-15 seconds weakly supports same; >20 seconds requires caution.
 5. Version words matter. live, cover, acoustic, piano, instrumental, remix, movie ver, album version, single version, remaster, karaoke, off vocal, TV size, and similar differences usually mean different unless other evidence is very strong.
 6. For cluster_conflict, decide whether the tracks already grouped together should remain together. If some tracks should split, use different or uncertain and recommended_action keep_separate or needs_human.
