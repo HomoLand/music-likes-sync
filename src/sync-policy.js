@@ -1,5 +1,6 @@
 import { buildMirrorSyncPlan, summarizeMirrorOperations } from './mirror-sync.js';
 import { normalizeText } from './normalize.js';
+import { trackArtworkUrl } from './track-media.js';
 import { buildUnifiedLibrary } from './unified.js';
 
 export const SYNC_POLICY_SCHEMA_VERSION = 1;
@@ -772,6 +773,7 @@ function compactPolicyTrack(track) {
     durationMs: track.durationMs || null,
     duration: track.duration || '',
     isrc: track.isrc || null,
+    artworkUrl: trackArtworkUrl(track),
     aliases: track.aliases || null,
     metadata: track.metadata?.musicbrainz
       ? {

@@ -58,6 +58,31 @@ describe('policy-driven sync core', () => {
     );
   });
 
+  it('preserves safe source and target artwork in canonical preview operations', () => {
+    const plan = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['qq'],
+      snapshots: {
+        apple: snapshot('apple', [
+          track('apple', 'a-cover', 'Source Cover', 'Alice', 180000, {
+            artworkUrl: 'https://is1-ssl.mzstatic.com/image/thumb/source/{w}x{h}bb.jpg',
+          }),
+        ]),
+        qq: snapshot('qq', [
+          track('qq', 'q-cover', 'Target Cover', 'Bob', 220000, {
+            artworkUrl: 'https://y.gtimg.cn/music/photo_new/target-cover.jpg',
+          }),
+        ]),
+      },
+    });
+
+    const add = plan.operations.find((operation) => operation.action === 'add');
+    const remove = plan.operations.find((operation) => operation.action === 'remove');
+    assert.match(add?.sourceTrack?.artworkUrl || '', /300x300bb\.jpg/);
+    assert.equal(remove?.targetTrack?.artworkUrl, 'https://y.gtimg.cn/music/photo_new/target-cover.jpg');
+  });
+
   it('blocks Apple canonical remove operations without destructive target ids', () => {
     const plan = buildSyncPolicyPlan({
       generatedAt: '2026-07-08T00:00:00.000Z',
