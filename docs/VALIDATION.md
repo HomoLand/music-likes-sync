@@ -137,7 +137,7 @@ Current HTTP smoke coverage:
 - `data/sync-backups.json` participates in state validation and migration. `/api/sync/backups` HTTP smoke covers compact checksummed recovery points and response redaction; `/api/sync/backups/restore` covers additions-only dry-run and exact-confirmation gating. Unit tests cover checksum tamper detection, post-restore convergence, retained current extras, and mandatory backup ordering before both deletion executors.
 - `/api/ai/additions/review` rejects missing consent before any model call; pure contract tests prove only low-confidence searched candidates are selected and AI output stays a non-executable local draft.
 - `/api/ai/identity/review` rejects missing consent before any model call; pure tests prove only source-vs-target review conflicts are selected, safety metadata is sanitized, and the operation remains `needs_review`.
-- `/api/sync/identity-decision` is exercised through keep and clear: the stable decision survives a full preview rebuild, becomes a safe keep operation, and undo restores the review queue without provider writes.
+- `/api/sync/identity-decision` is exercised through keep, separate, and clear: pure equivalence tests prove the incremental operation patch has the same action shape as a full canonical rebuild, while the stable decision still survives explicit regeneration and no provider write occurs.
 - Cross-process lock tests prove overlapping owners are rejected, stale abandoned locks are reclaimed, and releasing an old owner cannot remove a replacement lock.
 
 Remaining HTTP smoke coverage:

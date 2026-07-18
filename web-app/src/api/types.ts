@@ -401,6 +401,7 @@ export interface IdentityDecisionResult {
   previewId: string;
   action: IdentityDecisionAction | string;
   decisionKey?: string;
+  updateMode?: 'incremental' | string;
   preview: SyncPreviewDetails;
 }
 

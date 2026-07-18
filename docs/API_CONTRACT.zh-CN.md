@@ -641,7 +641,7 @@ Rules:
 Purpose:
 
 - Save an ordinary user's judgment after comparing the Apple source recording with an existing QQ / NetEase version.
-- Rebuild the complete canonical preview from the durable mirror decision instead of mutating one rendered row in place.
+- Persist the durable judgment, then incrementally replace only operations sharing its stable `decisionKey`; a later explicit full rebuild must derive the same action shape.
 
 Actions:
 
@@ -651,9 +651,10 @@ Actions:
 
 Rules:
 
-- The endpoint writes only `data/mirror-decisions.json` and regenerated local preview state; it never calls a provider write API.
+- The endpoint writes only `data/mirror-decisions.json` and incrementally updated local preview state; it never calls a provider write API or reruns full-library matching.
 - A `separate` judgment cannot execute deletion. The resulting removal remains behind dry-run, live-validation, recovery-point, and explicit deletion-confirmation gates.
 - The stable `decisionKey` is derived from review reason plus source / target identities, so the decision survives preview regeneration and operation-id changes.
+- Identity-decision mutations are serialized locally to avoid lost updates from rapid repeated clicks. The response reports `updateMode = "incremental"` and returns the requested preview bucket directly from the updated in-memory plan.
 
 ### `POST /api/sync/confirm-deletions`
 

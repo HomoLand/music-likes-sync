@@ -128,6 +128,7 @@ import {
   productIdentityDecisionState,
   upsertProductIdentityReviewResult,
 } from './product-identity-review.js';
+import { patchProductIdentityDecisionPlan } from './product-identity-decision.js';
 import { acquireRunLock, RunLockError } from './run-lock.js';
 import {
   appendSyncBackup,
@@ -157,6 +158,7 @@ const PLATFORMS = ['apple', 'qq', 'netease'];
 const WRITABLE_PLATFORMS = ['apple', 'qq', 'netease'];
 let activeProductAutoSyncPromise = null;
 let syncBackupMutationQueue = Promise.resolve();
+let productIdentityDecisionMutationQueue = Promise.resolve();
 const productMediaCache = new Map();
 
 export const FILES = {
@@ -1597,6 +1599,10 @@ export async function getProductSyncPreview(options = {}) {
   if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
   assertValidState(validateSyncPreviewState(plan), 'sync-preview');
   const tombstones = await readSyncTombstoneState();
+  return productSyncPreviewPage(plan, tombstones, options);
+}
+
+function productSyncPreviewPage(plan, tombstones, options = {}) {
   const bucket = String(options.bucket || 'all').trim();
   const offset = Math.max(0, Number(options.offset || options.cursor || 0));
   const limit = Math.min(100, Math.max(1, Number(options.limit || 50)));
@@ -1854,6 +1860,13 @@ export async function reviewProductIdentityCandidates(options = {}, dependencies
 }
 
 export async function applyProductIdentityDecision(options = {}) {
+  const task = () => performProductIdentityDecision(options);
+  const pending = productIdentityDecisionMutationQueue.then(task, task);
+  productIdentityDecisionMutationQueue = pending.catch(() => undefined);
+  return pending;
+}
+
+async function performProductIdentityDecision(options = {}) {
   await ensureDirs();
   const plan = await readJsonIfExists(FILES.syncPreview);
   if (!plan) throw productHttpError(409, '缺少同步预览，请先运行同步检查。');
@@ -1889,19 +1902,39 @@ export async function applyProductIdentityDecision(options = {}) {
   decisions.updatedAt = now;
   await writeJson(FILES.mirrorDecisions, decisions);
 
-  const regenerated = await refreshProductPreviewFromPolicy();
-  if (!regenerated?.plan) throw productHttpError(409, '同步规则尚未保存，无法重建预览。');
-  const preview = await getProductSyncPreview({
+  let patched;
+  try {
+    patched = patchProductIdentityDecisionPlan(plan, {
+      operationId,
+      action,
+      decision: decisions.items[key] || null,
+      decidedAt: now,
+    });
+  } catch (error) {
+    throw productHttpError(409, `无法增量更新同步预览：${formatErrorMessage(error)}。请重新生成预览后再试。`);
+  }
+  const identitySuggestions = await readMirrorAiSuggestionState();
+  let nextPlan = attachProductIdentityReviewSuggestions(patched.plan, identitySuggestions);
+  const conflictGuard = applyProductAddConflictGuards(nextPlan);
+  nextPlan = conflictGuard.plan;
+  assertValidState(validateSyncPreviewState(nextPlan), 'sync-preview');
+  await Promise.all([
+    writeJson(FILES.syncPreview, nextPlan),
+    conflictGuard.changed ? persistProductAddState(nextPlan.operations, now) : Promise.resolve(),
+  ]);
+  const tombstones = await readSyncTombstoneState();
+  const preview = productSyncPreviewPage(nextPlan, tombstones, {
     bucket: options.bucket || 'needs_confirmation',
     limit: options.previewLimit || 30,
   });
   return {
-    previewId: productPreviewId(regenerated.plan),
+    previewId: productPreviewId(nextPlan),
     action,
     decisionKey: key,
     decision: decisions.items[key] || null,
-    counts: productPreviewCounts(regenerated.plan),
-    blocked: productPreviewBlocked(regenerated.plan),
+    counts: productPreviewCounts(nextPlan),
+    blocked: productPreviewBlocked(nextPlan),
+    updateMode: 'incremental',
     preview,
   };
 }

@@ -528,7 +528,7 @@ export function App() {
   async function handleApplyIdentityDecision(operationId: string, action: IdentityDecisionAction) {
     setSyncBusy(true);
     setSyncError('');
-    setSyncMessage(action === 'clear' ? '正在撤销版本判断...' : '正在保存版本判断并重建预览...');
+    setSyncMessage(action === 'clear' ? '正在撤销版本判断...' : '正在保存版本判断...');
     try {
       const result = await applyIdentityDecision({
         operationId,

@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { productAddReferencesTarget } from '../src/product-add-state.js';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configuredPort = Number(readArg('--port') || process.env.PORT || 0);
 const port = configuredPort || await pickFreePort();
@@ -317,8 +319,9 @@ try {
     });
     assert(keptIdentity.ok, 'product identity decision should persist a keep decision');
     assert(keptIdentity.data?.action === 'keep', 'identity decision should echo keep');
+    assert(keptIdentity.data?.updateMode === 'incremental', 'identity decision should patch the current preview incrementally');
     const decidedKeep = keptIdentity.data?.preview?.items?.find((item) => item.identityDecision?.action === 'keep');
-    assert(decidedKeep?.id, 'regenerated preview should expose the durable keep decision');
+    assert(decidedKeep?.id, 'updated preview should expose the durable keep decision');
     assert(decidedKeep.action === 'keep', 'same-version decision should become a safe keep operation');
     const clearedIdentity = await postJson('/api/sync/identity-decision', {
       operationId: decidedKeep.id,
@@ -419,7 +422,7 @@ try {
     }, 409);
     assert(staleMedia.ok === false, 'sync media should reject stale preview ids before provider access');
     const unknownMedia = await postJsonStatus('/api/sync/media', {
-      previewId: productCheck.data.previewId,
+      previewId: productPreview.data.previewId,
       operationId: 'unknown-operation',
       role: 'source',
     }, 404);
@@ -492,7 +495,12 @@ try {
     });
     assert(neteaseProductCheck.ok, 'product single-target sync check should return ok for deletion flow');
     const currentProductDeletePreview = await getJson('/api/sync/preview?bucket=may_delete&limit=20');
-    const firstRemove = currentProductDeletePreview.data.items.find((operation) => operation.action === 'remove');
+    const currentProductDeletePlan = JSON.parse(await fs.readFile(path.join(tempRoot, 'data', 'sync-preview.json'), 'utf8'));
+    const confirmableRemove = currentProductDeletePlan.operations.find((operation) => (
+      operation.action === 'remove'
+      && !productAddReferencesTarget(currentProductDeletePlan, operation)
+    ));
+    const firstRemove = currentProductDeletePreview.data.items.find((operation) => operation.id === confirmableRemove?.id);
     assert(firstRemove, 'product fixture should have a removable item');
     const deleteBeforeConfirm = await postJsonStatus('/api/sync/execute-deletions', {
       dryRun: true,
@@ -1003,13 +1011,13 @@ async function seedMirrorFixtures(root) {
   await fs.writeFile(path.join(dataDir, 'netease.json'), JSON.stringify(snapshot('netease', [
     track('n-1', 'Already There', 'Alice', 181000),
     track('n-2', 'Old Target Only', 'Dora', 200000),
-    track('n-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('n-3', 'Night Drive Acoustic', 'Carol', 190000),
     track('n-4', 'Provider Exclusive Archive', 'Zed', 101000),
   ])), 'utf8');
   await fs.writeFile(path.join(dataDir, 'qq.json'), JSON.stringify(snapshot('qq', [
     track('q-1', 'Already There', 'Alice', 181000),
     qqMidOnlyTrack('qq-mid-old-target-only', 'Old Target Only', 'Dora', 200000),
-    track('q-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('q-3', 'Night Drive Acoustic', 'Carol', 190000),
     qqMidOnlyTrack('qq-mid-provider-exclusive', 'Provider Exclusive Archive', 'Zed', 101000),
   ])), 'utf8');
   await fs.writeFile(path.join(reportDir, 'live-validation-qq.json'), JSON.stringify(liveValidationReport('qq', packageInfo)), 'utf8');

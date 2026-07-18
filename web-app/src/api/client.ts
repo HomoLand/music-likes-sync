@@ -497,6 +497,7 @@ export async function applyIdentityDecision(options: {
     previewId: stringValue(data.previewId),
     action: stringValue(data.action),
     decisionKey: stringValue(data.decisionKey),
+    updateMode: stringValue(data.updateMode),
     preview: normalizePreviewDetails(data, options.bucket || 'needs_confirmation'),
   };
 }
