@@ -38,7 +38,13 @@ import {
   getProductSyncModes,
   generateProductSyncPreview,
   getProductSyncPreview,
+  resolveProductSyncMedia,
   resolveProductSyncAdditions,
+  reviewProductAddCandidates,
+  reviewProductIdentityCandidates,
+  applyProductIdentityDecision,
+  applyProductIdentityAiSuggestions,
+  applyProductAddAiSuggestions,
   applyProductAddCandidateDecision,
   applyProductAddCandidateDecisionBatch,
   getProductSyncBaseline,
@@ -48,6 +54,9 @@ import {
   confirmProductSyncDeletions,
   executeProductSyncAdditions,
   executeProductSyncDeletions,
+  getProductSyncBackups,
+  createProductSyncBackup,
+  restoreProductSyncBackup,
   getProductAiProviderState,
   getProductLiveValidationState,
   runProductLiveValidation,
@@ -62,9 +71,23 @@ import {
   getAgentSessions,
   saveAgentTraceFeedback,
   runAgentToolRequest,
+  getProductAutoSyncState,
+  saveProductAutoSyncSettings,
+  runProductAutoSync,
 } from './workflow.js';
-import { captureAppleMusicPage, openAppleMusicBrowser } from './apple-edge.js';
-import { captureQQMusicCookies, checkQQMusicBrowserLogin, openQQMusicBrowser } from './qq-edge.js';
+import {
+  captureAppleMusicPage,
+  checkAppleMusicBrowserConnection,
+  openAppleMusicBrowser,
+} from './apple-edge.js';
+import {
+  captureQQMusicCookies,
+  checkQQMusicBrowserLogin,
+  checkQQMusicQrLogin,
+  completeQQMusicQrLogin,
+  openQQMusicBrowser,
+  startQQMusicQrLogin,
+} from './qq-edge.js';
 import { createObservability } from './observability.js';
 import { listQQPlaylists } from './providers/qq.js';
 import { WEB_APP_DIST_DIR, WEB_DIR, ensureDirs, formatErrorMessage, parsePort, pathExists } from './utils.js';
@@ -72,6 +95,7 @@ import { WEB_APP_DIST_DIR, WEB_DIR, ensureDirs, formatErrorMessage, parsePort, p
 const cliPort = process.argv[2];
 const PORT = parsePort(process.env.PORT || cliPort, { name: process.env.PORT ? 'PORT' : 'port', defaultValue: 4319 });
 const HOST = process.env.HOST || '127.0.0.1';
+const AUTO_SYNC_POLL_MS = Math.max(5000, Number(process.env.MUSIC_LIKES_SYNC_SCHEDULER_POLL_MS || 30000));
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -99,6 +123,7 @@ let syncProgress = {
   finishedAt: '',
   error: '',
 };
+let autoSyncTimer = null;
 
 await ensureDirs();
 const observability = createObservability({ getSyncProgress: () => syncProgress });
@@ -155,11 +180,77 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`music-likes-sync web UI: http://${HOST}:${PORT}`);
+  startAutoSyncScheduler();
 });
+
+server.on('close', () => {
+  if (autoSyncTimer) clearTimeout(autoSyncTimer);
+  autoSyncTimer = null;
+});
+
+function startAutoSyncScheduler() {
+  scheduleAutoSyncTick(Math.min(AUTO_SYNC_POLL_MS, 5000));
+}
+
+function scheduleAutoSyncTick(delay = AUTO_SYNC_POLL_MS) {
+  if (autoSyncTimer) clearTimeout(autoSyncTimer);
+  autoSyncTimer = setTimeout(runAutoSyncTick, delay);
+  autoSyncTimer.unref?.();
+}
+
+async function runAutoSyncTick() {
+  autoSyncTimer = null;
+  try {
+    const state = await getProductAutoSyncState({ limit: 1 });
+    const automation = state.automation || {};
+    const nextRunAt = Date.parse(automation.nextRunAt || '');
+    const due = automation.enabled && (Number.isNaN(nextRunAt) || nextRunAt <= Date.now());
+    if (due && !automation.running) {
+      await runProductAutoSync({ trigger: 'scheduled' });
+    }
+  } catch (error) {
+    console.error(`auto-sync scheduler: ${formatErrorMessage(error)}`);
+  } finally {
+    scheduleAutoSyncTick();
+  }
+}
 
 async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/sync/progress') {
     return sendJson(res, 200, { ok: true, progress: syncProgress });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/auto-sync') {
+    return sendJson(res, 200, {
+      ok: true,
+      data: await getProductAutoSyncState({ limit: url.searchParams.get('limit') || 20 }),
+      warnings: [],
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auto-sync') {
+    const body = await readJsonBody(req);
+    const result = await saveProductAutoSyncSettings({
+      enabled: body.enabled,
+      intervalMinutes: body.intervalMinutes,
+      targets: body.targets,
+      refreshApple: body.refreshApple,
+      refreshTargets: body.refreshTargets,
+      autoExecuteAdditions: body.autoExecuteAdditions,
+      requireBaseline: body.requireBaseline,
+      maxSourceAgeMinutes: body.maxSourceAgeMinutes,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auto-sync/run') {
+    const body = await readJsonBody(req);
+    const result = await runProductAutoSync({
+      trigger: 'manual',
+      dryRun: body.dryRun !== false,
+      executeAdditions: body.executeAdditions === true,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/state') {
@@ -225,6 +316,22 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/sync/media') {
+    const body = await readJsonBody(req);
+    const result = await resolveProductSyncMedia({
+      previewId: body.previewId,
+      operationId: body.operationId,
+      role: body.role,
+      alternativeIndex: body.alternativeIndex,
+      alignWithSource: body.alignWithSource === true,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      data: result,
+      warnings: [],
+    });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/sync/resolve-additions') {
     const body = await readJsonBody(req);
     const result = await resolveProductSyncAdditions({
@@ -237,6 +344,7 @@ async function handleApi(req, res, url) {
       searchLimit: body.searchLimit,
       threshold: body.threshold,
       reviewThreshold: body.reviewThreshold,
+      refresh: body.refresh === true,
       bucket: body.bucket,
       previewLimit: body.previewLimit,
     });
@@ -245,6 +353,80 @@ async function handleApi(req, res, url) {
       data: result,
       warnings: [],
     });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/additions/review') {
+    const body = await readJsonBody(req);
+    const result = await reviewProductAddCandidates({
+      consent: body.consent,
+      operationIds: body.operationIds,
+      targets: body.targets,
+      limit: body.limit,
+      refresh: body.refresh,
+      thinking: body.thinking,
+      model: body.model,
+      bucket: body.bucket,
+      previewLimit: body.previewLimit,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/identity/review') {
+    const body = await readJsonBody(req);
+    const result = await reviewProductIdentityCandidates({
+      consent: body.consent,
+      operationIds: body.operationIds,
+      targets: body.targets,
+      limit: body.limit,
+      refresh: body.refresh,
+      thinking: body.thinking,
+      model: body.model,
+      bucket: body.bucket,
+      previewLimit: body.previewLimit,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/identity/apply') {
+    const body = await readJsonBody(req);
+    const result = await applyProductIdentityAiSuggestions({
+      confirmText: body.confirmText,
+      threshold: body.threshold,
+      overwrite: body.overwrite,
+      operationIds: body.operationIds,
+      targets: body.targets,
+      authorizationNote: body.authorizationNote,
+      bucket: body.bucket,
+      previewLimit: body.previewLimit,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/additions/apply') {
+    const body = await readJsonBody(req);
+    const result = await applyProductAddAiSuggestions({
+      confirmText: body.confirmText,
+      threshold: body.threshold,
+      operationIds: body.operationIds,
+      targets: body.targets,
+      authorizationNote: body.authorizationNote,
+      bucket: body.bucket,
+      previewLimit: body.previewLimit,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/sync/identity-decision') {
+    const body = await readJsonBody(req);
+    const result = await applyProductIdentityDecision({
+      operationId: body.operationId,
+      action: body.action,
+      target: body.target,
+      note: body.note,
+      bucket: body.bucket,
+      previewLimit: body.previewLimit,
+    });
+    return sendJson(res, 200, { ok: true, data: result, warnings: [] });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sync/addition-decision') {
@@ -347,6 +529,7 @@ async function handleApi(req, res, url) {
       confirmText: body.confirmText,
       target: body.target,
       targets: Array.isArray(body.targets) ? body.targets : undefined,
+      authorizationNote: body.authorizationNote,
     });
     return sendJson(res, 200, {
       ok: true,
@@ -390,6 +573,52 @@ async function handleApi(req, res, url) {
       batchSize: body.batchSize,
       force: body.force,
       refreshAfterWrite: body.refreshAfterWrite,
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      data: result,
+      warnings: [],
+    });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/sync/backups') {
+    const result = await getProductSyncBackups({
+      limit: url.searchParams.get('limit'),
+      runLimit: url.searchParams.get('runLimit'),
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      data: result,
+      warnings: [],
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/sync/backups') {
+    const body = await readJsonBody(req);
+    const result = await createProductSyncBackup({
+      targets: Array.isArray(body.targets) ? body.targets : undefined,
+      refresh: body.refresh !== false,
+      playlistId: body.playlistId,
+      reason: body.reason || 'manual',
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      data: result,
+      warnings: [],
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/sync/backups/restore') {
+    const body = await readJsonBody(req);
+    const result = await restoreProductSyncBackup({
+      backupId: body.backupId,
+      targets: Array.isArray(body.targets) ? body.targets : undefined,
+      dryRun: body.dryRun !== false,
+      refresh: body.refresh !== false,
+      confirmText: body.confirmText,
+      playlistId: body.playlistId,
+      batchSize: body.batchSize,
+      force: body.force,
     });
     return sendJson(res, 200, {
       ok: true,
@@ -460,6 +689,39 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/apple/connect/start') {
+    const sourceUrl = await readSavedAppleSourceUrl();
+    const existing = await checkAppleMusicBrowserConnection({ sourceUrl });
+    if (existing.ready) {
+      const connected = await completeAppleBrowserConnection(existing);
+      return sendJson(res, 200, { ok: true, ...connected, state: await getState() });
+    }
+    await openAppleMusicBrowser(sourceUrl || '', { headless: false });
+    const status = await checkAppleMusicBrowserConnection({ sourceUrl });
+    return sendJson(res, 200, {
+      ok: true,
+      message: status.message,
+      status: publicAppleConnectionStatus(status),
+      state: await getState(),
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/apple/connect/check') {
+    const sourceUrl = await readSavedAppleSourceUrl();
+    const status = await checkAppleMusicBrowserConnection({ sourceUrl });
+    if (!status.ready) {
+      return sendJson(res, 200, {
+        ok: true,
+        message: status.message,
+        status: publicAppleConnectionStatus(status),
+        state: await getState(),
+      });
+    }
+
+    const connected = await completeAppleBrowserConnection(status);
+    return sendJson(res, 200, { ok: true, ...connected, state: await getState() });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/apple/browser/open') {
     const body = await readJsonBody(req);
     const browser = await openAppleMusicBrowser(body.url || '');
@@ -473,7 +735,9 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/apple/browser/capture') {
     const capture = await captureAppleMusicPage();
-    const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser');
+    const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser', {
+      enrichStorefronts: true,
+    });
     return sendJson(res, 200, {
       ok: true,
       message: `Apple 页面已抓取 ${apple.tracks.length} 首`,
@@ -496,11 +760,87 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, message: 'Cookie 已保存到本地 data 目录', state });
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/qq/qr/start') {
+    const body = await readJsonBody(req);
+    let qr = null;
+    if (body.force !== true) {
+      const savedCookie = await fs.readFile(FILES.qqCookie, 'utf8').catch(() => '');
+      if (savedCookie.trim()) {
+        try {
+          await listQQPlaylists(savedCookie);
+          qr = {
+            done: true,
+            waiting: false,
+            code: 'credential_ready',
+            message: 'QQ 音乐登录状态仍然有效，已直接续用。',
+            capture: { cookie: savedCookie },
+          };
+        } catch {
+          // The provider API, not cookie shape, decides whether reauthentication is required.
+        }
+      }
+    }
+    if (!qr) qr = await startQQMusicQrLogin({ force: body.force === true });
+    if (qr.done && qr.capture?.cookie) {
+      try {
+        await listQQPlaylists(qr.capture.cookie);
+      } catch {
+        if (body.force !== true) qr = await startQQMusicQrLogin({ force: true });
+      }
+    }
+    let state = await getState();
+    if (qr.done && qr.capture?.cookie) {
+      state = await saveCookies({ qqCookie: qr.capture.cookie });
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      message: qr.message,
+      status: publicQQConnectionStatus(qr),
+      qr: qr.done ? null : {
+        key: qr.key,
+        images: qr.images,
+        expiresAt: qr.expiresAt,
+      },
+      state,
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/qr/check') {
+    const body = await readJsonBody(req);
+    const status = await checkQQMusicQrLogin(body.key);
+    let state = await getState();
+    if (status.done && status.capture?.cookie) {
+      try {
+        await listQQPlaylists(status.capture.cookie);
+      } catch {
+        return sendJson(res, 200, {
+          ok: true,
+          message: '手机确认已完成，正在等待 QQ 音乐会话就绪。',
+          status: {
+            code: 'credential_verifying',
+            message: '手机确认已完成，正在等待 QQ 音乐会话就绪。',
+            done: false,
+            waiting: true,
+          },
+          state,
+        });
+      }
+      completeQQMusicQrLogin(body.key);
+      state = await saveCookies({ qqCookie: status.capture.cookie });
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      message: status.message,
+      status: publicQQConnectionStatus(status),
+      state,
+    });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/qq/browser/open') {
     const browser = await openQQMusicBrowser();
     return sendJson(res, 200, {
       ok: true,
-      message: 'QQ 音乐登录窗口已打开。请在打开的窗口中扫码或确认登录，后台会自动保存 Cookie。',
+      message: '腾讯官方登录页已打开。可使用本机 QQ/微信快捷登录，完成后这里会自动继续。',
       browser,
       state: await getState(),
     });
@@ -597,6 +937,7 @@ async function handleApi(req, res, url) {
       qqPlaylistId: body.qqPlaylistId,
       neteaseUid: body.neteaseUid,
       neteasePlaylistId: body.neteasePlaylistId,
+      refreshBrowserCredential: body.refreshBrowserCredential !== false,
     });
     return sendJson(res, 200, {
       ok: true,
@@ -1302,6 +1643,57 @@ function httpError(status, message) {
   const error = new Error(message);
   error.httpStatus = status;
   return error;
+}
+
+async function readSavedAppleSourceUrl() {
+  try {
+    const snapshot = JSON.parse(await fs.readFile(FILES.appleJson, 'utf8'));
+    const source = String(snapshot?.source || '').trim();
+    return /^https:\/\/music\.apple\.com\//iu.test(source) ? source : '';
+  } catch {
+    return '';
+  }
+}
+
+async function completeAppleBrowserConnection(status) {
+  const capture = await captureAppleMusicPage({
+    playlistId: status.playlistId,
+    playlistType: status.playlistType,
+    sourceUrl: status.sourceUrl,
+  });
+  const apple = await importAppleRows(capture.tracks, capture.source || 'apple-browser', {
+    enrichStorefronts: true,
+  });
+  const connectedStatus = {
+    code: 'connected',
+    message: `Apple Music 已连接，读取 ${apple.tracks.length} 首喜爱歌曲。`,
+    done: true,
+    waiting: false,
+    count: apple.tracks.length,
+  };
+  return {
+    message: connectedStatus.message,
+    status: connectedStatus,
+  };
+}
+
+function publicAppleConnectionStatus(status = {}) {
+  return {
+    code: String(status.code || 'unknown'),
+    message: String(status.message || ''),
+    done: false,
+    waiting: Boolean(status.waiting),
+    count: 0,
+  };
+}
+
+function publicQQConnectionStatus(status = {}) {
+  return {
+    code: String(status.code || 'unknown'),
+    message: String(status.message || ''),
+    done: Boolean(status.done),
+    waiting: Boolean(status.waiting),
+  };
 }
 
 function summarizeSnapshots(snapshots) {

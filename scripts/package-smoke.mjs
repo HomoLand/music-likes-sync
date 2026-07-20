@@ -22,17 +22,23 @@ const REQUIRED_FILES = [
   'src/state-schema.js',
   'src/state-migrations.js',
   'src/live-validation.js',
+  'src/auto-sync.js',
+  'src/run-lock.js',
+  'src/product-add-review.js',
+  'src/sync-backup.js',
   'src/providers/qq.js',
   'src/providers/netease.js',
   'web/index.html',
   'web/app.js',
   'web/styles.css',
   'web-app/index.html',
+  'web-app/dist/index.html',
   'web-app/vite.config.ts',
   'web-app/tsconfig.json',
   'web-app/src/app/App.tsx',
   'web-app/src/api/client.ts',
   'web-app/src/api/types.ts',
+  'web-app/src/screens/AutoSyncScreen.tsx',
   'docs/PRODUCT_ROADMAP.md',
   'docs/PROVIDERS.md',
   'docs/STATE.md',
@@ -56,6 +62,13 @@ const REQUIRED_FILES = [
   'test/fixtures/ai-eval/track-match-cases.json',
   'test/fixtures/ai-eval/tombstone-model-cases.json',
   'test/live-validation.test.js',
+  'test/netease-provider.test.js',
+  'test/auto-sync.test.js',
+  'test/run-lock.test.js',
+  'test/product-add-review.test.js',
+  'test/sync-ai.test.js',
+  'test/sync-backup.test.js',
+  'test/sync-backup-workflow.test.js',
   'test/fetch-docker-report.test.js',
   'test/release-readiness.test.js',
   'test/state-migrations.test.js',
@@ -100,7 +113,6 @@ function isAllowedPublicPath(filePath) {
 function forbiddenReason(filePath) {
   if (filePath === '.env') return 'root env file';
   if (filePath.startsWith('.env.') && filePath !== '.env.example') return 'non-example env file';
-  if (filePath.startsWith('web-app/dist/')) return 'generated frontend build output';
   if (filePath.startsWith('data/')) return 'local runtime state';
   if (filePath.startsWith('reports/')) return 'local report output';
   if (filePath.startsWith('node_modules/')) return 'installed dependency tree';
@@ -136,6 +148,7 @@ const paths = pack.files.map((file) => file.path).sort();
 const pathSet = new Set(paths);
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const binProblems = packageBinProblems(pkg, pathSet);
+const webBuildProblems = packagedWebBuildProblems(pathSet);
 
 const missing = REQUIRED_FILES.filter((file) => !pathSet.has(file));
 const forbidden = paths
@@ -144,7 +157,11 @@ const forbidden = paths
 const unexpected = paths.filter((file) => !isAllowedPublicPath(file));
 
 const result = {
-  ok: missing.length === 0 && forbidden.length === 0 && unexpected.length === 0 && binProblems.length === 0,
+  ok: missing.length === 0
+    && forbidden.length === 0
+    && unexpected.length === 0
+    && binProblems.length === 0
+    && webBuildProblems.length === 0,
   name: pack.name,
   version: pack.version,
   fileCount: paths.length,
@@ -153,6 +170,7 @@ const result = {
   forbidden,
   unexpected,
   binProblems,
+  webBuildProblems,
 };
 
 const output = JSON.stringify(result, null, 2);
@@ -182,6 +200,16 @@ function packageBinProblems(pkg, pathSet) {
     }
     return problems;
   });
+}
+
+function packagedWebBuildProblems(pathSet) {
+  const assetPaths = [...pathSet].filter((file) => file.startsWith('web-app/dist/assets/'));
+  const hasJavaScript = assetPaths.some((file) => /\.js$/u.test(file));
+  const hasStylesheet = assetPaths.some((file) => /\.css$/u.test(file));
+  const problems = [];
+  if (!hasJavaScript) problems.push('compiled React JavaScript asset is missing');
+  if (!hasStylesheet) problems.push('compiled React stylesheet is missing');
+  return problems;
 }
 
 function normalizeBinEntries(pkg) {

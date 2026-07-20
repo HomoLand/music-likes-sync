@@ -1,6 +1,6 @@
 # Ordinary User API Contract
 
-Last updated: 2026-07-08
+Last updated: 2026-07-12
 
 This document defines the ordinary-user API contract for the policy-driven redesign. The core app-state, sync-mode, sync-check, sync-preview, addition execution, deletion confirmation, and deletion execution endpoints are implemented for the Apple-canonical compatibility path and are consumed by the first ordinary-user UI bridge in `web/product-app.js`. Apple-canonical execution now fans out sequentially across selected QQ / NetEase targets through the existing mirror executor and returns both aggregate counters and per-target results. Union / managed policy execution has controlled ready-add and confirmed-delete paths with dedicated `sync-runs` audit logs. Deterministic local AI profile, consent-gated model-assisted profile summaries, similar-track, recommendation, non-secret AI provider preferences, sync-item explanation, tombstone risk grouping, and read-only Agent tool endpoints are also implemented; richer external Agent adapters remain target contracts.
 
@@ -127,6 +127,7 @@ Response data:
       "id": "apple",
       "label": "Apple Music",
       "state": "readable",
+      "credentialPresent": true,
       "trackCount": 844,
       "lastReadAt": "2026-07-08T08:00:00.000Z",
       "capabilities": {
@@ -192,8 +193,21 @@ Response data:
 
 Rules:
 
+- `credentialPresent` is a local boolean used to suppress unnecessary login UI. It must never contain or imply any credential value, account id, or token metadata.
 - `lastSyncRun` is a summary for ordinary users: policy, action, target, dry-run flag, status, timestamps, and add/remove counters.
 - `lastSyncRun` must not expose idempotency keys, operation keys, playlist ids, raw provider payloads, cookies, API keys, or full run logs.
+
+### Browser connection APIs
+
+Implemented connection routes:
+
+- `POST /api/apple/connect/start`: open the persistent Apple browser profile for a one-time official sign-in.
+- `POST /api/apple/connect/check`: detect MusicKit authorization, locate the canonical Favorite Songs library playlist, import its tracks, and return only a sanitized status and count.
+- `POST /api/qq/qr/start`: start Tencent's official login page in the dedicated browser profile and return transient QQ / WeChat QR PNG data plus a random expiring session key.
+- `POST /api/qq/qr/check`: poll the same local browser session; on success the backend saves the write-capable credential without returning it.
+- `POST /api/qq/browser/open` and `POST /api/qq/browser/check`: visible official-page fallback for Tencent's local QQ / WeChat quick-login controls.
+
+Connection status fields are `code`, `message`, `done`, and `waiting`; Apple may also return a sanitized imported-song `count`. QR image data and session keys are short lived and must not be persisted. Responses must never include Apple user tokens, QQ cookies, OAuth codes, browser profile paths, account ids, or playlist ids. A later platform refresh may reuse the dedicated profiles in headless mode before calling provider APIs.
 
 ### `POST /api/platforms/read`
 
@@ -354,6 +368,38 @@ Rules:
 - `will_add` and `may_delete` must not be confirmed together.
 - `may_delete` items must include the confirmation state and destructive target metadata only after sanitization.
 - Raw provider response fragments are not returned.
+- Tracks may include a normalized public `artworkUrl`. Missing artwork stays empty; the API must not substitute unrelated demo covers.
+- Items may include sanitized `relatedMatches` for the same source recording so QQ and NetEase versions can be compared without merging their operation ids or decisions.
+
+### `POST /api/sync/media`
+
+Purpose:
+
+- Resolve real artwork and a short-lived playable URL for one source, target, candidate, resolved candidate, or alternative that already belongs to the current preview.
+- Support human A/B listening during manual review without exposing provider credentials or treating audio as AI input.
+
+Request:
+
+```json
+{
+  "previewId": "preview-20260708-081300",
+  "operationId": "op-001",
+  "role": "alternative",
+  "alternativeIndex": 0,
+  "alignWithSource": true
+}
+```
+
+Rules:
+
+- `previewId` must match the current preview and `operationId` must exist in it.
+- `role` is limited to `source`, `target`, `candidate`, `resolved`, or `alternative`; alternative indexes are bounds-checked.
+- QQ and NetEase playback URLs are resolved on demand, cached only in process memory, and never persisted to state, logs, AI evidence, or Agent traces.
+- `alignWithSource = true` locally fingerprints the selected version and the Apple source with FFmpeg Chromaprint. The response may include `media.alignment.status = aligned | not_aligned | unavailable`, `confidence`, `offsetFromSourceSeconds`, source/target start offsets, common overlap, and the bounded preview duration.
+- Fingerprints and audio bytes stay in process memory and are never persisted or sent to AI / Agent providers. A score below the reliability threshold must return `not_aligned` with zero offset rather than a guessed alignment.
+- The UI never autoplays, preserves the source-relative musical position while switching reliably aligned versions, and stops playback after at most 30 seconds. Only one version may play at a time.
+- Copyright, membership, or region failures return `playable = false` with an ordinary-user reason; they are not treated as match evidence or provider failure.
+- The endpoint is not an arbitrary URL fetch or audio proxy. It can resolve only tracks already present in the validated preview.
 
 ## Review And Execution APIs
 
@@ -550,6 +596,7 @@ Actions:
 - `accept_candidate`: uses the current `candidateTrack` as `resolvedTargetTrack` and marks the add operation `ready`.
 - `select_alternative`: uses `alternatives[alternativeIndex]` as `resolvedTargetTrack` and marks the add operation `ready`.
 - `skip`: marks the add operation `blocked` with `blockedReason = "user_skipped_add_candidate"`.
+- A skipped add remains write-blocked, but product preview groups it under `not_found` instead of returning it to `needs_confirmation`.
 - `clear`: clears the manual add decision and returns the item to review / resolution state.
 
 Rules:
@@ -579,6 +626,7 @@ Actions:
 
 - `accept_candidate`: accepts each selected operation's current `candidateTrack`.
 - `skip`: marks each selected operation blocked with `blockedReason = "user_skipped_add_candidate"`.
+- Skipped operations are final user decisions for the current candidate set, so preview counts place them in `not_found` while keeping provider writes blocked.
 - `clear`: clears selected manual add decisions.
 
 Rules:
@@ -589,6 +637,27 @@ Rules:
 - Items without an acceptable candidate are skipped and reported in `skippedItems`.
 - This endpoint only mutates local `data/sync-preview.json`; provider writes still require `POST /api/sync/execute-additions`.
 - The response includes `batchId`, `requested`, `changed`, `skipped`, changed `operationIds`, and a small preview of changed operations for audit UI.
+
+### `POST /api/sync/identity-decision`
+
+Purpose:
+
+- Save an ordinary user's judgment after comparing the Apple source recording with an existing QQ / NetEase version.
+- Persist the durable judgment, then incrementally replace only operations sharing its stable `decisionKey`; a later explicit full rebuild must derive the same action shape.
+
+Actions:
+
+- `keep`: treat the target version as the same recording and rebuild it as a safe `keep` operation.
+- `separate`: treat the versions as different and rebuild the original review into the required Apple-version addition and / or target-version removal drafts.
+- `clear`: remove the durable judgment and return the relationship to the review queue.
+
+Rules:
+
+- The endpoint writes only `data/mirror-decisions.json` and incrementally updated local preview state; it never calls a provider write API or reruns full-library matching.
+- A `separate` judgment cannot execute deletion. The resulting removal remains behind dry-run, live-validation, recovery-point, and explicit deletion-confirmation gates.
+- The stable `decisionKey` is derived from review reason plus source / target identities, so the decision survives preview regeneration and operation-id changes.
+- Identity-decision mutations are serialized locally to avoid lost updates from rapid repeated clicks. The response reports `updateMode = "incremental"` and returns the requested preview bucket directly from the updated in-memory plan.
+- A `separate` response also returns `resolutionOperationIds`. The web client immediately searches those target-platform additions and shows an explicit per-row retry when no candidate is available; candidate search is read-only and does not execute playlist writes.
 
 ### `POST /api/sync/confirm-deletions`
 
@@ -647,7 +716,56 @@ Rules:
 - Managed policy delete execution writes sanitized per-target entries to `data/sync-runs.json`; Apple canonical compatibility execution continues to write `data/mirror-runs.json`.
 - `union_convergence` and `read_only_analysis` must reject deletion execution.
 - Confirmed policy deletes that lack safe provider ids remain blocked and are reported without provider mutation.
+- Every real deletion refreshes the selected target snapshots and persists a validated `data/sync-backups.json` recovery point before the first provider delete call. If refresh, playlist-identity discovery, checksum validation, or backup persistence fails, deletion fails closed.
+- Multi-target deletion preflights every target and every confirmation before any provider call, preventing one target from being deleted before a later target fails validation.
 - After real managed policy deletes, `refreshAfterWrite` defaults to true and rebuilds the current `sync-preview`; refresh failures are returned as `convergence.status = "refresh_failed"` without hiding the already completed provider write result.
+
+### `GET /api/sync/backups`
+
+Purpose:
+
+- Return bounded, sanitized pre-delete recovery points and restore-run summaries.
+
+Rules:
+
+- Responses include counts, timestamps, checksums, and integrity status only.
+- Playlist ids, provider track ids, full track metadata, cookies, and raw provider payloads are never returned.
+
+### `POST /api/sync/backups`
+
+Purpose:
+
+- Refresh selected QQ / NetEase liked playlists and create a recovery point without mutating a provider.
+
+Rules:
+
+- A writable playlist identity is required for every target; backup creation fails closed otherwise.
+- Raw provider payloads are removed and a SHA-256 checksum covers the complete compact track list.
+- The latest five recovery points are retained by default.
+
+### `POST /api/sync/backups/restore`
+
+Purpose:
+
+- Preview or execute an additions-only restore from one recovery point.
+
+Request:
+
+```json
+{
+  "backupId": "sync-backup-...",
+  "dryRun": false,
+  "confirmText": "RESTORE BACKUP sync-backup-..."
+}
+```
+
+Rules:
+
+- Restore defaults to dry-run and reports only per-target counts.
+- Real restore requires the exact backup-specific confirmation text and fresh live-validation evidence.
+- The checksum and target playlist identity are verified before writes.
+- Restore adds only backup tracks missing from the current target; it never removes current tracks.
+- Targets are refreshed after writes and verification fails if any restorable track remains missing.
 
 ### `POST /api/sync/convergence`
 
@@ -667,10 +785,78 @@ Request:
 Rules:
 
 - This endpoint does not mutate provider libraries.
-- In `canonical_mirror`, it delegates to the existing mirror convergence check for the current mirror target.
+- In `canonical_mirror`, one requested target keeps the existing single-target mirror compatibility path; multiple requested targets refresh and rebuild one combined product preview so checking consistency cannot silently drop QQ or NetEase from the result.
 - In policy modes, it optionally refreshes selected target snapshots, rebuilds the current `sync-preview`, and stores `sync-preview.convergence`.
 - `refreshTarget: false` is allowed for local non-mutating smoke checks that only recompute from existing snapshots.
 - Responses use summary-only counts and sanitized snapshot summaries; they must not expose credentials or raw provider payloads.
+
+## Automatic Sync APIs
+
+### `GET /api/auto-sync`
+
+Purpose:
+
+- Return sanitized automatic-sync settings, readiness gates, selected snapshot freshness, live-validation summaries, and bounded run history.
+- This endpoint is read-only and never contacts providers.
+
+Rules:
+
+- Responses must not expose cookies, API keys, playlist ids, provider track ids, raw snapshots, or the execution-lock token.
+- Readiness must explain a missing required baseline, stale / missing snapshots, read-only policy, and missing target live validation in ordinary-user language. `readiness.baseline` exposes only `exists`, `savedAt`, and policy-scoped `required` fields.
+
+### `POST /api/auto-sync`
+
+Purpose:
+
+- Save automatic-sync settings for QQ Music and / or NetEase Cloud Music.
+
+Request:
+
+```json
+{
+  "enabled": true,
+  "intervalMinutes": 60,
+  "targets": ["qq", "netease"],
+  "refreshApple": true,
+  "refreshTargets": true,
+  "autoExecuteAdditions": true,
+  "requireBaseline": true,
+  "maxSourceAgeMinutes": 1440
+}
+```
+
+Rules:
+
+- Enabling fails closed unless the policy, snapshot freshness, live-validation, and any policy-required baseline gates all pass. `canonical_mirror` does not require a historical baseline; baseline-dependent policies still do when `requireBaseline` is true.
+- Apple is not an accepted target.
+- The interval is limited to 15 minutes through 24 hours.
+- This endpoint saves local settings only; it does not run a sync or mutate a provider.
+- There is no setting that permits scheduled deletion.
+
+### `POST /api/auto-sync/run`
+
+Purpose:
+
+- Run an immediate automatic-sync check or, after explicit user intent, execute ready additions.
+
+Request:
+
+```json
+{
+  "dryRun": true,
+  "executeAdditions": false
+}
+```
+
+Rules:
+
+- Manual API calls default to dry-run.
+- Real additions require automation to be enabled, `autoExecuteAdditions = true`, all readiness gates to pass, and `executeAdditions = true`.
+- Scheduled runs may execute ready additions only after the same readiness gates pass.
+- Possible deletions and deletion signals are returned as attention items. This route never calls the deletion executor.
+- Apple refresh must come from the MusicKit API, match the last trusted playlist identity, and pass the large-count-drop guard. DOM fallback is not authoritative for automatic sync.
+- A process-local guard and `data/auto-sync.lock` prevent overlapping runs across server processes. Lock conflicts return HTTP `409`.
+- Run history and errors are sanitized before persistence and response.
 
 ## Validation APIs
 
@@ -909,6 +1095,36 @@ Rules:
 - Payloads do not include cookies, user ids, playlist ids, or full snapshots by default.
 - Suggestions are saved as suggestions only; applying them requires `POST /api/sync/confirm-review`.
 
+### `POST /api/ai/additions/review`
+
+Purpose:
+
+- Batch-review target-platform search candidates for low-confidence addition operations in the current product sync preview.
+
+Rules:
+
+- Requires `consent: true` before sending the selected candidates' minimized evidence to the configured AI provider.
+- Inputs are limited to already searched candidates and up to three local alternatives; the model cannot invent or search for a new provider track.
+- MusicBrainz cache evidence, ISRC, title / artist aliases, album, duration, deterministic scores, and version-risk signals may be included. Cookies, API keys, playlist ids, user ids, raw snapshots, and raw provider payloads are forbidden.
+- Results are persisted as local `aiReview` drafts on the matching preview operations with `add`, `skip`, or `needs_human`, confidence, evidence, reason, and safety-guard status.
+- AI review never changes the operation's executable status, accepts a candidate, skips a candidate, or writes a provider playlist. The user must still apply an addition decision and run the controlled addition executor.
+- Safety downgrades model suggestions to `needs_human` when duration, version cues, existing-target presence, action consistency, or speculative evidence fails deterministic checks.
+- Non-human model actions below the confidence floor are downgraded. An `add` draft also requires same-ISRC evidence or at least three strong deterministic dimensions across title, artist, album, and duration; model-memory alias claims are not sufficient evidence.
+
+### `POST /api/ai/identity/review`
+
+Purpose:
+
+- Batch-review Apple-vs-target identity conflicts that already appear in the human review queue.
+
+Rules:
+
+- Requires `consent: true`; only minimized metadata, deterministic scores, ISRC / MusicBrainz evidence, duration, aliases, and version-risk signals may leave the local process.
+- The model can return only `keep`, `separate`, or `needs_human` drafts. Deterministic safety checks can downgrade unsafe or speculative output to `needs_human`.
+- Drafts persist in `data/mirror-ai-suggestions.json` and are reattached by stable `decisionKey` whenever the product preview is rebuilt.
+- AI output never writes `data/mirror-decisions.json`, changes an operation to executable, or calls provider APIs. Only `POST /api/sync/identity-decision` records the user's final judgment.
+- Audio is human-only evidence: preview URLs and audio bytes are never included in AI requests.
+
 ### `POST /api/ai/profile`
 
 Purpose:
@@ -1048,10 +1264,14 @@ Rules:
 | `POST /api/platforms/read` | Apple / QQ / NetEase snapshot and browser capture routes | Keep credential values hidden. |
 | `POST /api/sync/check` | `/api/mirror/plan`, `buildMirrorSyncPlan`, future policy core | Read-only. |
 | `GET /api/sync/preview` | `data/mirror-plan.json`, `data/sync-preview.json` | Group into user buckets. |
+| `POST /api/sync/media` | Apple catalog media, QQ vkey, NetEase song URL | Operation-scoped, ephemeral, no autoplay or persistence. |
 | `POST /api/sync/confirm-review` | `/api/mirror/decision`, `/api/mirror/decisions` | Local decisions only. |
 | `POST /api/sync/execute-additions` | `/api/mirror/apply` with add-only selection; policy `sync-preview` ready-add execution | No deletion operations. |
 | `POST /api/sync/confirm-deletions` | mirror deletion confirmation state; policy tombstone state | Local confirmation only. |
 | `POST /api/sync/execute-deletions` | `/api/mirror/apply` with remove-only selection; policy `sync-preview` confirmed-tombstone delete execution | Requires prior confirmation. |
+| `GET /api/sync/backups` | `data/sync-backups.json` sanitized summaries | Read-only; omits playlist and track ids. |
+| `POST /api/sync/backups` | target snapshot refresh plus compact checksummed local recovery state | No provider mutation. |
+| `POST /api/sync/backups/restore` | additions-only provider recovery plus post-write verification | Dry-run by default; exact confirmation for writes. |
 | `POST /api/sync/convergence` | `/api/mirror/convergence`; policy `sync-preview` refresh/rebuild | Read-only provider refresh plus local derived state. |
 | `POST /api/ai/review` | `/api/mirror/ai/review`, `/api/sync/ai/review` | Product consent and evidence schema wrapper. |
 | `GET /api/agent/tools` | `src/agent-tools.js`, `src/agent-mcp.js` | Optional HTTP and stdio MCP integration. |

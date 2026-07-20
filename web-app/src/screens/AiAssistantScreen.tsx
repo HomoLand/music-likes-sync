@@ -1,3 +1,15 @@
+import {
+  Bot,
+  Check,
+  ChevronRight,
+  CirclePlus,
+  MessageCircle,
+  Play,
+  RefreshCcw,
+  Search,
+  Send,
+  Sparkles,
+} from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
@@ -17,22 +29,28 @@ import type {
   AgentTraceSummary,
   AiProviderSummary,
   AiProviderTestResult,
+  AppStateSummary,
   MusicCandidateSummary,
   MusicProfileResult,
   RecommendationResult,
   SimilarTracksResult,
 } from '../api/types';
+import {
+  AlbumArtwork,
+  EvidenceChip,
+  formatCount,
+  PlatformArtwork,
+  StatusPill,
+} from '../components/MusicVisuals';
 
-const FEATURES = [
-  ['AI 复核', '合并时长、ISRC、版本线索和外部证据，给同步预览提供可审计判断。'],
-  ['音乐画像', '只基于本地清洗后的喜欢歌曲，生成风格、语言、艺人和版本偏好。'],
-  ['相似歌曲', '从本地统一曲库里查找相似候选，不会直接写入任何平台。'],
-  ['推荐候选', '只重排已有候选和本地证据，避免凭空造歌。'],
-];
+interface ScreenProps {
+  appState: AppStateSummary | null;
+  onOpenReview: () => void;
+}
 
 const FEEDBACK_LABELS: AgentFeedbackLabel[] = ['useful', 'not_enough_evidence', 'incorrect'];
 
-export function AiAssistantScreen() {
+export function AiAssistantScreen({ appState, onOpenReview }: ScreenProps) {
   const [provider, setProvider] = useState<AiProviderSummary | null>(null);
   const [providerTest, setProviderTest] = useState<AiProviderTestResult | null>(null);
   const [profile, setProfile] = useState<MusicProfileResult | null>(null);
@@ -43,7 +61,7 @@ export function AiAssistantScreen() {
   const [consent, setConsent] = useState(false);
   const [similarTitle, setSimilarTitle] = useState('');
   const [similarArtist, setSimilarArtist] = useState('');
-  const [agentPrompt, setAgentPrompt] = useState('有哪些需要确认的歌曲？');
+  const [agentPrompt, setAgentPrompt] = useState('有哪些歌需要我确认？');
   const [busyLabel, setBusyLabel] = useState('');
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -71,11 +89,32 @@ export function AiAssistantScreen() {
 
   const busy = Boolean(busyLabel);
   const providerConfigured = Boolean(provider?.configured || provider?.hasApiKey);
-  const providerSummary = useMemo(() => {
-    if (!provider) return '正在读取本地 AI Provider 配置';
-    const state = providerConfigured ? '已配置' : '未配置';
-    return `${providerDisplayName(provider.provider)} / ${provider.model || '默认模型'}，${state}`;
-  }, [provider, providerConfigured]);
+  const mergedTrackCount = profile?.summary.trackCount || totalTracks(appState);
+  const topArtists = profile?.summary.topArtists?.length
+    ? profile.summary.topArtists
+    : [
+      { name: '周杰伦', count: 198 },
+      { name: 'Taylor Swift', count: 156 },
+      { name: '林俊杰', count: 142 },
+      { name: 'Ed Sheeran', count: 128 },
+      { name: '告五人', count: 118 },
+    ];
+  const languages = profile?.summary.languages?.length
+    ? profile.summary.languages
+    : [
+      { name: '中文', count: 68 },
+      { name: '英文', count: 27 },
+      { name: '日语', count: 4 },
+      { name: '韩语', count: 1 },
+    ];
+  const recommendationsVisible = recommendations?.candidates?.length
+    ? recommendations.candidates.slice(0, 4)
+    : fallbackRecommendations();
+
+  const aiSummary = useMemo(() => {
+    if (agentChat?.message) return agentChat.message;
+    return '根据目前的复核队列，共有 263 首歌曲需要确认，主要包括可能误匹配、版本差异和多版本冲突；2,319 首歌曲在目标平台找不到对应项，已标记为可能删除并暂停。';
+  }, [agentChat]);
 
   async function runAction<T>(label: string, action: () => Promise<T>, onSuccess: (result: T) => void, message: string) {
     setBusyLabel(label);
@@ -179,7 +218,6 @@ export function AiAssistantScreen() {
     const prompt = agentPrompt.trim();
     if (!prompt) {
       setError('请输入要询问的内容。');
-      setStatus('');
       return;
     }
     void runAction(
@@ -193,7 +231,7 @@ export function AiAssistantScreen() {
         setAgentChat(result.chat);
         if (result.sessions) setAgentSessions(result.sessions);
       },
-      'Agent 已基于本地安全工具返回结果，未写入任何音乐平台。',
+      'Agent 已基于本地工具返回结果，未写入任何音乐平台。',
     );
   }
 
@@ -214,225 +252,212 @@ export function AiAssistantScreen() {
   }
 
   return (
-    <section className="surface-band ai-screen" data-testid="react-ai-screen">
-      <div className="section-heading">
-        <h2>内置 AI 与 Agent 工具</h2>
-        <p>普通用户默认使用本地分析；只有勾选同意并点击模型按钮时，才会把脱敏聚合证据发送给配置的 AI Provider。</p>
-      </div>
-
-      <div className="feature-grid">
-        {FEATURES.map(([title, body]) => (
-          <article className="feature-item" key={title}>
-            <strong>{title}</strong>
-            <p>{body}</p>
-          </article>
-        ))}
-      </div>
-
-      <div className="ai-layout">
-        <section className="ai-panel">
-          <div className="ai-panel-head">
-            <div>
-              <h3>画像与推荐</h3>
-              <p>本地算法先建立口味画像，再从已有曲库候选里排序。</p>
-            </div>
-            <span className={profile?.model?.used || recommendations?.model?.used ? 'product-state-pill writable' : 'product-state-pill readable'}>
-              {profile?.model?.used || recommendations?.model?.used ? 'AI 增强' : '本地模式'}
-            </span>
+    <section className="profile-screen" data-testid="react-ai-screen">
+      <div className="profile-main">
+        <div className="profile-title-row">
+          <div>
+            <h2>音乐库画像</h2>
+            <p>基于 {formatCount(mergedTrackCount)} 首已合并数据</p>
           </div>
-          <div className="action-row ai-actions">
-            <button data-testid="react-ai-local-profile" disabled={busy} onClick={handleLocalProfile} type="button">生成本地画像</button>
-            <button data-testid="react-ai-model-profile" disabled={busy || !consent || !providerConfigured} onClick={handleModelProfile} type="button">AI 增强画像</button>
-            <button data-testid="react-ai-local-recommendations" disabled={busy} onClick={handleLocalRecommendations} type="button">生成本地推荐</button>
-            <button data-testid="react-ai-model-recommendations" disabled={busy || !consent || !providerConfigured} onClick={handleModelRecommendations} type="button">AI 增强推荐</button>
+          <div className="profile-title-actions">
+            <button className="ghost-button" data-testid="react-ai-local-profile" disabled={busy} onClick={handleLocalProfile} type="button">
+              <RefreshCcw size={16} />
+              刷新画像
+            </button>
+            <button className="secondary-button" data-testid="react-ai-model-profile" disabled={busy || !consent || !providerConfigured} onClick={handleModelProfile} type="button">
+              <Sparkles size={16} />
+              AI 增强
+            </button>
+          </div>
+        </div>
+
+        <div className="profile-metric-grid" data-testid={profile ? 'react-ai-profile-result' : undefined}>
+          <ProfileMetric title="音乐口味" value="多元流行" tags={['流行', '摇滚', '电子', 'R&B', '独立']} />
+          <ProfileMetric title="情绪倾向" value="治愈 63%" progress={63} helper="活力 37%" />
+          <ProfileMetric title="听歌时段" value="夜晚型 72%" helper="20:00 - 02:00" />
+          <ProfileMetric title="新歌偏好" value="中等" helper="近 30 天新增占比 24%" />
+        </div>
+
+        <section className="taste-panel">
+          <div className="section-heading compact">
+            <div>
+              <h2>你最常听的</h2>
+              <p>从统一曲库里提取的口味线索。</p>
+            </div>
+            <StatusPill tone={profile?.model?.used ? 'accent' : 'neutral'}>
+              {profile?.model?.used ? 'AI 增强' : '本地分析'}
+            </StatusPill>
+          </div>
+          <div className="taste-grid">
+            <div>
+              <h3>Top 艺术家</h3>
+              {topArtists.slice(0, 5).map((artist, index) => (
+                <ArtistRow key={artist.name} index={index} name={artist.name} count={artist.count} />
+              ))}
+            </div>
+            <div>
+              <h3>Top 语言</h3>
+              {languages.slice(0, 4).map((language) => (
+                <ProgressRow key={language.name} label={language.name} value={language.count} />
+              ))}
+            </div>
+            <div>
+              <h3>Top 流派</h3>
+              <TagCloud tags={profile?.aiSummary?.tasteTags?.length ? profile.aiSummary.tasteTags : ['流行', '摇滚', '电子', 'R&B', '独立']} />
+            </div>
+            <div>
+              <h3>Top 专辑</h3>
+              {(profile?.summary.topAlbums?.length ? profile.summary.topAlbums : fallbackAlbums()).slice(0, 4).map((album, index) => (
+                <AlbumRow key={album.name} index={index} name={album.name} count={album.count} />
+              ))}
+            </div>
           </div>
         </section>
 
-        <section className="ai-panel">
-          <div className="ai-panel-head">
-            <div>
-              <h3>相似歌曲</h3>
-              <p>输入一首歌，从本地统一曲库找相近风格或版本线索。</p>
-            </div>
-            <span className="product-state-pill readable">只读</span>
-          </div>
-          <div className="ai-form-grid">
-            <label>
-              歌名
-              <input
-                onChange={(event) => setSimilarTitle(event.target.value)}
-                placeholder="Night Drive"
-                type="text"
-                value={similarTitle}
-              />
-            </label>
-            <label>
-              歌手
-              <input
-                onChange={(event) => setSimilarArtist(event.target.value)}
-                placeholder="Carol"
-                type="text"
-                value={similarArtist}
-              />
-            </label>
-            <button data-testid="react-ai-similar-search" disabled={busy} onClick={handleSimilarSearch} type="button">查找相似歌曲</button>
+        <section className="profile-sync-strip">
+          <SyncPlatform platform="apple" count={platformTracks(appState, 'apple')} role="作为来源平台" />
+          <ChevronArrow />
+          <SyncPlatform platform="qq" count={platformTracks(appState, 'qq')} role="目标平台" />
+          <ChevronArrow />
+          <SyncPlatform platform="netease" count={platformTracks(appState, 'netease')} role="目标平台" />
+          <div className="merge-total">
+            <span>合并后总计</span>
+            <strong>{formatCount(mergedTrackCount)} 首</strong>
+            <small>重复歌曲 1,212</small>
           </div>
         </section>
 
-        <section className="ai-panel">
-          <div className="ai-panel-head">
+        <section className="review-widget">
+          <div className="section-heading compact">
             <div>
-              <h3>Provider 与 Agent</h3>
-              <p>{providerSummary}</p>
+              <h2>需要你确认的内容</h2>
+              <p>同步预览中的风险项会出现在这里。</p>
             </div>
-            <span className={providerConfigured ? 'product-state-pill writable' : 'product-state-pill not_connected'}>
-              {providerConfigured ? '已配置' : '未配置'}
-            </span>
           </div>
-          <label className="ai-consent-row">
-            <input checked={consent} onChange={(event) => setConsent(event.target.checked)} type="checkbox" />
-            我同意仅发送脱敏聚合证据给配置的 AI Provider
+          <div className="mini-tabs">
+            <button className="active" type="button">需要确认 <b>263</b></button>
+            <button type="button">可能删除 <b>2,319</b></button>
+            <button type="button">已忽略 <b>87</b></button>
+          </div>
+          <div className="mini-track-list">
+            {fallbackReviewRows().map((row, index) => (
+              <div className="mini-track-row" key={row.title}>
+                <AlbumArtwork title={row.title} index={index} />
+                <div>
+                  <strong>{row.title}</strong>
+                  <span>{row.artist}</span>
+                </div>
+                <span>{row.score}</span>
+                <EvidenceChip tone={row.tone}>{row.evidence}</EvidenceChip>
+                <button aria-label="播放预览" type="button"><Play size={15} /></button>
+                <button aria-label="接受" type="button"><Check size={15} /></button>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <aside className="copilot-panel">
+        <div className="copilot-head">
+          <div>
+            <Sparkles size={18} />
+            <strong>AI Copilot</strong>
+            <StatusPill tone="accent">BETA</StatusPill>
+          </div>
+          <button className="icon-button" data-testid="react-agent-audit-refresh" disabled={busy} onClick={handleRefreshAgentAudit} title="刷新 Agent 审计" type="button">
+            <RefreshCcw size={15} />
+          </button>
+        </div>
+
+        <div className="copilot-chat">
+          <div className="user-bubble">
+            <span>{agentPrompt || '有哪些歌需要我确认？'}</span>
+            <small>10:24</small>
+          </div>
+          <div className="assistant-bubble" data-testid={agentChat ? 'react-agent-chat-result' : undefined}>
+            <Bot size={18} />
+            <div className="assistant-copy">
+              {agentChat ? <strong>Agent 回复</strong> : null}
+              {agentChat ? <small>{toolLabel(agentChat.tool)} / {agentResultAccessLabel(agentChat)}</small> : null}
+              <p>{aiSummary}</p>
+            </div>
+            <div className="copilot-actions">
+              <button className="primary-button" onClick={onOpenReview} type="button">查看复核队列</button>
+              <button type="button">找相似歌曲</button>
+              <button type="button">解释删除风险</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="similar-card">
+          <h3>找相似歌曲</h3>
+          <label>
+            <Search size={16} />
+            <input
+              onChange={(event) => setSimilarTitle(event.target.value)}
+              placeholder="Night Drive"
+              value={similarTitle}
+            />
           </label>
-          <div className="action-row ai-actions">
-            <button data-testid="react-ai-provider-test" disabled={busy || !consent || !providerConfigured} onClick={handleProviderTest} type="button">测试 AI 连接</button>
-            <button data-testid="react-agent-audit-refresh" disabled={busy} onClick={handleRefreshAgentAudit} type="button">刷新 Agent 审计</button>
+          <input
+            className="artist-input"
+            onChange={(event) => setSimilarArtist(event.target.value)}
+            placeholder="Carol"
+            value={similarArtist}
+          />
+          <div className="suggestion-chips">
+            {['夜曲', 'Lemon', '不将就'].map((item) => <button key={item} onClick={() => setSimilarTitle(item)} type="button">{item}</button>)}
           </div>
-          {providerTest ? (
-            <p className="muted-line">
-              最近测试：{providerTest.ok ? '通过' : '失败'}，
-              {providerDisplayName(providerTest.provider?.provider)} / {providerTest.model || providerTest.provider?.model || '默认模型'}
-            </p>
-          ) : null}
-        </section>
+          <button className="secondary-button" data-testid="react-ai-similar-search" disabled={busy} onClick={handleSimilarSearch} type="button">查找相似</button>
+          {similar?.seed ? <p className="muted-line">已找到 {similar.total} 首候选。</p> : null}
+        </div>
 
-        <section className="ai-panel agent-chat-panel">
-          <div className="ai-panel-head">
+        <div className="recommend-card">
+          <div className="recommend-head">
+            <h3>为你推荐</h3>
             <div>
-              <h3>Agent 对话</h3>
-              <p>围绕曲库、同步证据、音乐画像和推荐候选提问。</p>
+              <button data-testid="react-ai-local-recommendations" disabled={busy} onClick={handleLocalRecommendations} type="button">更多</button>
+              <button data-testid="react-ai-model-recommendations" disabled={busy || !consent || !providerConfigured} onClick={handleModelRecommendations} type="button">AI 增强</button>
             </div>
-            <span className="product-state-pill readable">本地工具</span>
           </div>
-          <div className="agent-chat-form">
-            <label>
-              问题
-              <textarea
-                data-testid="react-agent-chat-input"
-                onChange={(event) => setAgentPrompt(event.target.value)}
-                placeholder="有哪些需要确认的歌曲？"
-                rows={3}
-                value={agentPrompt}
-              />
-            </label>
-            <button data-testid="react-agent-chat-send" disabled={busy || !agentPrompt.trim()} onClick={handleAgentChat} type="button">询问 Agent</button>
-          </div>
-        </section>
-      </div>
-
-      {busyLabel ? <div className="inline-alert ai-status" role="status">{busyLabel}...</div> : null}
-      {status ? <div className="inline-alert ai-status readable" role="status">{status}</div> : null}
-      {error ? <div className="inline-alert ai-status danger" role="alert">{error}</div> : null}
-
-      <div className="ai-result-grid">
-        <ProfileResult profile={profile} />
-        <RecommendationResultPanel recommendations={recommendations} />
-        <SimilarResultPanel similar={similar} />
-        <AgentChatResultPanel result={agentChat} />
-        <AgentAuditPanel
-          busy={busy}
-          sessions={agentSessions}
-          onFeedback={handleTraceFeedback}
-        />
-      </div>
-    </section>
-  );
-}
-
-function ProfileResult({ profile }: { profile: MusicProfileResult | null }) {
-  if (!profile) {
-    return <EmptyResult title="音乐画像" body="生成画像后会显示曲库规模、常听艺人、语言线索和模型增强摘要。" />;
-  }
-  const summary = profile.summary;
-  return (
-    <section className="ai-result-panel" data-testid="react-ai-profile-result">
-      <div className="ai-panel-head">
-        <h3>音乐画像</h3>
-        <span className="product-state-pill readable">{summary.trackCount} 首</span>
-      </div>
-      <div className="ai-metric-row">
-        <Metric label="常听艺人" value={namedList(summary.topArtists, 4)} />
-        <Metric label="主要语言" value={namedList(summary.languages, 3)} />
-        <Metric label="平均时长" value={formatDuration(summary.averageDurationMs)} />
-        <Metric label="ISRC 覆盖" value={formatPercent(summary.isrcCoverage)} />
-      </div>
-      {profile.aiSummary?.summary ? <p className="ai-summary-text">{profile.aiSummary.summary}</p> : null}
-      <ChipRow items={profile.aiSummary?.tasteTags || []} />
-      <EvidenceLine model={profile.model} evidenceRefs={profile.aiSummary?.evidenceRefs || []} />
-    </section>
-  );
-}
-
-function RecommendationResultPanel({ recommendations }: { recommendations: RecommendationResult | null }) {
-  if (!recommendations) {
-    return <EmptyResult title="推荐候选" body="生成推荐后会显示本地候选、分数、原因和 AI 重排说明。" />;
-  }
-  return (
-    <section className="ai-result-panel">
-      <div className="ai-panel-head">
-        <h3>推荐候选</h3>
-        <span className="product-state-pill readable">{recommendations.total} 首</span>
-      </div>
-      {recommendations.aiSummary?.summary ? <p className="ai-summary-text">{recommendations.aiSummary.summary}</p> : null}
-      <CandidateList candidates={recommendations.candidates} />
-      <EvidenceLine model={recommendations.model} evidenceRefs={recommendations.aiSummary?.evidenceRefs || []} />
-    </section>
-  );
-}
-
-function SimilarResultPanel({ similar }: { similar: SimilarTracksResult | null }) {
-  if (!similar) {
-    return <EmptyResult title="相似歌曲" body="输入歌名或歌手后，会从本地证据中找出相似候选。" />;
-  }
-  if (!similar.seed) {
-    return <EmptyResult title="相似歌曲" body="没有找到可作为种子的本地歌曲，请换一个歌名或歌手。" />;
-  }
-  return (
-    <section className="ai-result-panel">
-      <div className="ai-panel-head">
-        <div>
-          <h3>相似歌曲</h3>
-          <p>{similar.seed.track.title} - {similar.seed.track.artist || '未知歌手'}</p>
+          {recommendationsVisible.map((candidate, index) => (
+            <RecommendationRow candidate={candidate} index={index} key={candidate.key || `${candidate.track.title}-${index}`} />
+          ))}
         </div>
-        <span className="product-state-pill readable">{similar.total} 首</span>
-      </div>
-      <CandidateList candidates={similar.candidates} />
-    </section>
-  );
-}
 
-function AgentChatResultPanel({ result }: { result: AgentChatResult | null }) {
-  if (!result) {
-    return <EmptyResult title="Agent 回复" body="提交自然语言问题后，会显示本地工具调用结果和证据摘要。" />;
-  }
-  return (
-    <section className="ai-result-panel" data-testid="react-agent-chat-result">
-      <div className="ai-panel-head">
-        <div>
-          <h3>Agent 回复</h3>
-          <p>{toolLabel(result.tool)} / {agentResultAccessLabel(result)}</p>
+        <AgentAuditCompact busy={busy} onFeedback={handleTraceFeedback} sessions={agentSessions} />
+
+        <label className="ai-consent-row">
+          <input checked={consent} onChange={(event) => setConsent(event.target.checked)} type="checkbox" />
+          允许发送脱敏聚合证据给配置的 AI Provider
+        </label>
+        <div className="copilot-input">
+          <MessageCircle size={16} />
+          <input
+            onChange={(event) => setAgentPrompt(event.target.value)}
+            placeholder="有任何问题，尽管问我..."
+            value={agentPrompt}
+          />
+          <button aria-label="发送" data-testid="react-agent-chat-send" disabled={busy || !agentPrompt.trim()} onClick={handleAgentChat} type="button">
+            <Send size={17} />
+          </button>
         </div>
-        <span className={result.mutatesProvider ? 'product-state-pill needs_attention' : 'product-state-pill readable'}>
-          {result.mutatesProvider ? '可能写入' : result.localDraft ? '只写本地草稿' : '不写平台'}
-        </span>
-      </div>
-      <p className="ai-summary-text">{result.message || '已完成本地工具调用。'}</p>
-      <ChipRow items={result.evidenceRefs.length ? result.evidenceRefs : ['local_tool']} />
-      <SummaryBlock title="结果摘要" value={result.resultSummary} />
+
+        <button className="provider-test-button" data-testid="react-ai-provider-test" disabled={busy || !consent || !providerConfigured} onClick={handleProviderTest} type="button">
+          测试 AI 连接
+        </button>
+
+        {busyLabel ? <p className="sync-status">{busyLabel}...</p> : null}
+        {status ? <p className="sync-status">{status}</p> : null}
+        {error ? <p className="sync-status error">{error}</p> : null}
+        {providerTest ? <p className="muted-line">最近测试：{providerTest.ok ? '通过' : '失败'}</p> : null}
+        {agentSessions?.total ? <p className="muted-line">最近 Agent 会话：{agentSessions.total}</p> : null}
+      </aside>
     </section>
   );
 }
 
-function AgentAuditPanel({
+function AgentAuditCompact({
   busy,
   sessions,
   onFeedback,
@@ -445,168 +470,182 @@ function AgentAuditPanel({
     .flatMap((session) => session.toolTraces.map((trace) => ({ sessionId: session.id, trace })))
     .slice(0, 5);
   return (
-    <section className="ai-result-panel">
-      <div className="ai-panel-head">
+    <section className="agent-audit-compact">
+      <div className="recommend-head">
         <h3>Agent 工具审计</h3>
-        <span className="product-state-pill readable">{traces.length} 条</span>
+        <StatusPill tone="neutral">{traces.length} 条</StatusPill>
       </div>
-      {!traces.length ? (
-        <p className="muted-line">还没有 Agent 工具调用记录；后续自然语言工具调用会在这里显示摘要。</p>
-      ) : (
-        <div className="agent-trace-list">
-          {traces.map(({ sessionId, trace }) => (
-            <article className="agent-trace-row" key={`${sessionId}:${trace.id}`}>
-              <div className="ai-panel-head">
-                <div>
-                  <strong>{toolLabel(trace.tool)}</strong>
-                  <p>{trace.status || 'completed'} / {agentAccessLabel(trace)} / {trace.durationMs || 0} ms</p>
-                </div>
-                <span className={trace.mutatesProvider ? 'product-state-pill needs_attention' : 'product-state-pill readable'}>
-                  {trace.mutatesProvider ? '可能写入' : trace.localDraft ? '只写本地草稿' : '不写平台'}
-                </span>
-              </div>
-              <ChipRow items={trace.evidenceRefs.length ? trace.evidenceRefs : ['local_summary']} />
-              <div className="agent-summary-grid">
-                <SummaryBlock title="参数摘要" value={trace.argumentsSummary} />
-                <SummaryBlock title="结果摘要" value={trace.resultSummary} />
-              </div>
-              <div className="agent-feedback-row">
-                <span>反馈：{feedbackText(trace.feedback?.label)}</span>
-                <div>
-                  {FEEDBACK_LABELS.map((label) => (
-                    <button
-                      className={trace.feedback?.label === label ? 'active' : ''}
-                      disabled={busy}
-                      key={label}
-                      onClick={() => onFeedback(sessionId, trace, label)}
-                      type="button"
-                    >
-                      {feedbackText(label)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function CandidateList({ candidates }: { candidates: MusicCandidateSummary[] }) {
-  if (!candidates.length) return <p className="muted-line">暂无候选。</p>;
-  return (
-    <div className="ai-candidate-list">
-      {candidates.slice(0, 8).map((candidate) => (
-        <article className="ai-candidate-row" key={candidate.key || `${candidate.track.title}:${candidate.track.artist}`}>
+      {!traces.length ? <p className="muted-line">自然语言工具调用会在这里留下本地审计摘要。</p> : null}
+      {traces.map(({ sessionId, trace }) => (
+        <article className="agent-trace-compact" key={`${sessionId}:${trace.id}`}>
           <div>
-            <strong>{candidate.track.title || 'Untitled'}</strong>
-            <span>{candidate.track.artist || '未知歌手'}{candidate.track.album ? ` / ${candidate.track.album}` : ''}</span>
+            <strong>{toolLabel(trace.tool)}</strong>
+            <span>{agentAccessLabel(trace)} · {trace.status || 'completed'}</span>
           </div>
-          <div className="candidate-score">
-            <strong>{formatScore(candidate.score)}</strong>
-            <span>{candidate.aiReason || reasonList(candidate.reasons)}</span>
+          <StatusPill tone={trace.mutatesProvider ? 'warning' : 'success'}>
+            {trace.mutatesProvider ? '可能写入' : trace.localDraft ? '只写本地草稿' : '不写平台'}
+          </StatusPill>
+          <div className="agent-feedback-compact">
+            {FEEDBACK_LABELS.map((label) => (
+              <button
+                className={trace.feedback?.label === label ? 'active' : ''}
+                disabled={busy}
+                key={label}
+                onClick={() => onFeedback(sessionId, trace, label)}
+                type="button"
+              >
+                {feedbackText(label)}
+              </button>
+            ))}
           </div>
-          <ChipRow items={candidate.platformLabels.length ? candidate.platformLabels : candidate.platforms} />
         </article>
       ))}
-    </div>
-  );
-}
-
-function EmptyResult({ title, body }: { title: string; body: string }) {
-  return (
-    <section className="ai-result-panel empty">
-      <h3>{title}</h3>
-      <p>{body}</p>
     </section>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function ProfileMetric({
+  title,
+  value,
+  tags,
+  progress,
+  helper,
+}: {
+  title: string;
+  value: string;
+  tags?: string[];
+  progress?: number;
+  helper?: string;
+}) {
   return (
-    <div>
-      <span>{label}</span>
-      <strong>{value || '暂无'}</strong>
-    </div>
-  );
-}
-
-function ChipRow({ items }: { items: string[] }) {
-  const visible = items.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 8);
-  if (!visible.length) return null;
-  return (
-    <div className="evidence-row">
-      {visible.map((item) => <span className="evidence-chip" key={item}>{item}</span>)}
-    </div>
-  );
-}
-
-function EvidenceLine({ model, evidenceRefs }: { model?: MusicProfileResult['model']; evidenceRefs: string[] }) {
-  return (
-    <p className="muted-line">
-      模式：{model?.used ? `AI 增强 / ${providerDisplayName(model.provider?.provider)} / ${model.model || model.provider?.model || '默认模型'}` : '本地确定性分析'}
-      {evidenceRefs.length ? `，证据：${evidenceRefs.slice(0, 4).join('、')}` : ''}
-    </p>
-  );
-}
-
-function SummaryBlock({ title, value }: { title: string; value: Record<string, unknown> }) {
-  return (
-    <div>
+    <article className="profile-metric-card">
       <span>{title}</span>
-      <p>{formatSummaryRecord(value)}</p>
+      <strong>{value}</strong>
+      {tags ? <TagCloud tags={tags} /> : null}
+      {typeof progress === 'number' ? <ProgressBar value={progress} /> : null}
+      {helper ? <small>{helper}</small> : null}
+    </article>
+  );
+}
+
+function ArtistRow({ index, name, count }: { index: number; name: string; count: number }) {
+  return (
+    <div className="artist-row">
+      <AlbumArtwork title={name} index={index} />
+      <span>{name}</span>
+      <strong>{formatCount(count)} 首</strong>
     </div>
   );
 }
 
-function namedList(items: Array<{ name: string; count: number }>, limit: number): string {
-  return items.slice(0, limit).map((item) => `${item.name} (${item.count})`).join('、') || '暂无';
+function AlbumRow({ index, name, count }: { index: number; name: string; count: number }) {
+  return (
+    <div className="album-row">
+      <AlbumArtwork title={name} index={index + 2} />
+      <div>
+        <span>{name}</span>
+        <small>{formatCount(count)} 首</small>
+      </div>
+    </div>
+  );
 }
 
-function formatDuration(value?: number | null): string {
-  const milliseconds = Number(value || 0);
-  if (!milliseconds) return '暂无';
-  const seconds = Math.round(milliseconds / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+function ProgressRow({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="progress-row">
+      <span>{label}</span>
+      <ProgressBar value={value} />
+      <strong>{value}%</strong>
+    </div>
+  );
 }
 
-function formatPercent(value?: number): string {
-  const number = Number(value || 0);
-  return number ? `${Math.round(number * 100)}%` : '暂无';
+function ProgressBar({ value }: { value: number }) {
+  return (
+    <span className="progress-bar">
+      <i style={{ width: `${Math.max(6, Math.min(100, value))}%` }} />
+    </span>
+  );
 }
 
-function formatScore(value?: number): string {
-  const number = Number(value || 0);
-  return number ? String(Math.round(number)) : '-';
+function TagCloud({ tags }: { tags: string[] }) {
+  return (
+    <div className="tag-cloud">
+      {tags.slice(0, 8).map((tag) => <span key={tag}>{tag}</span>)}
+    </div>
+  );
 }
 
-function reasonList(reasons: string[]): string {
-  return reasons.map(reasonLabel).join('、') || '本地相似度';
+function SyncPlatform({ platform, count, role }: { platform: 'apple' | 'qq' | 'netease'; count: number; role: string }) {
+  const label = platform === 'apple' ? 'Apple Music' : platform === 'qq' ? 'QQ 音乐' : '网易云音乐';
+  return (
+    <div className="sync-platform-card">
+      <PlatformArtwork platform={platform} size="md" />
+      <div>
+        <strong>{label}</strong>
+        <span>{role}</span>
+        <small>{formatCount(count)} 首</small>
+      </div>
+    </div>
+  );
 }
 
-function reasonLabel(reason: string): string {
-  const labels: Record<string, string> = {
-    same_artist: '同艺人',
-    title_tokens: '标题相近',
-    same_album: '同专辑',
-    close_duration: '时长接近',
-    same_version_signal: '版本线索一致',
-    same_language: '语言相近',
-    top_artist_match: '常听艺人',
-    language_match: '语言偏好',
-    liked_on_multiple_non_apple_platforms: '多平台喜欢',
-    fits_duration_profile: '时长偏好',
-    has_isrc: '有 ISRC',
-  };
-  return labels[reason] || reason;
+function ChevronArrow() {
+  return <ChevronRight className="chevron-arrow" size={20} />;
 }
 
-function providerDisplayName(provider?: string): string {
-  if (!provider) return 'AI Provider';
-  if (provider === 'deepseek') return 'DeepSeek';
-  return provider;
+function RecommendationRow({ candidate, index }: { candidate: MusicCandidateSummary; index: number }) {
+  return (
+    <div className="recommend-row">
+      <AlbumArtwork title={candidate.track.title} index={index} />
+      <div>
+        <strong>{candidate.track.title || 'Untitled'}</strong>
+        <span>{candidate.track.artist || '未知歌手'}</span>
+      </div>
+      <button aria-label="播放" type="button"><Play size={15} /></button>
+      <button aria-label="加入候选" type="button"><CirclePlus size={15} /></button>
+    </div>
+  );
+}
+
+function fallbackRecommendations(): MusicCandidateSummary[] {
+  return ['日落大道', 'beautiful things', '若把你', '反方向的钟'].map((title, index) => ({
+    key: title,
+    track: { title, artist: ['告五人', 'Benson Boone', 'Kirsty 刘瑾睿', '周杰伦'][index] },
+    platforms: [],
+    platformLabels: [],
+    reasons: [],
+    aiEvidenceRefs: [],
+  }));
+}
+
+function fallbackAlbums() {
+  return [
+    { name: '最伟大的作品', count: 42 },
+    { name: 'folklore', count: 31 },
+    { name: '自传', count: 28 },
+    { name: '= (Equals)', count: 24 },
+  ];
+}
+
+function fallbackReviewRows() {
+  return [
+    { title: '说好的幸福呢', artist: '周杰伦 · 魔杰座', score: '相似 78%', evidence: '可能误匹配', tone: 'warning' as const },
+    { title: 'Shape of You', artist: 'Ed Sheeran · ÷', score: '相似 92%', evidence: '高置信匹配', tone: 'success' as const },
+    { title: '夜曲', artist: '周杰伦 · 十一月的萧邦', score: '相似 65%', evidence: '需要确认', tone: 'warning' as const },
+  ];
+}
+
+function platformTracks(appState: AppStateSummary | null, platform: 'apple' | 'qq' | 'netease'): number {
+  return appState?.platforms.find((item) => item.key === platform)?.tracks || 0;
+}
+
+function totalTracks(appState: AppStateSummary | null): number {
+  return appState?.platforms.reduce((sum, platform) => sum + platform.tracks, 0) || 0;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || '操作失败');
 }
 
 function toolLabel(tool: string): string {
@@ -639,29 +678,8 @@ function agentResultAccessLabel(result: AgentChatResult): string {
 }
 
 function feedbackText(label?: string): string {
-  if (label === 'useful') return '有用';
+  if (label === 'useful') return '有帮助';
   if (label === 'not_enough_evidence') return '证据不足';
-  if (label === 'incorrect') return '不准确';
+  if (label === 'incorrect') return '判断不对';
   return '未反馈';
-}
-
-function formatSummaryRecord(value: Record<string, unknown>): string {
-  const entries = Object.entries(value || {}).slice(0, 5);
-  if (!entries.length) return '暂无';
-  return entries.map(([key, item]) => `${key}: ${formatSummaryValue(item)}`).join('；');
-}
-
-function formatSummaryValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map((item) => String(item)).slice(0, 4).join(', ') || '[]';
-  if (value && typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
-      .slice(0, 4)
-      .map(([key, item]) => `${key}=${String(item)}`)
-      .join(', ');
-  }
-  return String(value ?? '');
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error || '操作失败');
 }

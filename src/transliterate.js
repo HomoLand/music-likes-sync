@@ -1,3 +1,5 @@
+import OpenCC from 'opencc-js';
+
 import { normalizeText } from './normalize.js';
 
 const KATAKANA_START = 0x30a1;
@@ -100,21 +102,9 @@ const KANJI_READINGS = {
   愛: 'ai',
 };
 
-const CJK_FOLD = {
-  東: '东', 詞: '词', 體: '体', 鱼: '鱼', 魚: '鱼', 韻: '韵',
-  樂: '乐', 歌: '歌', 櫻: '樱', 桜: '樱', 國: '国', 國: '国',
-  風: '风', 雲: '云', 門: '门', 間: '间', 長: '长', 錦: '锦',
-  麗: '丽', 龍: '龙', 鳥: '鸟', 馬: '马', 貝: '贝', 見: '见',
-  電: '电', 車: '车', 書: '书', 時: '时', 後: '后', 會: '会',
-  語: '语', 説: '说', 話: '话', 聲: '声', 寫: '写', 無: '无',
-  萬: '万', 與: '与', 來: '来', 對: '对', 開: '开', 關: '关',
-  夢: '梦', 淚: '泪', 裡: '里', 這: '这', 那: '那', 為: '为',
-  產: '产', 廣: '广', 廳: '厅', 室: '室', 團: '团', 傑: '杰',
-  倫: '伦', 羅: '罗', 義: '义', 華: '华', 藝: '艺', 術: '术',
-  惠: '惠', 恵: '惠', 實: '实', 須: '须', 彥: '彦', 彦: '彦',
-};
-
 const variantCache = new Map();
+const toSimplifiedChinese = OpenCC.Converter({ from: 't', to: 'cn' });
+const japaneseToTraditionalChinese = OpenCC.Converter({ from: 'jp', to: 't' });
 
 export function matchingTextVariants(value) {
   const raw = String(value || '').trim();
@@ -140,7 +130,7 @@ export function matchingTextVariants(value) {
 }
 
 export function foldCjk(value) {
-  return String(value || '').replace(/[\u3400-\u9fff]/g, (char) => CJK_FOLD[char] || char);
+  return toSimplifiedChinese(japaneseToTraditionalChinese(String(value || '')));
 }
 
 export function romanizeKana(value) {

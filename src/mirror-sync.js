@@ -1,12 +1,17 @@
 import { durationLabel, normalizeText } from './normalize.js';
 import { compareAppleToPlatform } from './match.js';
+import { trackArtworkUrl, trackPreviewUrl } from './track-media.js';
 
 const DEFAULT_SOURCE = 'apple';
 const DEFAULT_MATCH_THRESHOLD = 0.82;
 const DEFAULT_REVIEW_THRESHOLD = 0.68;
 const TARGETS = new Set(['qq', 'netease']);
 const SEPARATE_ADDS_SOURCE_REASONS = new Set(['source_uncertain_match', 'duplicate_target_match']);
-const SEPARATE_REMOVES_TARGET_REASONS = new Set(['source_uncertain_match', 'reverse_only_match', 'target_uncertain_orphan']);
+const SEPARATE_REMOVES_TARGET_REASONS = new Set([
+  'source_uncertain_match',
+  'reverse_only_match',
+  'target_uncertain_orphan',
+]);
 export const MIRROR_REVIEW_DECISION_ACTIONS = new Set(['keep', 'separate']);
 
 export function buildMirrorSyncPlan(input = {}) {
@@ -27,11 +32,12 @@ export function buildMirrorSyncPlan(input = {}) {
     throw new Error('Review threshold must be less than or equal to match threshold.');
   }
 
-  const sourceTracks = snapshotTracks(input.sourceSnapshot);
-  const targetTracks = snapshotTracks(input.targetSnapshot);
+  const sourceTracks = shareArtistAliases(snapshotTracks(input.sourceSnapshot));
+  const targetTracks = shareArtistAliases(snapshotTracks(input.targetSnapshot));
   const comparisonThresholds = {
     threshold: thresholds.match,
     reviewThreshold: thresholds.review,
+    allowAmbiguousFingerprint: true,
   };
   const sourceComparison = compareAppleToPlatform(sourceTracks, targetTracks, comparisonThresholds);
   const sourceIndex = indexByRef(sourceTracks);
@@ -68,16 +74,17 @@ export function buildMirrorSyncPlan(input = {}) {
   const coveredTargets = new Set();
 
   for (const [target, entries] of matchedByTarget.entries()) {
-    if (entries.length === 1) {
-      const entry = entries[0];
-      keptSources.add(entry.source);
+    if (entries.length === 1 || entriesRepresentSameSourceSong(entries, sourceTracks)) {
       coveredTargets.add(target);
-      operations.push(makeOperation('keep', {
-        source: sourceTracks[entry.source],
-        target: targetTracks[target],
-        score: entry.score,
-        reason: 'matched',
-      }));
+      for (const entry of entries) {
+        keptSources.add(entry.source);
+        operations.push(makeOperation('keep', {
+          source: sourceTracks[entry.source],
+          target: targetTracks[target],
+          score: entry.score,
+          reason: 'matched',
+        }));
+      }
       continue;
     }
 
@@ -127,24 +134,44 @@ export function buildMirrorSyncPlan(input = {}) {
       const reverse = compareAppleToPlatform([targetTracks[index]], sourceTracks, comparisonThresholds);
       const reverseMatch = reverse.matches[0];
       if (reverseMatch) {
+        const reverseSource = sourceIndex.get(reverseMatch.target);
+        const possibleDuplicate = reverseSource !== undefined && keptSources.has(reverseSource);
+        if (possibleDuplicate) {
+          operations.push(makeOperation('remove', {
+            source: reverseMatch.target,
+            target: targetTracks[index],
+            score: reverseMatch.score,
+            reason: 'duplicate_target_extra',
+            message: 'A stronger target match already represents this Apple source track; remove this extra target entry.',
+          }));
+          continue;
+        }
         operations.push(makeOperation('review', {
           source: reverseMatch.target,
           target: targetTracks[index],
           score: reverseMatch.score,
           reason: 'reverse_only_match',
-          message: 'The target track resembles Apple source data but was not selected by the forward match pass.',
+          reviewKind: possibleDuplicate ? 'possible_duplicate_target' : '',
+          message: possibleDuplicate
+            ? 'Another target track already represents this Apple source track; this extra target entry may be a duplicate.'
+            : 'The target track resembles Apple source data but was not selected by the forward match pass.',
         }));
         continue;
       }
 
       const reverseReview = reverse.reviewItems[0];
       if (reverseReview) {
+        const reverseSource = sourceIndex.get(reverseReview.target);
+        const possibleDuplicate = reverseSource !== undefined && keptSources.has(reverseSource);
         operations.push(makeOperation('review', {
           source: reverseReview.target,
           target: targetTracks[index],
           score: reverseReview.score,
           reason: 'target_uncertain_orphan',
-          message: 'The target-only track is similar to Apple source data, so deletion needs review.',
+          reviewKind: possibleDuplicate ? 'possible_duplicate_target' : '',
+          message: possibleDuplicate
+            ? 'Another target track already represents this Apple source track; this extra target entry may be a duplicate.'
+            : 'The target-only track is similar to Apple source data, so deletion needs review.',
         }));
         continue;
       }
@@ -191,6 +218,33 @@ export function buildMirrorSyncPlan(input = {}) {
   };
 }
 
+function entriesRepresentSameSourceSong(entries, sourceTracks) {
+  if (entries.length < 2) return false;
+  const isrcs = entries.map((entry) => sourceTracks[entry.source]?.isrc).filter(Boolean);
+  if (isrcs.length !== entries.length) return false;
+  if (new Set(isrcs).size === 1) return true;
+
+  const anchor = sourceTracks[entries[0].source];
+  return entries.slice(1).every((entry) => {
+    const candidate = sourceTracks[entry.source];
+    const comparison = compareAppleToPlatform(
+      [{ ...anchor, isrc: null }],
+      [{ ...candidate, isrc: null }],
+      { threshold: 0.82, reviewThreshold: 0.68, allowAmbiguousFingerprint: true },
+    );
+    const score = comparison.matches[0]?.score
+      || comparison.reviewItems[0]?.score
+      || comparison.missingItems[0]?.best?.score;
+    return Boolean(
+      score
+      && score.title === 1
+      && score.artist >= 0.8
+      && score.duration === 1
+      && !score.versionCueConflict
+    );
+  });
+}
+
 export function summarizeMirrorOperations(operations = []) {
   const summary = {
     total: operations.length,
@@ -210,6 +264,60 @@ export function summarizeMirrorOperations(operations = []) {
     if (operation.status !== 'ready') summary.blocked += 1;
   }
   return summary;
+}
+
+function shareArtistAliases(tracks) {
+  const aliasesByArtist = new Map();
+  for (const track of tracks) {
+    const key = normalizeText(track.artist);
+    if (!key) continue;
+    const explicitAliases = [
+      ...(track.aliases?.artists || []),
+      ...(track.artists || []).filter((artist) => normalizeText(artist) !== key),
+    ].filter(Boolean);
+    if (!explicitAliases.length) continue;
+    const aliases = aliasesByArtist.get(key) || [];
+    aliasesByArtist.set(key, uniqueText([...aliases, ...explicitAliases]));
+  }
+
+  if (!aliasesByArtist.size) return tracks;
+  return tracks.map((track) => {
+    const key = normalizeText(track.artist);
+    const sharedAliases = aliasesByArtist.get(key) || [];
+    if (!sharedAliases.length) return track;
+    const artists = uniqueText([...(track.aliases?.artists || []), ...sharedAliases]);
+    const normalizedArtists = uniqueText([
+      ...(track.normalized?.aliases?.artists || []),
+      ...artists.map((artist) => normalizeText(artist)),
+    ]);
+    return {
+      ...track,
+      aliases: {
+        ...(track.aliases || {}),
+        artists,
+      },
+      normalized: {
+        ...(track.normalized || {}),
+        aliases: {
+          ...(track.normalized?.aliases || {}),
+          artists: normalizedArtists,
+        },
+      },
+    };
+  });
+}
+
+function uniqueText(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const text = String(value || '').trim();
+    const key = normalizeText(text);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
 }
 
 export function summarizeMirrorConvergence(plan, options = {}) {
@@ -249,6 +357,7 @@ function makeOperation(action, input) {
     status: operationStatus(action, input),
     destructive,
     reason: input.reason,
+    reviewKind: input.reviewKind || '',
     message: input.message || defaultMessage(action, input.reason),
     confidence: confidenceLabel(action, input.score),
     score: input.score || null,
@@ -262,15 +371,31 @@ function makeOperation(action, input) {
 
 export function applyMirrorReviewDecisions(operations = [], decisionState = {}) {
   const decisions = decisionState?.items || decisionState || {};
+  const decisionIdentityIndex = buildMirrorDecisionIdentityIndex(decisions);
   const result = [];
   for (const operation of operations) {
     if (operation.action !== 'review') {
-      result.push(operation);
+      const key = operation.decisionKey || mirrorReviewDecisionKey(operation);
+      const decision = resolveMirrorReviewDecision(decisions, decisionIdentityIndex, operation, key);
+      const action = normalizeMirrorReviewDecisionAction(decision?.action);
+      if (operation.action === 'keep' && action === 'keep') {
+        result.push({
+          ...operation,
+          decisionKey: key,
+          manualDecision: compactManualDecision(operation, {
+            ...decision,
+            key: decision?.key || key,
+            action,
+          }),
+        });
+      } else {
+        result.push(operation);
+      }
       continue;
     }
 
     const key = operation.decisionKey || mirrorReviewDecisionKey(operation);
-    const decision = decisions[key];
+    const decision = resolveMirrorReviewDecision(decisions, decisionIdentityIndex, operation, key);
     const action = normalizeMirrorReviewDecisionAction(decision?.action);
     if (!action) {
       result.push({
@@ -285,7 +410,7 @@ export function applyMirrorReviewDecisions(operations = [], decisionState = {}) 
       decisionKey: key,
     }, {
       ...decision,
-      key,
+      key: decision?.key || key,
       action,
     }));
   }
@@ -299,6 +424,51 @@ export function mirrorReviewDecisionKey(operation = {}) {
     compactDecisionTrackIdentity(operation.sourceTrack),
     compactDecisionTrackIdentity(operation.targetTrack || operation.candidateTrack),
   ].join('|');
+}
+
+function buildMirrorDecisionIdentityIndex(decisions) {
+  const index = new Map();
+  for (const [key, decision] of Object.entries(decisions || {})) {
+    const identity = mirrorDecisionIdentityFromKey(key);
+    const action = normalizeMirrorReviewDecisionAction(decision?.action);
+    if (!identity || !action) continue;
+    const entries = index.get(identity) || [];
+    entries.push({ key, decision: { ...decision, key, action } });
+    index.set(identity, entries);
+  }
+  return index;
+}
+
+function resolveMirrorReviewDecision(decisions, index, operation, key) {
+  const direct = decisions[key];
+  if (normalizeMirrorReviewDecisionAction(direct?.action)) {
+    return { ...direct, key, action: normalizeMirrorReviewDecisionAction(direct.action) };
+  }
+
+  const identity = mirrorReviewDecisionIdentity(operation);
+  const matches = index.get(identity) || [];
+  const actions = new Set(matches.map((entry) => entry.decision.action));
+  if (actions.size !== 1) return null;
+  return matches
+    .slice()
+    .sort((left, right) => decisionTimestamp(right.decision).localeCompare(decisionTimestamp(left.decision)))[0]?.decision || null;
+}
+
+function mirrorReviewDecisionIdentity(operation) {
+  return [
+    compactDecisionTrackIdentity(operation.sourceTrack),
+    compactDecisionTrackIdentity(operation.targetTrack || operation.candidateTrack),
+  ].join('|');
+}
+
+function mirrorDecisionIdentityFromKey(key) {
+  const parts = String(key || '').split('|');
+  if (parts.length !== 4 || parts[0] !== 'review') return '';
+  return `${parts[2]}|${parts[3]}`;
+}
+
+function decisionTimestamp(decision = {}) {
+  return String(decision.updatedAt || decision.decidedAt || '');
 }
 
 export function normalizeMirrorReviewDecisionAction(action) {
@@ -381,8 +551,14 @@ function compactManualDecision(operation, decision) {
     action: decision.action || '',
     decidedAt: decision.decidedAt || decision.updatedAt || '',
     note: decision.note || '',
-    originalAction: 'review',
+    originalAction: operation.action || 'review',
     originalReason: operation.reason || '',
+    source: decision.source || 'manual',
+    aiBatchId: decision.aiBatchId || '',
+    aiModel: decision.aiModel || '',
+    aiConfidence: Number.isFinite(Number(decision.aiConfidence)) ? Number(decision.aiConfidence) : null,
+    userApprovedAt: decision.userApprovedAt || '',
+    approvalBatchId: decision.approvalBatchId || '',
   };
 }
 
@@ -432,6 +608,9 @@ function compactMirrorTrack(track) {
     duration: durationLabel(track.durationMs),
     durationMs: track.durationMs || null,
     isrc: track.isrc || null,
+    songType: track.songType ?? null,
+    artworkUrl: trackArtworkUrl(track),
+    previewUrl: track.platform === 'apple' ? trackPreviewUrl(track) : '',
     aliases: compactAliases(track.aliases),
     metadata: compactMirrorMetadata(track.metadata),
   };
@@ -448,16 +627,77 @@ function compactAliases(aliases = {}) {
 
 function compactMirrorMetadata(metadata = {}) {
   const musicbrainz = metadata?.musicbrainz;
-  if (!musicbrainz) return null;
-  return {
-    musicbrainz: {
+  const appleStorefronts = metadata?.appleStorefronts;
+  const crossPlatformAliases = metadata?.crossPlatformAliases;
+  const providerCatalog = metadata?.providerCatalog;
+  if (!musicbrainz && !appleStorefronts && !crossPlatformAliases && !providerCatalog) return null;
+  const result = {};
+  if (musicbrainz) {
+    result.musicbrainz = {
       isrc: musicbrainz.isrc || null,
       fetchedAt: musicbrainz.fetchedAt || null,
       status: musicbrainz.status || 'missing',
       recordingIds: Array.isArray(musicbrainz.recordingIds)
         ? musicbrainz.recordingIds.filter(Boolean).slice(0, 8)
         : [],
-    },
+    };
+  }
+  if (appleStorefronts) {
+    result.appleStorefronts = {
+      sourceStorefront: appleStorefronts.sourceStorefront || '',
+      storefronts: Array.isArray(appleStorefronts.storefronts)
+        ? appleStorefronts.storefronts.filter(Boolean).slice(0, 12)
+        : [],
+      fetchedAt: appleStorefronts.fetchedAt || null,
+      equivalentCount: Number(appleStorefronts.equivalentCount || 0),
+      isrcs: Array.isArray(appleStorefronts.isrcs)
+        ? appleStorefronts.isrcs.filter(Boolean).slice(0, 12)
+        : [],
+      equivalents: Array.isArray(appleStorefronts.equivalents)
+        ? appleStorefronts.equivalents.slice(0, 24).map(compactAppleEquivalent)
+        : [],
+    };
+  }
+  if (crossPlatformAliases) {
+    result.crossPlatformAliases = {
+      platforms: Array.isArray(crossPlatformAliases.platforms)
+        ? crossPlatformAliases.platforms.filter(Boolean).slice(0, 4)
+        : [],
+      count: Number(crossPlatformAliases.count || 0),
+    };
+  }
+  if (providerCatalog) {
+    result.providerCatalog = compactProviderCatalog(providerCatalog);
+  }
+  return result;
+}
+
+function compactAppleEquivalent(value = {}) {
+  return {
+    storefront: value.storefront || '',
+    id: value.id || '',
+    title: value.title || '',
+    artist: value.artist || '',
+    album: value.album || '',
+    durationMs: Number(value.durationMs || 0),
+    isrc: value.isrc || '',
+    trackNumber: Number(value.trackNumber || 0),
+    discNumber: Number(value.discNumber || 0),
+    releaseDate: value.releaseDate || '',
+    isrcMatch: value.isrcMatch === true,
+    aliasTrusted: value.aliasTrusted === true,
+  };
+}
+
+function compactProviderCatalog(value = {}) {
+  return {
+    platform: value.platform || '',
+    trackNumber: Number(value.trackNumber || 0),
+    discNumber: Number(value.discNumber || 0),
+    albumId: value.albumId || '',
+    albumMid: value.albumMid || '',
+    subtitle: value.subtitle || '',
+    releaseDate: value.releaseDate || '',
   };
 }
 

@@ -140,9 +140,9 @@ try {
   });
   assert(syncCheck.ok, '/api/sync/check should return ok for the React app');
   assert(syncCheck.data?.previewId, '/api/sync/check should return a preview id');
-  assert(Number(syncCheck.data?.counts?.will_add || 0) > 0, '/api/sync/check should produce additions from seeded fixtures');
+  assert(Number(syncCheck.data?.counts?.needs_confirmation || 0) > 0, '/api/sync/check should keep unresolved additions in manual review');
 
-  const preview = await fetchJson('/api/sync/preview?bucket=will_add&limit=30');
+  const preview = await fetchJson('/api/sync/preview?bucket=needs_confirmation&limit=30');
   assert(preview.ok, '/api/sync/preview should return ok for the React app');
   assert(Array.isArray(preview.data?.items), '/api/sync/preview should return preview items');
   assert(preview.data.items.some((item) => item.title === 'New Day'), 'React preview should include the seeded missing Apple track');
@@ -150,7 +150,7 @@ try {
 
   const resolution = await postJson('/api/sync/resolve-additions', {
     targets: ['qq', 'netease'],
-    bucket: 'will_add',
+    bucket: 'needs_confirmation',
     resolveLimit: 10,
     searchLimit: 3,
   });
@@ -183,7 +183,14 @@ try {
   const tombstoneIds = await markReactTombstones(tempRoot);
   const tombstonePreview = await fetchJson('/api/sync/preview?bucket=may_delete&limit=30');
   assert(tombstonePreview.ok, 'tombstone preview should return ok after local fixture marking');
-  assert(tombstonePreview.data.items.filter((item) => item.tombstoneKey).length >= 2, 'React preview should expose tombstone keys');
+  assert(
+    tombstonePreview.data.items.filter((item) => item.tombstoneKey).length >= 2,
+    `React preview should expose tombstone keys: ${JSON.stringify(tombstonePreview.data.items.map((item) => ({
+      id: item.id,
+      bucket: item.bucket,
+      tombstoneKey: item.tombstoneKey,
+    })))}`,
+  );
 
   const batchTombstone = await postJson('/api/sync/tombstones', {
     action: 'current_platform_only',
@@ -299,7 +306,7 @@ try {
     fallback: '/sync-preview',
     api: {
       previewId: syncCheck.data.previewId,
-      willAdd: syncCheck.data.counts.will_add,
+      needsConfirmation: syncCheck.data.counts.needs_confirmation,
       previewItems: preview.data.items.length,
       candidateDecision: acceptedCandidate.data.operation.addDecision.action,
       batchDecision: skippedBatch.data.operations[0].addDecision.action,
@@ -464,14 +471,8 @@ function policySummary(operations, previous = {}) {
 async function markReactTombstones(root) {
   const previewPath = path.join(root, 'data', 'sync-preview.json');
   const preview = JSON.parse(await fs.readFile(previewPath, 'utf8'));
-  const removals = preview.operations.filter((operation) => operation.action === 'remove').slice(0, 2);
-  assert(removals.length >= 2, 'React app smoke fixture should produce at least two remove operations');
-  removals.forEach((operation, index) => {
-    const platform = operation.sourcePlatform || operation.targetPlatform || (index === 0 ? 'qq' : 'netease');
-    operation.reason = 'tombstone_candidate';
-    operation.tombstoneKey = `web-app-smoke:tombstone:${platform}:${index + 1}`;
-    operation.sourcePlatform = platform;
-    operation.sourceTrack = operation.sourceTrack || operation.targetTrack || operation.candidateTrack || {
+  const removals = ['qq', 'netease'].map((platform, index) => {
+    const targetTrack = {
       platform,
       id: `deleted-${index + 1}`,
       title: `Deleted Fixture ${index + 1}`,
@@ -480,7 +481,22 @@ async function markReactTombstones(root) {
       album: 'Web App Smoke Fixture',
       durationMs: 200000,
     };
+    return {
+      id: `web-app-smoke-remove-${platform}`,
+      action: 'remove',
+      status: 'ready',
+      destructive: true,
+      sourcePlatform: platform,
+      targetPlatform: platform,
+      sourceTrack: targetTrack,
+      targetTrack,
+      reason: 'tombstone_candidate',
+      message: 'Web app smoke creates an independent deletion signal.',
+      blockedReason: '',
+      tombstoneKey: `web-app-smoke:tombstone:${platform}:${index + 1}`,
+    };
   });
+  preview.operations.push(...removals);
   preview.summary = policySummary(preview.operations, preview.summary);
   await fs.writeFile(previewPath, JSON.stringify(preview), 'utf8');
   return removals.map((operation) => ({

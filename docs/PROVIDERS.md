@@ -11,9 +11,13 @@
 
 ## Apple Music
 
-Apple Music is the source of truth. Import liked songs from CSV / TSV / TXT / JSON, or use the local browser capture flow in the Web UI.
+Apple Music is the source of truth. The preferred Web UI flow opens a dedicated local Edge profile once, waits for the user to complete Apple's official sign-in, discovers the canonical `Favorite Songs` library playlist through the page's MusicKit session, and imports it without asking the user to navigate to a playlist. CSV / TSV / TXT / JSON remains a fallback.
 
 The mirror model does not delete from Apple Music. Apple is the desired state that QQ Music and NetEase Cloud Music should follow.
+
+The dedicated profile lives under `data/apple-edge-profile`. Later refreshes reuse that profile and the saved Favorite Songs source in headless Edge, so a valid Apple session does not open a visible window. Apple browser capture requests catalog `artwork` and public `previews` together with title, artist, album, duration, and ISRC. Older local snapshots can be refreshed from the Apple catalog by song id. Artwork is normalized to a fixed HTTPS image URL; public preview audio is used only for user-initiated comparison and is never sent to AI.
+
+The first browser import also queries Apple's catalog-equivalents filter for localized metadata. Set `APPLE_STOREFRONT` to the account's two-letter source storefront (`us` by default). `APPLE_EQUIVALENT_STOREFRONTS` controls the comma-separated evidence storefronts and defaults to `cn,hk,tw,jp,kr`. Same-ISRC equivalents are authoritative; different-ISRC regional substitutes can provide aliases only when duration and version cues remain compatible. Results are cached under `data/` and never include Apple credentials.
 
 ## QQ Music
 
@@ -22,9 +26,12 @@ QQ Music uses a local Web API adapter.
 Recommended credential flow:
 
 1. Open the Web UI.
-2. Click QQ QR login. The app opens a dedicated local Edge profile under `data/qq-edge-profile`.
-3. Log in on `https://y.qq.com/` with the normal QQ Music page. The page may offer QQ, WeChat, or QQ Music QR login depending on the account and region.
-4. Keep the Web UI open. It polls the dedicated browser profile, reads only local `qq.com` cookies through the Chrome DevTools Protocol, saves a normalized write-capable cookie to `data/qq.cookie`, then refreshes the QQ snapshot automatically.
+2. Click QQ QR login. The backend opens Tencent's normal `https://y.qq.com/` login page in a headless dedicated Edge profile under `data/qq-edge-profile`.
+3. The Web UI displays the QQ and WeChat QR images already loaded by that official page. The image is copied from the browser frame; it is not regenerated and its short-lived session remains only in memory.
+4. Scan either QR and confirm on the phone. The Web UI polls the same browser profile, reads local `qq.com` cookies through the Chrome DevTools Protocol, saves a normalized write-capable cookie to `data/qq.cookie`, then refreshes the QQ snapshot automatically.
+5. On a local desktop, "Use local quick login" opens the same dedicated profile visibly so Tencent's own QQ / WeChat quick-login options remain available.
+
+When a saved credential exists, the connection screen shows the connected state and playlist action without rendering QR or local quick-login controls. The health-check action validates and reuses that credential first. A fresh QR and the visible Tencent quick-login fallback appear only when no reusable credential is available; the last validated local credential remains available until a replacement login succeeds.
 
 Manual cookie paste and manual re-capture are still supported as fallbacks, but they should not be the primary open-source UX.
 
@@ -40,20 +47,24 @@ Useful cookie fields:
 - `wxuin`: used as `uin` when `login_type=2`.
 - `qm_keyst`, `qqmusic_key`, or `p_skey`: commonly needed for write operations.
 
-Why not implement raw QQ QR polling as the default:
+Why the QR flow uses Tencent's page instead of a copied QR protocol:
 
 - QQ Music has official login / authorization products for approved integrations, but the local mirror workflow in this project currently uses QQ Music Web session APIs rather than a public personal-library OpenAPI contract.
-- Browser-based login lets QQ Music own the QR / account-risk flow and keeps this project from depending on fragile `ptqrshow` / `ptqrlogin` style internals.
-- The project should only add a raw QQ QR mode after live validation proves that the returned cookie contains the same `uin` / `qm_keyst` or equivalent write credentials needed by the add/delete APIs.
+- The project does not copy or independently poll Tencent's `ptqrshow` / `ptqrlogin` protocol; it lets the official page own that implementation.
+- Browser-based login lets QQ Music own QR expiry, phone confirmation, OAuth redirects, and account-risk checks while still giving the local UI an embedded QR experience.
+- The QR image and polling stay in one official-page browser session. The frontend receives only transient PNG data and a random expiring session key, never cookies or tokens.
+- Later snapshot refreshes reopen the dedicated profile in headless mode and refresh `data/qq.cookie` before using the provider API. A visible window is used only when the user explicitly chooses quick login.
 
 Current QQ API surface after a cookie exists:
 
-- User playlists: `https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss` with the saved cookie. The local UI exposes the sanitized result through `GET /api/qq/playlists`.
+- User playlists: the current primary path is `music.musicasset.PlaylistBaseRead / GetPlaylistByUin` through `musicu.fcg`; `fcg_user_created_diss` remains a compatibility fallback. The local UI exposes only sanitized playlist metadata through `GET /api/qq/playlists`.
+- Playlist tracks: the current primary path is paginated `music.srfDissInfo.aiDissInfo / uniform_get_Dissinfo`; the older `fcg_ucc_getcdinfo_byids_cp.fcg` and `fcg_musiclist_getmyfav.fcg` paths remain compatibility fallbacks.
 - Playlist detail: `https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg`
 - Playlist map / fallback ids: `https://c.y.qq.com/splcloud/fcgi-bin/fcg_musiclist_getmyfav.fcg`
 - Search, numeric-id add, and numeric-id delete: `https://u.y.qq.com/cgi-bin/musicu.fcg` with `music.musicasset.PlaylistDetailWrite` / `AddSonglist` and `DelSonglist`.
 - Mid-only add fallback: `https://c.y.qq.com/splcloud/fcgi-bin/fcg_music_add2songdir.fcg`
 - Legacy delete fallback by numeric song id: `https://c.y.qq.com/qzone/fcg-bin/fcg_music_delbatchsong.fcg`
+- Review media: album art is derived from the returned album mid. The provider reads song details first when necessary because QQ's public song `mid` can differ from `file.media_mid`, then requests the authenticated `vkey.GetVkeyServer / CgiGetVkey` URL for the real audio file. The signed URL stays in memory and an empty `purl` is shown as a copyright / membership / region limitation.
 
 Common playlist identifiers:
 
@@ -99,15 +110,37 @@ Current NetEase API surface after a cookie exists:
 
 - Login state / user id: `login_status`
 - Liked-song ids: `likelist`
+- User playlists / liked-playlist identity: `user_playlist`
 - Song details: `song_detail`
 - Playlist tracks: `playlist_track_all`
 - Search: direct `https://music.163.com/api/search/get`, or dependency `search` / `cloudsearch`
 - Playlist creation: `playlist_create`
 - Add/delete tracks: `playlist_tracks`
+- Review media: artwork uses `al.picUrl`. Playback prefers `song_url_v1` at `standard` quality and falls back to `song_url` when the installed dependency cannot initialize its `xeapi` key; no unblock source is enabled.
+
+## Catalog Resolution And Match Safety
+
+- Catalog lookup is a query plan, not one raw `title + artist` request. It prioritizes trusted Apple equivalents for the target storefront, then source metadata, paired title / artist aliases, album aliases, and title-only fallbacks.
+- QQ prefers `cn`, `hk`, and `tw` Apple equivalents. NetEase prefers `cn`. If a preferred equivalent exists, unrelated storefront variants do not consume the query budget.
+- Queries run with bounded concurrency and a per-query timeout. A timeout makes the operation `target_catalog_search_incomplete`; it is never reported as a missing song, and a non-authoritative candidate from an incomplete search cannot auto-resolve.
+- Results from every executed query are deduplicated and ranked together. Automatic selection considers recording evidence, score margin to the runner-up, version / ISRC conflicts, provider album position, and search provenance rather than provider result order.
+- A metadata recording fingerprint requires exact normalized title and album, trusted or strongly matching artist identity, no more than two seconds of duration drift, no one-sided version cue, and no conflicting ISRC.
+- A target track claimed by multiple Apple sources is audited at recording level. Same ISRC, a shared MusicBrainz recording id, or an explicit per-source keep approval can collapse safely; otherwise every mapping in the group is blocked for identity review.
+- `npm run check:match-eval` runs the public synthetic labeled baseline. `npm run match:shadow` is offline; `npm run match:shadow:live -- --target qq|netease --json` performs real provider search without writing playlists or replacing the local sync preview.
+
+## Human Review Media
+
+- The review screen compares the Apple source, QQ candidate or existing version, NetEase candidate or existing version, and up to two alternatives per target.
+- Covers must come from provider metadata. If no cover exists or an image fails, the UI shows a neutral music-note placeholder instead of a demo album.
+- Audio is optional evidence for a person. It is never autoplayed, uploaded, transcribed, or included in model / Agent prompts.
+- When requested by the user, FFmpeg's Chromaprint muxer creates an in-memory fingerprint for the Apple excerpt and selected target stream. A high-confidence match supplies a source-relative seek offset; low-confidence audio remains explicitly unaligned. Fingerprints, signed URLs, and audio bytes are never persisted.
+- The browser uses one player, preserves the logical source position while switching aligned versions, and stops each audition after at most 30 seconds or at the end of the common aligned interval. Provider restrictions degrade to a clear unavailable state without blocking the rest of the review flow.
+- `POST /api/sync/media` accepts only an operation and role from the current preview. `alignWithSource = true` is valid only within that operation and runs local fingerprinting on demand. The route is not a generic media proxy and never returns cookies.
 
 Common playlist identifiers:
 
 - NetEase playlist ids are numeric ids shown in playlist URLs.
+- Normal liked-song snapshots discover the owned playlist with `specialType = 5` through `user_playlist`, so ordinary users do not need to find or enter the liked-playlist id manually.
 - `--playlist-id` should be the disposable target playlist id for add/delete validation.
 
 Troubleshooting:

@@ -58,6 +58,83 @@ describe('policy-driven sync core', () => {
     );
   });
 
+  it('preserves automatic duplicate-target removal context', () => {
+    const sourceSnapshot = snapshot('apple', [
+      track('apple', 'a-restore', 'Restore', 'Artist', 281887, { album: 'Restore - EP' }),
+    ]);
+    const targetSnapshot = snapshot('qq', [
+      track('qq', 'q-best', 'Restore', 'Artist', 281000, { album: 'Restore' }),
+      track('qq', 'q-extra', 'Restore', 'Artist', 281000, { album: '' }),
+    ]);
+    const mirror = buildMirrorSyncPlan({ target: 'qq', sourceSnapshot, targetSnapshot });
+    const policy = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['qq'],
+      snapshots: { apple: sourceSnapshot, qq: targetSnapshot },
+    });
+    const mirrorRemove = mirror.operations.find((operation) => operation.action === 'remove');
+    const policyRemove = policy.operations.find((operation) => operation.action === 'remove');
+
+    assert.equal(policyRemove?.reason, 'duplicate_target_extra');
+    assert.equal(policyRemove?.decisionKey, mirrorRemove?.decisionKey);
+    assert.equal(policyRemove?.status, 'ready');
+  });
+
+  it('preserves safe source and target artwork in canonical preview operations', () => {
+    const plan = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['qq'],
+      snapshots: {
+        apple: snapshot('apple', [
+          track('apple', 'a-cover', 'Source Cover', 'Alice', 180000, {
+            artworkUrl: 'https://is1-ssl.mzstatic.com/image/thumb/source/{w}x{h}bb.jpg',
+          }),
+        ]),
+        qq: snapshot('qq', [
+          track('qq', 'q-cover', 'Target Cover', 'Bob', 220000, {
+            artworkUrl: 'https://y.gtimg.cn/music/photo_new/target-cover.jpg',
+          }),
+        ]),
+      },
+    });
+
+    const add = plan.operations.find((operation) => operation.action === 'add');
+    const remove = plan.operations.find((operation) => operation.action === 'remove');
+    assert.match(add?.sourceTrack?.artworkUrl || '', /300x300bb\.jpg/);
+    assert.equal(remove?.targetTrack?.artworkUrl, 'https://y.gtimg.cn/music/photo_new/target-cover.jpg');
+  });
+
+  it('uses a strict match on one target to resolve localized artist metadata on another', () => {
+    const source = track('apple', 'a-cross', 'Localized Theme D.A. Re-Build Mix', 'K.R.A.', 183867, {
+      album: 'Original Soundtrack',
+    });
+    const plan = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['qq', 'netease'],
+      snapshots: {
+        apple: snapshot('apple', [source]),
+        qq: snapshot('qq', [
+          track('qq', 'q-cross', 'Localized Theme', 'Franchise Ensemble', 183000, {
+            album: 'Original Soundtrack',
+          }),
+        ]),
+        netease: snapshot('netease', [
+          track('netease', 'n-cross', 'Localized Theme D.A. Re-Build Mix', 'Franchise Ensemble', 183867, {
+            album: 'Original Soundtrack',
+          }),
+        ]),
+      },
+    });
+
+    const qq = plan.operations.find((operation) => operation.targetPlatform === 'qq');
+    assert.equal(qq.action, 'keep');
+    assert.equal(qq.score.artist, 1);
+    assert(qq.sourceTrack.metadata.crossPlatformAliases.platforms.includes('netease'));
+  });
+
   it('blocks Apple canonical remove operations without destructive target ids', () => {
     const plan = buildSyncPolicyPlan({
       generatedAt: '2026-07-08T00:00:00.000Z',
@@ -78,6 +155,46 @@ describe('policy-driven sync core', () => {
     assert.equal(remove.blockedReason, 'missing_destructive_target_id');
     assert.equal(plan.summary.remove, 1);
     assert.equal(plan.summary.blocked, 1);
+  });
+
+  it('persists canonical identity decisions through the product policy wrapper', () => {
+    const sourceSnapshot = snapshot('apple', [
+      track('apple', 'a-1', 'Night Drive', 'Alice', 180000),
+    ]);
+    const targetSnapshot = snapshot('netease', [
+      track('netease', 'n-1', 'Night Drive Acoustic', 'Alice', 190000),
+    ]);
+    const undecided = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['netease'],
+      snapshots: { apple: sourceSnapshot, netease: targetSnapshot },
+    });
+    const review = undecided.operations.find((operation) => operation.action === 'review');
+    assert(review?.decisionKey);
+
+    const decided = buildSyncPolicyPlan({
+      policy: 'canonical_mirror',
+      source: 'apple',
+      targets: ['netease'],
+      snapshots: { apple: sourceSnapshot, netease: targetSnapshot },
+      reviewDecisions: {
+        items: {
+          [review.decisionKey]: {
+            key: review.decisionKey,
+            action: 'separate',
+            target: 'netease',
+            decidedAt: '2026-07-11T00:00:00.000Z',
+          },
+        },
+      },
+    });
+
+    assert.equal(decided.operations.some((operation) => operation.action === 'review'), false);
+    assert.equal(decided.operations.every((operation) => operation.decisionKey === review.decisionKey), true);
+    assert.equal(decided.operations.every((operation) => operation.manualDecision?.action === 'separate'), true);
+    assert.equal(decided.operations.some((operation) => operation.action === 'add'), true);
+    assert.equal(decided.operations.some((operation) => operation.action === 'remove'), true);
   });
 
   it('blocks union propagation for clusters that need review', () => {
@@ -221,6 +338,7 @@ describe('policy-driven sync core', () => {
 
     const removes = plan.operations.filter((operation) => operation.action === 'remove');
     assert.deepEqual(removes.map((operation) => operation.targetPlatform), ['qq']);
+    assert.equal(plan.operations.filter((operation) => operation.action === 'add').length, 0);
     assert.equal(plan.summary.baselineDeleted, 1);
   });
 

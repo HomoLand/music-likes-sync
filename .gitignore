@@ -6,6 +6,7 @@ data/*.db
 data/*.html
 data/*.json
 data/*.log
+data/*.lock
 data/*.ndjson
 data/*.csv
 data/*.cookie
@@ -16,8 +17,8 @@ data/*.tmp
 data/*.txt
 data/write-plan-backups/
 data/state-migration-backups/
-reports/*.json
-reports/*.md
+reports/
+/design-qa.md
 .env
 .env.*
 !.env.example

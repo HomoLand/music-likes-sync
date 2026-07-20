@@ -1,10 +1,12 @@
 export const routes = [
-  { id: 'overview', label: '概览' },
-  { id: 'connect', label: '连接平台' },
-  { id: 'mode', label: '同步方式' },
+  { id: 'overview', label: '现在同步' },
+  { id: 'connect', label: '连接管理' },
+  { id: 'mode', label: '同步规则' },
   { id: 'preview', label: '同步预览' },
-  { id: 'ai', label: 'AI 助手' },
-  { id: 'advanced', label: '高级设置' },
+  { id: 'automation', label: '自动同步' },
+  { id: 'ai', label: '音乐库画像' },
+  { id: 'advanced', label: '设置' },
 ] as const;
 
-export type RouteId = typeof routes[number]['id'];
+export type MainRouteId = typeof routes[number]['id'];
+export type RouteId = MainRouteId | 'help';

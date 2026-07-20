@@ -1,5 +1,6 @@
 import { buildMirrorSyncPlan, summarizeMirrorOperations } from './mirror-sync.js';
-import { normalizeText } from './normalize.js';
+import { normalizeAliasObject, normalizeText, normalizeTrack } from './normalize.js';
+import { trackArtworkUrl } from './track-media.js';
 import { buildUnifiedLibrary } from './unified.js';
 
 export const SYNC_POLICY_SCHEMA_VERSION = 1;
@@ -115,8 +116,13 @@ export function buildSyncPolicyPlan(input = {}) {
         operations,
       });
     }
+    const unionOperations = suppressConfirmedGlobalDeleteAdds(
+      buildUnionOperations(unified, participants),
+      baselineDiff,
+      tombstones,
+    );
     const operations = [
-      ...buildUnionOperations(unified, participants),
+      ...unionOperations,
       ...buildDeletionOperations({
         baselineDiff,
         snapshots,
@@ -251,24 +257,35 @@ function buildCanonicalMirrorPlan(input) {
   const sourceSnapshot = input.snapshots[source];
   if (!sourceSnapshot) throw new Error('Missing canonical source snapshot.');
 
-  const childPlans = [];
-  const operations = [];
-  for (const target of targets) {
-    if (target === source) continue;
+  const mirrorTargets = targets.filter((target) => target !== source);
+  const buildMirrors = (canonicalSource) => mirrorTargets.map((target) => {
     if (!['qq', 'netease'].includes(target)) {
       throw new Error('canonical_mirror currently supports qq and netease targets.');
     }
     const targetSnapshot = input.snapshots[target];
     if (!targetSnapshot) throw new Error(`Missing ${target} target snapshot.`);
-    const mirror = buildMirrorSyncPlan({
-      generatedAt: input.generatedAt,
-      sourceSnapshot,
-      targetSnapshot,
+    return {
       target,
-      threshold: input.thresholds.match,
-      reviewThreshold: input.thresholds.review,
-      reviewDecisions: input.reviewDecisions,
-    });
+      mirror: buildMirrorSyncPlan({
+        generatedAt: input.generatedAt,
+        sourceSnapshot: canonicalSource,
+        targetSnapshot,
+        target,
+        threshold: input.thresholds.match,
+        reviewThreshold: input.thresholds.review,
+        reviewDecisions: input.reviewDecisions,
+      }),
+    };
+  });
+  const initialMirrors = buildMirrors(sourceSnapshot);
+  const enrichedSource = enrichCanonicalSourceWithTargetAliases(sourceSnapshot, initialMirrors);
+  const mirrors = enrichedSource.changed
+    ? buildMirrors(enrichedSource.snapshot)
+    : initialMirrors;
+
+  const childPlans = [];
+  const operations = [];
+  for (const { target, mirror } of mirrors) {
     childPlans.push({
       target,
       generatedAt: mirror.generatedAt,
@@ -302,6 +319,105 @@ function buildCanonicalMirrorPlan(input) {
     childPlans,
     operations,
   });
+}
+
+function enrichCanonicalSourceWithTargetAliases(sourceSnapshot, mirrors) {
+  const aliasesBySource = new Map();
+  const corroboratedBySource = new Map();
+  for (const { target, mirror } of mirrors) {
+    for (const operation of mirror.operations || []) {
+      const sourceId = String(operation.sourceTrack?.id || '').trim();
+      if (!sourceId) continue;
+      if (trustedCrossTargetMatch(operation)) {
+        addCrossTargetAliasEvidence(aliasesBySource, sourceId, target, operation.targetTrack);
+        continue;
+      }
+      const track = operation.targetTrack || operation.candidateTrack;
+      if (!strictCrossTargetAliasCandidate(operation, track)) continue;
+      const artistKey = normalizeText(track.artist || track.artists?.[0]);
+      if (!artistKey) continue;
+      const sourceGroups = corroboratedBySource.get(sourceId) || new Map();
+      const group = sourceGroups.get(artistKey) || { platforms: new Set(), tracks: [] };
+      group.platforms.add(target);
+      group.tracks.push({ target, track });
+      sourceGroups.set(artistKey, group);
+      corroboratedBySource.set(sourceId, sourceGroups);
+    }
+  }
+  for (const [sourceId, groups] of corroboratedBySource) {
+    for (const group of groups.values()) {
+      if (group.platforms.size < 2) continue;
+      for (const item of group.tracks) {
+        addCrossTargetAliasEvidence(aliasesBySource, sourceId, item.target, item.track);
+      }
+    }
+  }
+  if (!aliasesBySource.size) return { snapshot: sourceSnapshot, changed: 0 };
+
+  let changed = 0;
+  const tracks = (sourceSnapshot.tracks || []).map((track) => {
+    const evidence = aliasesBySource.get(String(track.id || '').trim());
+    if (!evidence) return track;
+    const aliases = normalizeAliasObject({
+      titles: [...(track.aliases?.titles || []), ...evidence.titles],
+      artists: [...(track.aliases?.artists || []), ...evidence.artists],
+      albums: [...(track.aliases?.albums || []), ...evidence.albums],
+    });
+    changed += 1;
+    return normalizeTrack({
+      ...track,
+      aliases,
+      metadata: {
+        ...(track.metadata || {}),
+        crossPlatformAliases: {
+          platforms: [...evidence.platforms],
+          count: aliases.titles.length + aliases.artists.length + aliases.albums.length,
+        },
+      },
+    }, 'apple');
+  });
+  return {
+    snapshot: { ...sourceSnapshot, tracks },
+    changed,
+  };
+}
+
+function addCrossTargetAliasEvidence(index, sourceId, target, track) {
+  if (!track) return;
+  const evidence = index.get(sourceId) || {
+    platforms: new Set(),
+    titles: [],
+    artists: [],
+    albums: [],
+  };
+  evidence.platforms.add(target);
+  evidence.titles.push(track.title, ...(track.aliases?.titles || []));
+  evidence.artists.push(track.artist, ...(track.artists || []), ...(track.aliases?.artists || []));
+  evidence.albums.push(track.album, ...(track.aliases?.albums || []));
+  index.set(sourceId, evidence);
+}
+
+function strictCrossTargetAliasCandidate(operation, track) {
+  const score = operation?.score || {};
+  return Boolean(
+    track
+    && !score.isrcConflict
+    && !score.versionCueConflict
+    && Number(score.title || 0) >= 0.8
+    && Number(score.album || 0) >= 0.95
+    && Number(score.duration || 0) >= 0.92
+  );
+}
+
+function trustedCrossTargetMatch(operation) {
+  if (operation.action !== 'keep' || operation.status !== 'ready') return false;
+  if (!operation.sourceTrack || !operation.targetTrack) return false;
+  if (operation.manualDecision?.action === 'keep') return true;
+  const score = operation.score || {};
+  return score.isrc === 1
+    || score.recordingFingerprint === true
+    || score.appleEquivalentFingerprint === true
+    || score.catalogTrackFingerprint === true;
 }
 
 function productCanonicalMirrorOperation(operation) {
@@ -382,6 +498,27 @@ function buildUnionOperations(unified, participants) {
     }));
   }
   return assignOperationIds(operations);
+}
+
+function suppressConfirmedGlobalDeleteAdds(operations, baselineDiff, tombstones) {
+  const confirmedTokenSets = [];
+  for (const diff of Object.values(baselineDiff.platforms || {})) {
+    for (const deleted of diff.deleted || []) {
+      if (tombstones.items?.[deleted.tombstoneKey]?.action === 'confirm_global_delete') {
+        confirmedTokenSets.push(new Set(deleted.tokens || []));
+      }
+    }
+  }
+  if (!confirmedTokenSets.length) return operations;
+
+  return operations.filter((operation) => {
+    if (operation.action !== 'add' || !operation.sourceTrack) return true;
+    const platform = normalizePlatform(operation.sourceTrack.platform || operation.sourcePlatform || '');
+    const tokens = trackTokens(platform, operation.sourceTrack);
+    return !confirmedTokenSets.some((confirmedTokens) => (
+      tokens.some((token) => confirmedTokens.has(token))
+    ));
+  });
 }
 
 function buildReadOnlyOperations(unified, participants, baselineDiff) {
@@ -535,10 +672,12 @@ export function summarizePolicyOperations(operations = []) {
 function policyOperation(input) {
   return {
     id: input.id || '',
+    decisionKey: input.decisionKey || '',
     action: input.action,
     status: input.status,
     destructive: Boolean(input.destructive || input.action === 'remove'),
     reason: input.reason || '',
+    reviewKind: input.reviewKind || '',
     message: input.message || '',
     policy: input.policy || '',
     sourcePlatform: input.sourcePlatform || input.source || input.sourceTrack?.platform || '',
@@ -553,6 +692,21 @@ function policyOperation(input) {
     candidateTrack: compactPolicyTrack(input.candidateTrack),
     resolvedTargetTrack: compactPolicyTrack(input.resolvedTargetTrack),
     blockedReason: input.blockedReason || '',
+    manualDecision: input.manualDecision ? {
+      key: input.manualDecision.key || input.decisionKey || '',
+      action: input.manualDecision.action || '',
+      decidedAt: input.manualDecision.decidedAt || '',
+      note: input.manualDecision.note || '',
+      originalAction: input.manualDecision.originalAction || '',
+      originalReason: input.manualDecision.originalReason || '',
+      ignored: Boolean(input.manualDecision.ignored),
+      source: input.manualDecision.source || 'manual',
+      aiBatchId: input.manualDecision.aiBatchId || '',
+      aiModel: input.manualDecision.aiModel || '',
+      aiConfidence: input.manualDecision.aiConfidence ?? null,
+      userApprovedAt: input.manualDecision.userApprovedAt || '',
+      approvalBatchId: input.manualDecision.approvalBatchId || '',
+    } : null,
   };
 }
 
@@ -730,19 +884,73 @@ function compactPolicyTrack(track) {
     durationMs: track.durationMs || null,
     duration: track.duration || '',
     isrc: track.isrc || null,
+    artworkUrl: trackArtworkUrl(track),
     aliases: track.aliases || null,
-    metadata: track.metadata?.musicbrainz
-      ? {
-        musicbrainz: {
-          status: track.metadata.musicbrainz.status || '',
-          isrc: track.metadata.musicbrainz.isrc || null,
-          recordingIds: Array.isArray(track.metadata.musicbrainz.recordingIds)
-            ? track.metadata.musicbrainz.recordingIds.slice(0, 8)
-            : [],
-        },
-      }
-      : null,
+    metadata: compactPolicyTrackMetadata(track.metadata),
   };
+}
+
+function compactPolicyTrackMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const result = {};
+  if (metadata.musicbrainz) {
+    result.musicbrainz = {
+      status: metadata.musicbrainz.status || '',
+      isrc: metadata.musicbrainz.isrc || null,
+      recordingIds: Array.isArray(metadata.musicbrainz.recordingIds)
+        ? metadata.musicbrainz.recordingIds.slice(0, 8)
+        : [],
+    };
+  }
+  if (metadata.appleStorefronts) {
+    result.appleStorefronts = {
+      sourceStorefront: metadata.appleStorefronts.sourceStorefront || '',
+      storefronts: Array.isArray(metadata.appleStorefronts.storefronts)
+        ? metadata.appleStorefronts.storefronts.slice(0, 12)
+        : [],
+      fetchedAt: metadata.appleStorefronts.fetchedAt || null,
+      equivalentCount: Number(metadata.appleStorefronts.equivalentCount || 0),
+      isrcs: Array.isArray(metadata.appleStorefronts.isrcs)
+        ? metadata.appleStorefronts.isrcs.slice(0, 12)
+        : [],
+      equivalents: Array.isArray(metadata.appleStorefronts.equivalents)
+        ? metadata.appleStorefronts.equivalents.slice(0, 24).map((item) => ({
+          storefront: item.storefront || '',
+          id: item.id || '',
+          title: item.title || '',
+          artist: item.artist || '',
+          album: item.album || '',
+          durationMs: Number(item.durationMs || 0),
+          isrc: item.isrc || '',
+          trackNumber: Number(item.trackNumber || 0),
+          discNumber: Number(item.discNumber || 0),
+          releaseDate: item.releaseDate || '',
+          isrcMatch: item.isrcMatch === true,
+          aliasTrusted: item.aliasTrusted === true,
+        }))
+        : [],
+    };
+  }
+  if (metadata.crossPlatformAliases) {
+    result.crossPlatformAliases = {
+      platforms: Array.isArray(metadata.crossPlatformAliases.platforms)
+        ? metadata.crossPlatformAliases.platforms.slice(0, 4)
+        : [],
+      count: Number(metadata.crossPlatformAliases.count || 0),
+    };
+  }
+  if (metadata.providerCatalog) {
+    result.providerCatalog = {
+      platform: metadata.providerCatalog.platform || '',
+      trackNumber: Number(metadata.providerCatalog.trackNumber || 0),
+      discNumber: Number(metadata.providerCatalog.discNumber || 0),
+      albumId: metadata.providerCatalog.albumId || '',
+      albumMid: metadata.providerCatalog.albumMid || '',
+      subtitle: metadata.providerCatalog.subtitle || '',
+      releaseDate: metadata.providerCatalog.releaseDate || '',
+    };
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function normalizePolicy(policy) {

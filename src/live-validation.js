@@ -34,6 +34,7 @@ export async function getLiveValidationEvidence(options = {}) {
       packageInfo,
       now,
       reportFile: `reports/live-validation-${target}.json`,
+      credentialUpdatedAt: options.credentialUpdatedAtByTarget?.[target],
     })];
   }));
   const targetMap = Object.fromEntries(entries);
@@ -57,6 +58,7 @@ export function summarizeLiveValidationEvidence(target, report, options = {}) {
   }
   const errors = validateLiveValidationReport(target, report, options.packageInfo || {}, {
     now: options.now,
+    credentialUpdatedAt: options.credentialUpdatedAt,
   });
   const validatedAtMs = Date.parse(report.validatedAt || '');
   const nowMs = (options.now || new Date()).getTime();
@@ -110,7 +112,11 @@ export function validateLiveValidationReport(target, report = {}, expectedPackag
   if (!report.validatedAt || Number.isNaN(Date.parse(report.validatedAt))) {
     errors.push('validatedAt must be an ISO timestamp');
   }
-  errors.push(...validationFreshnessErrors(report, options.now || new Date()));
+  errors.push(...validationFreshnessErrors(
+    report,
+    options.now || new Date(),
+    options.credentialUpdatedAt,
+  ));
   if (!String(report.playlistId || '').trim()) errors.push('playlistId is required');
   if (typeof report.createdPlaylist !== 'boolean') errors.push('createdPlaylist must be boolean');
   if (!report.track?.id && !report.track?.mid) errors.push('validated track id or mid is required');
@@ -146,11 +152,11 @@ export function validateLiveValidationReport(target, report = {}, expectedPackag
 
 function validationStatus(errors = []) {
   if (errors.some((error) => /missing/i.test(error))) return 'invalid';
-  if (errors.some((error) => /within|future/i.test(error))) return 'stale';
+  if (errors.some((error) => /within|future|credential/i.test(error))) return 'stale';
   return 'invalid';
 }
 
-function validationFreshnessErrors(report = {}, now = new Date()) {
+function validationFreshnessErrors(report = {}, now = new Date(), credentialUpdatedAtValue = '') {
   const validatedAt = Date.parse(report.validatedAt || '');
   if (Number.isNaN(validatedAt)) return [];
 
@@ -162,6 +168,10 @@ function validationFreshnessErrors(report = {}, now = new Date()) {
   }
   if (validatedAt < nowMs - maxAgeMs) {
     errors.push(`validatedAt must be within ${LIVE_VALIDATION_REPORT_MAX_AGE_DAYS} days`);
+  }
+  const credentialUpdatedAt = Date.parse(String(credentialUpdatedAtValue || ''));
+  if (!Number.isNaN(credentialUpdatedAt) && validatedAt < credentialUpdatedAt) {
+    errors.push('validatedAt must be newer than the current credential');
   }
   return errors;
 }

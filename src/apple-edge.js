@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR, ensureDirs } from './utils.js';
 
-const DEFAULT_APPLE_URL = 'https://music.apple.com/us/playlist/favorite-songs/pl.u-KRULoqWyLg?l=zh-Hans-CN';
+const DEFAULT_APPLE_URL = 'https://music.apple.com/';
 const DEBUG_PORT = Number(process.env.APPLE_EDGE_PORT || 9323);
 const EDGE_PROFILE_DIR = path.join(DATA_DIR, 'apple-edge-profile');
 const EDGE_CANDIDATES = [
@@ -13,19 +13,55 @@ const EDGE_CANDIDATES = [
 
 let edgeProcess = null;
 
-export async function openAppleMusicBrowser(url = DEFAULT_APPLE_URL) {
+export function selectAppleFavoritePlaylist(items = []) {
+  const normalizeName = (value) => String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s·・_\-]+/gu, ' ');
+  const favoriteNames = new Set([
+    'favorite songs',
+    'favourite songs',
+    '喜爱歌曲',
+    '喜爱的歌曲',
+    '我喜欢的歌曲',
+    '喜欢的歌曲',
+  ].map(normalizeName));
+
+  const item = Array.isArray(items)
+    ? items.find((candidate) => favoriteNames.has(normalizeName(candidate?.attributes?.name)))
+    : null;
+  if (!item?.id) return null;
+
+  const catalog = item.relationships?.catalog?.data?.find((candidate) => candidate?.id)
+    || item.relationships?.catalog?.data?.[0]
+    || null;
+  return {
+    name: String(item.attributes?.name || 'Favorite Songs'),
+    playlistId: String(item.id),
+    playlistType: String(item.type || 'library-playlists'),
+    catalogId: String(catalog?.id || item.attributes?.playParams?.catalogId || ''),
+  };
+}
+
+export async function openAppleMusicBrowser(url = DEFAULT_APPLE_URL, options = {}) {
   await ensureDirs();
   const targetUrl = normalizeAppleUrl(url);
+  const requestedHeadless = options.headless === true;
+  await ensureBrowserMode(requestedHeadless);
   if (!(await isDebuggerReady())) {
     const edgePath = await findEdgePath();
     await fs.mkdir(EDGE_PROFILE_DIR, { recursive: true });
-    edgeProcess = spawn(edgePath, [
+    const args = [
       `--remote-debugging-port=${DEBUG_PORT}`,
       `--user-data-dir=${EDGE_PROFILE_DIR}`,
+      '--disable-extensions',
       '--no-first-run',
       '--no-default-browser-check',
-      targetUrl,
-    ], {
+    ];
+    if (requestedHeadless) args.push('--headless=new', '--window-size=1280,900');
+    args.push(targetUrl);
+    edgeProcess = spawn(edgePath, args, {
       detached: true,
       stdio: 'ignore',
     });
@@ -39,30 +75,82 @@ export async function openAppleMusicBrowser(url = DEFAULT_APPLE_URL) {
     url: targetUrl,
     port: DEBUG_PORT,
     profileDir: EDGE_PROFILE_DIR,
+    mode: await isHeadlessBrowser() ? 'background' : 'visible',
   };
 }
 
-export async function captureAppleMusicPage() {
+export async function captureAppleMusicPage(options = {}) {
   if (!(await isDebuggerReady())) {
     throw new Error('Apple 登录窗口还没有启动，请先点击“打开 Apple 登录页”。');
   }
 
-  const tabs = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
-  const page = tabs.find((item) => item.type === 'page' && /music\.apple\.com/i.test(item.url))
-    || tabs.find((item) => item.type === 'page');
+  const page = await findApplePage({
+    requireMusicKit: options.requireMusicKit === true,
+    waitMs: options.requireMusicKit === true ? 15000 : 0,
+  });
   if (!page?.webSocketDebuggerUrl) {
     throw new Error('没有找到可抓取的 Apple Music 页面。请确认专用 Edge 窗口还开着。');
   }
 
-  const result = await evaluateCdp(page.webSocketDebuggerUrl, `(${scrapeAppleMusicPage.toString()})()`, 240000);
+  const scrapeOptions = {
+    playlistId: String(options.playlistId || ''),
+    playlistType: String(options.playlistType || ''),
+    requireMusicKit: options.requireMusicKit === true,
+    apiRequestTimeoutMs: clampTimeout(options.apiRequestTimeoutMs, 15000, 5000, 60000),
+  };
+  const timeoutMs = clampTimeout(options.timeoutMs, 240000, 15000, 240000);
+  const result = await evaluateCdp(
+    page.webSocketDebuggerUrl,
+    `(${scrapeAppleMusicPage.toString()})(${JSON.stringify(scrapeOptions)})`,
+    timeoutMs,
+  );
   if (!result?.tracks?.length) {
     throw new Error(result?.message || '当前页面没有抓到歌曲。请确认已经登录，并停留在 Apple Music 的“Favorite Songs / 我喜欢的歌曲”页面。');
   }
 
   return {
     ...result,
-    source: result.url || page.url,
+    source: normalizeOptionalAppleUrl(options.sourceUrl) || result.url || page.url,
   };
+}
+
+export async function checkAppleMusicBrowserConnection(options = {}) {
+  if (!(await isDebuggerReady())) {
+    return {
+      ready: false,
+      waiting: true,
+      code: 'browser_not_ready',
+      message: 'Apple 登录窗口未启动或已关闭，请重新连接。',
+    };
+  }
+
+  const page = await findApplePage();
+  if (!page?.webSocketDebuggerUrl) {
+    return {
+      ready: false,
+      waiting: true,
+      code: 'page_not_ready',
+      message: '正在等待 Apple Music 页面加载。',
+    };
+  }
+
+  const taskOptions = {
+    sourceUrl: normalizeOptionalAppleUrl(options.sourceUrl),
+  };
+  try {
+    return await evaluateCdp(
+      page.webSocketDebuggerUrl,
+      `(${inspectAppleMusicConnection.toString()})(${JSON.stringify(taskOptions)}, ${selectAppleFavoritePlaylist.toString()})`,
+      60000,
+    );
+  } catch (error) {
+    return {
+      ready: false,
+      waiting: false,
+      code: 'connection_check_failed',
+      message: error.message || String(error),
+    };
+  }
 }
 
 export async function runAppleMusicKitTask(task, args = {}, timeout = 120000) {
@@ -79,6 +167,65 @@ export async function runAppleMusicKitTask(task, args = {}, timeout = 120000) {
   const result = await evaluateCdp(page.webSocketDebuggerUrl, expression, timeout);
   if (result?.error) throw new Error(result.error);
   return result;
+}
+
+async function findApplePage(options = {}) {
+  const deadline = Date.now() + Math.max(0, Number(options.waitMs) || 0);
+  let fallback = null;
+  do {
+    const tabs = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
+    const pages = tabs.filter((item) => item.type === 'page' && /music\.apple\.com/i.test(item.url));
+    fallback = pages[0] || tabs.find((item) => item.type === 'page') || null;
+    if (!options.requireMusicKit) return fallback;
+    for (const page of pages) {
+      if (await pageHasReadyMusicKit(page)) return page;
+    }
+    if (Date.now() >= deadline) return fallback;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } while (Date.now() <= deadline);
+  return fallback;
+}
+
+async function pageHasReadyMusicKit(page) {
+  if (!page?.webSocketDebuggerUrl) return false;
+  try {
+    return Boolean(await evaluateCdp(
+      page.webSocketDebuggerUrl,
+      `document.readyState === 'complete'
+        && Boolean(window.MusicKit?.getInstance?.()?.api?.music)
+        && Boolean(window.MusicKit?.getInstance?.()?.isAuthorized || window.MusicKit?.getInstance?.()?.musicUserToken)`,
+      5000,
+    ));
+  } catch {
+    return false;
+  }
+}
+
+async function ensureBrowserMode(requestedHeadless) {
+  if (!(await isDebuggerReady())) return;
+  const currentHeadless = await isHeadlessBrowser();
+  if (currentHeadless === requestedHeadless) return;
+  if (requestedHeadless && !currentHeadless) return;
+
+  const version = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+  if (version?.webSocketDebuggerUrl) {
+    await sendCdpCommand(version.webSocketDebuggerUrl, 'Browser.close').catch(() => null);
+  }
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 8000) {
+    if (!(await isDebuggerReady())) return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error('Apple 后台登录会话正在关闭，请稍后重试。');
+}
+
+async function isHeadlessBrowser() {
+  try {
+    const version = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+    return /HeadlessChrome/i.test(String(version?.['User-Agent'] || ''));
+  } catch {
+    return false;
+  }
 }
 
 async function findEdgePath() {
@@ -99,6 +246,11 @@ function normalizeAppleUrl(url) {
     throw new Error('请输入 https://music.apple.com/ 开头的 Apple Music 链接');
   }
   return value;
+}
+
+function normalizeOptionalAppleUrl(url) {
+  const value = String(url || '').trim();
+  return value ? normalizeAppleUrl(value) : '';
 }
 
 async function isDebuggerReady() {
@@ -154,7 +306,20 @@ async function evaluateCdp(webSocketUrl, expression, timeout = 120000) {
   const response = await new Promise((resolve, reject) => {
     const id = nextId;
     nextId += 1;
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error('Runtime.evaluate timeout'));
+    }, timeout + 1000);
+    pending.set(id, {
+      resolve(value) {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject(error) {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
     ws.send(JSON.stringify({
       id,
       method: 'Runtime.evaluate',
@@ -165,20 +330,168 @@ async function evaluateCdp(webSocketUrl, expression, timeout = 120000) {
         timeout,
       },
     }));
-  });
-
-  ws.close();
+  }).finally(() => ws.close());
   if (response.exceptionDetails) {
     throw new Error(response.exceptionDetails.text || 'Apple 页面脚本执行失败');
   }
   return response.result?.value;
 }
 
-async function scrapeAppleMusicPage() {
+function clampTimeout(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+async function sendCdpCommand(webSocketUrl, method, params = {}, timeout = 15000) {
+  if (typeof WebSocket !== 'function') {
+    throw new Error('当前 Node.js 不支持 WebSocket，无法连接 Edge 调试端口。');
+  }
+
+  const ws = new WebSocket(webSocketUrl);
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', reject, { once: true });
+  });
+
+  const response = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${method} timeout`)), timeout);
+    ws.addEventListener('message', (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.id !== 1) return;
+      clearTimeout(timer);
+      if (payload.error) reject(new Error(payload.error.message || `${method} failed`));
+      else resolve(payload.result);
+    });
+    ws.send(JSON.stringify({ id: 1, method, params }));
+  });
+  ws.close();
+  return response;
+}
+
+async function inspectAppleMusicConnection(options, selectFavoritePlaylist) {
+  const musicKit = window.MusicKit?.getInstance?.();
+  if (!musicKit?.api?.music) {
+    return {
+      ready: false,
+      waiting: true,
+      code: 'page_loading',
+      message: '正在等待 Apple Music 页面加载。',
+    };
+  }
+
+  if (!musicKit.isAuthorized && !musicKit.musicUserToken) {
+    return {
+      ready: false,
+      waiting: true,
+      code: 'waiting_for_login',
+      message: '请在 Apple 官方窗口完成登录；登录成功后会自动继续。',
+    };
+  }
+
+  let storefront = '';
+  try {
+    const response = await musicKit.api.music('/v1/me/storefront', { platform: 'web' });
+    if (Number(response?.status || 200) >= 400) throw new Error(`HTTP ${response.status}`);
+    storefront = response?.data?.data?.[0]?.id || response?.json?.data?.[0]?.id || '';
+  } catch {
+    return {
+      ready: false,
+      waiting: true,
+      code: 'waiting_for_login',
+      message: 'Apple 登录尚未完成，请在官方窗口继续。',
+    };
+  }
+
+  try {
+    let next = '/v1/me/library/playlists';
+    let selected = null;
+    let pageCount = 0;
+    while (next && pageCount < 20 && !selected) {
+      const parsed = new URL(next, location.origin);
+      const params = {
+        limit: 100,
+        platform: 'web',
+        include: 'catalog',
+        ...Object.fromEntries(parsed.searchParams.entries()),
+      };
+      const response = await musicKit.api.music(parsed.pathname, params);
+      if (Number(response?.status || 200) >= 400) throw new Error(`HTTP ${response.status}`);
+      const payload = response?.data || response?.json || {};
+      selected = selectFavoritePlaylist(payload.data || []);
+      next = payload.next || payload.meta?.next || '';
+      pageCount += 1;
+    }
+
+    const favoriteLink = Array.from(document.querySelectorAll('a[href*="/playlist/"]'))
+      .find((link) => /favorite-songs/i.test(link.href)
+        || /favorite songs|favourite songs|\u559c\u7231\u6b4c\u66f2|\u559c\u7231\u7684\u6b4c\u66f2|\u6211\u559c\u6b22\u7684\u6b4c\u66f2|\u559c\u6b22\u7684\u6b4c\u66f2/i.test(link.textContent || ''));
+    const fallbackUrl = favoriteLink?.href || options?.sourceUrl || '';
+    if (!selected && fallbackUrl) {
+      const parsed = new URL(fallbackUrl, location.origin);
+      const fallbackId = parsed.pathname.split('/').filter(Boolean).at(-1) || '';
+      if (fallbackId) {
+        selected = {
+          name: 'Favorite Songs',
+          playlistId: fallbackId,
+          playlistType: 'playlists',
+          catalogId: fallbackId,
+        };
+      }
+    }
+
+    if (!selected) {
+      return {
+        ready: false,
+        waiting: false,
+        code: 'favorite_songs_not_found',
+        message: '已登录，但没有找到“喜爱歌曲”。请先在 Apple Music 中喜欢至少一首歌。',
+      };
+    }
+
+    const sourceUrl = selected.catalogId && storefront
+      ? `${location.origin}/${storefront}/playlist/favorite-songs/${selected.catalogId}`
+      : fallbackUrl || location.href;
+    return {
+      ready: true,
+      waiting: false,
+      code: 'favorite_songs_ready',
+      message: '已找到 Apple Music 的“喜爱歌曲”，正在读取。',
+      playlistId: selected.playlistId,
+      playlistType: selected.playlistType,
+      sourceUrl,
+    };
+  } catch (error) {
+    return {
+      ready: false,
+      waiting: false,
+      code: 'playlist_lookup_failed',
+      message: `读取 Apple Music 歌单失败：${error?.message || String(error)}`,
+    };
+  }
+}
+
+async function scrapeAppleMusicPage(options = {}) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const tracks = [];
   const seen = new Set();
+  const apiRequestTimeoutMs = Number(options.apiRequestTimeoutMs) || 15000;
+  let apiError = '';
+
+  async function withTimeout(promise, label) {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout`)), apiRequestTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   function addTrack(track) {
     const title = clean(track.title);
@@ -199,11 +512,14 @@ async function scrapeAppleMusicPage() {
       album,
       duration: clean(track.duration),
       isrc: clean(track.isrc),
+      artworkUrl: clean(track.artworkUrl),
+      previewUrl: clean(track.previewUrl),
       raw: track.raw || null,
     });
   }
 
   function getPlaylistId() {
+    if (options.playlistId) return options.playlistId;
     const playlistPath = location.pathname.match(/\/playlist\/([^?#]+)/)?.[1] || '';
     const pathSegments = playlistPath.split('/').map((item) => item.trim()).filter(Boolean);
     const urlPlaylistId = pathSegments.findLast((item) => /^pl[.-]/i.test(item)) || pathSegments.at(-1);
@@ -231,73 +547,91 @@ async function scrapeAppleMusicPage() {
 
     async function resolveStorefront() {
       try {
-        const response = await musicKit.api.music('/v1/me/storefront', { platform: 'web' });
+        const response = await withTimeout(
+          musicKit.api.music('/v1/me/storefront', { platform: 'web' }),
+          'Apple storefront request',
+        );
         return response?.data?.data?.[0]?.id || response?.json?.data?.[0]?.id || '';
       } catch {
         return '';
       }
     }
 
-    const baseParams = {
-      'l': document.documentElement.lang || 'zh-Hans-CN',
-      'platform': 'web',
-      'include': 'catalog,artists',
-      'include[songs]': 'artists',
-      'fields[songs]': 'artistName,albumName,name,durationInMillis,isrc,url',
-      'format[resources]': 'map',
-      'omit[resource]': 'autos',
-    };
-    const isCatalogPlaylist = /^pl[.-]/i.test(playlistId);
-    const storefront = isCatalogPlaylist
-      ? await resolveStorefront() || musicKit.storefrontId || musicKit.storefront?.id || 'us'
-      : '';
-    let next = isCatalogPlaylist
-      ? `/v1/catalog/${storefront}/playlists/${playlistId}/tracks`
-      : `/v1/me/library/playlists/${playlistId}/tracks`;
-    let pageCount = 0;
+    try {
+      const baseParams = {
+        'l': document.documentElement.lang || 'zh-Hans-CN',
+        'platform': 'web',
+        'include': 'catalog,artists',
+        'include[songs]': 'artists',
+        'fields[songs]': 'artistName,albumName,name,durationInMillis,isrc,url,artwork,previews',
+        'format[resources]': 'map',
+        'omit[resource]': 'autos',
+      };
+      const isCatalogPlaylist = options.playlistType === 'playlists'
+        || (!options.playlistType && /^pl[.-]/i.test(playlistId));
+      const storefront = isCatalogPlaylist
+        ? await resolveStorefront() || musicKit.storefrontId || musicKit.storefront?.id || 'us'
+        : '';
+      let next = isCatalogPlaylist
+        ? `/v1/catalog/${storefront}/playlists/${playlistId}/tracks`
+        : `/v1/me/library/playlists/${playlistId}/tracks`;
+      let pageCount = 0;
 
-    while (next && pageCount < 200) {
-      const { path, params } = paramsFromUrl(next);
-      const response = await musicKit.api.music(path, { ...baseParams, ...params });
-      if (Number(response?.status || 0) >= 400) return false;
-      const payload = response?.data || response?.json || {};
-      const resources = payload.resources || {};
-      const stubs = payload.data || [];
+      while (next && pageCount < 200) {
+        const { path, params } = paramsFromUrl(next);
+        const response = await withTimeout(
+          musicKit.api.music(path, { ...baseParams, ...params }),
+          'Apple playlist request',
+        );
+        if (Number(response?.status || 0) >= 400) return false;
+        const payload = response?.data || response?.json || {};
+        const resources = payload.resources || {};
+        const stubs = payload.data || [];
 
-      for (const stub of stubs) {
-        const item = resources?.[stub.type]?.[stub.id] || stub;
-        const attrs = item.attributes || {};
-        const catalog = item.relationships?.catalog?.data?.[0];
-        const catalogResource = catalog
-          ? resources?.[catalog.type]?.[catalog.id] || resources?.songs?.[catalog.id]
-          : null;
-        const catalogAttrs = catalogResource?.attributes || {};
-        const catalogId = attrs.playParams?.catalogId || catalog?.id || catalogResource?.id || '';
-        const isrc = catalogAttrs.isrc || attrs.isrc || '';
-        addTrack({
-          id: catalogId || item.id || stub.id,
-          title: catalogAttrs.name || attrs.name,
-          artists: catalogAttrs.artistName || attrs.artistName,
-          album: catalogAttrs.albumName || attrs.albumName,
-          duration: catalogAttrs.durationInMillis || attrs.durationInMillis,
-          isrc,
-          raw: {
-            id: item.id || stub.id,
-            type: item.type || stub.type,
-            catalogId,
-            catalogType: catalog?.type || catalogResource?.type || '',
-            catalogIsrc: isrc,
-            url: catalogAttrs.url || '',
-          },
-        });
+        for (const stub of stubs) {
+          const item = resources?.[stub.type]?.[stub.id] || stub;
+          const attrs = item.attributes || {};
+          const catalog = item.relationships?.catalog?.data?.[0];
+          const catalogResource = catalog
+            ? resources?.[catalog.type]?.[catalog.id] || resources?.songs?.[catalog.id]
+            : null;
+          const catalogAttrs = catalogResource?.attributes || {};
+          const catalogId = attrs.playParams?.catalogId || catalog?.id || catalogResource?.id || '';
+          const isrc = catalogAttrs.isrc || attrs.isrc || '';
+          const artworkUrl = catalogAttrs.artwork?.url || attrs.artwork?.url || '';
+          const previewUrl = catalogAttrs.previews?.[0]?.url || attrs.previews?.[0]?.url || '';
+          addTrack({
+            id: catalogId || item.id || stub.id,
+            title: catalogAttrs.name || attrs.name,
+            artists: catalogAttrs.artistName || attrs.artistName,
+            album: catalogAttrs.albumName || attrs.albumName,
+            duration: catalogAttrs.durationInMillis || attrs.durationInMillis,
+            isrc,
+            artworkUrl,
+            previewUrl,
+            raw: {
+              id: item.id || stub.id,
+              type: item.type || stub.type,
+              catalogId,
+              catalogType: catalog?.type || catalogResource?.type || '',
+              catalogIsrc: isrc,
+              url: catalogAttrs.url || '',
+              artworkUrl,
+              previewUrl,
+            },
+          });
+        }
+
+        pageCount += 1;
+        next = payload.next || '';
+        await sleep(120);
       }
 
-      pageCount += 1;
-      next = payload.next || '';
-      await sleep(120);
+      return tracks.length > 0;
+    } catch (error) {
+      apiError = error?.message || String(error);
+      return false;
     }
-
-    return tracks.length > 0;
   }
 
   function walkApplePayload(value) {
@@ -422,6 +756,16 @@ async function scrapeAppleMusicPage() {
       method: 'musickit-api',
       tracks,
       message: '',
+    };
+  }
+  if (options.requireMusicKit) {
+    return {
+      url: location.href,
+      title: document.title,
+      count: 0,
+      method: 'musickit-api-failed',
+      tracks: [],
+      message: apiError ? `Apple MusicKit API 读取失败：${apiError}` : 'Apple MusicKit API 尚未就绪。',
     };
   }
 

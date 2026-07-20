@@ -6,10 +6,19 @@ import {
   writeJson,
 } from '../utils.js';
 import { normalizeTrack } from '../normalize.js';
+import {
+  compactAppleArtwork,
+  compactApplePreviews,
+  normalizeArtworkUrl,
+  normalizeHttpUrl,
+  trackArtworkUrl,
+  trackPreviewUrl,
+} from '../track-media.js';
 import { runAppleMusicKitTask } from '../apple-edge.js';
 
 const DEFAULT_LIMIT = 12;
 const DEFAULT_BATCH_SIZE = 50;
+const APPLE_EQUIVALENT_BATCH_SIZE = 300;
 const CACHE_FILE = path.join(DATA_DIR, 'apple-catalog-cache.json');
 const CACHE_VERSION = 1;
 const APPLE_SEARCH_SOURCE = String(process.env.APPLE_SEARCH_SOURCE || 'apple-web').trim().toLowerCase();
@@ -170,7 +179,150 @@ function compactAppleApiSong(song = {}) {
       albumName: attrs.albumName || '',
       durationInMillis: attrs.durationInMillis || 0,
       isrc: attrs.isrc || '',
+      artwork: compactAppleArtwork(attrs.artwork),
+      previews: compactApplePreviews(attrs.previews),
     },
+  };
+}
+
+export async function resolveAppleTrackMedia(track = {}, options = {}) {
+  const existingArtwork = trackArtworkUrl({ ...track, platform: 'apple' }, { size: options.artworkSize });
+  const existingPreview = trackPreviewUrl(track);
+  if (existingArtwork && existingPreview && options.refresh !== true) {
+    return playableAppleMedia(existingArtwork, existingPreview);
+  }
+
+  const id = String(track.id || track.catalogId || '').trim();
+  if (!id) throw new Error('缺少 Apple Music 歌曲 ID，无法解析试听。');
+  const song = (await fetchAppleCatalogSongsByIds([id], options))[0] || {};
+  const attrs = song.attributes || {};
+  const artworkUrl = normalizeArtworkUrl(attrs.artwork?.url, { size: options.artworkSize, platform: 'apple' })
+    || existingArtwork;
+  const previewUrl = normalizeHttpUrl(attrs.previews?.[0]?.url) || existingPreview;
+  return playableAppleMedia(artworkUrl, previewUrl);
+}
+
+export async function resolveAppleTracksMedia(tracks = [], options = {}) {
+  const list = Array.isArray(tracks) ? tracks : [];
+  const results = new Map();
+  const missingIds = [];
+  for (const track of list) {
+    const id = String(track?.id || track?.catalogId || '').trim();
+    if (!id) continue;
+    const artworkUrl = trackArtworkUrl({ ...track, platform: 'apple' }, { size: options.artworkSize });
+    const previewUrl = trackPreviewUrl(track);
+    if (artworkUrl && options.refresh !== true) {
+      results.set(id, playableAppleMedia(artworkUrl, previewUrl));
+    } else {
+      missingIds.push(id);
+    }
+  }
+
+  for (const ids of chunkArray(unique(missingIds), Math.min(100, Math.max(1, Number(options.batchSize || 100))))) {
+    const songs = await fetchAppleCatalogSongsByIds(ids, options);
+    for (const song of songs) {
+      const id = String(song?.id || '').trim();
+      if (!id) continue;
+      const attrs = song.attributes || {};
+      results.set(id, playableAppleMedia(
+        normalizeArtworkUrl(attrs.artwork?.url, { size: options.artworkSize, platform: 'apple' }),
+        normalizeHttpUrl(attrs.previews?.[0]?.url),
+      ));
+    }
+  }
+
+  return list.map((track) => ({
+    id: String(track?.id || track?.catalogId || '').trim(),
+    media: results.get(String(track?.id || track?.catalogId || '').trim())
+      || playableAppleMedia(trackArtworkUrl(track), trackPreviewUrl(track)),
+  }));
+}
+
+async function fetchAppleCatalogSongsByIds(ids, options = {}) {
+  const values = unique(ids);
+  if (!values.length) return [];
+  const storefront = String(options.storefront || APPLE_STOREFRONT).trim().toLowerCase();
+  const token = String(options.token || await getAppleWebToken()).trim();
+  const request = options.fetchImpl || fetch;
+  const url = new URL(`${APPLE_WEB_API_URL}/v1/catalog/${storefront}/songs`);
+  url.searchParams.set('ids', values.join(','));
+  url.searchParams.set('platform', 'web');
+  url.searchParams.set('l', 'zh-Hans-CN');
+  const response = await request(url, {
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${token}`,
+      origin: 'https://music.apple.com',
+      referer: 'https://music.apple.com/',
+      'user-agent': 'curl/8.0',
+    },
+  });
+  if ((response.status === 401 || response.status === 403) && !options.token && options.retry !== false) {
+    appleWebToken = null;
+    return fetchAppleCatalogSongsByIds(values, { ...options, retry: false });
+  }
+  if (!response.ok) throw new Error(`Apple Music 媒体信息读取失败：HTTP ${response.status}`);
+  const payload = await response.json();
+  return Array.isArray(payload?.data) ? payload.data : [];
+}
+
+export async function fetchAppleEquivalentSongs(ids, options = {}) {
+  const values = unique(ids).slice(0, APPLE_EQUIVALENT_BATCH_SIZE);
+  if (!values.length) return new Map();
+  const storefront = String(options.storefront || APPLE_STOREFRONT).trim().toLowerCase();
+  const token = String(options.token || await getAppleWebToken()).trim();
+  const request = options.fetchImpl || fetch;
+  const url = new URL(`${APPLE_WEB_API_URL}/v1/catalog/${storefront}/songs`);
+  url.searchParams.set('filter[equivalents]', values.join(','));
+  url.searchParams.set('platform', 'web');
+  const response = await request(url, {
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${token}`,
+      origin: 'https://music.apple.com',
+      referer: 'https://music.apple.com/',
+      'user-agent': 'curl/8.0',
+    },
+  });
+  if ((response.status === 401 || response.status === 403) && !options.token && options.retry !== false) {
+    appleWebToken = null;
+    return fetchAppleEquivalentSongs(values, { ...options, retry: false });
+  }
+  if (!response.ok) {
+    throw new Error(`Apple equivalent catalog lookup failed for ${storefront}: HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const resources = new Map((payload?.data || []).map((song) => [String(song?.id || ''), song]));
+  const equivalents = payload?.meta?.filters?.equivalents || {};
+  return new Map(values.map((sourceId) => {
+    const refs = Array.isArray(equivalents[sourceId]) ? equivalents[sourceId] : [];
+    const songs = refs
+      .map((ref) => resources.get(String(ref?.id || '')))
+      .filter(Boolean)
+      .map(compactAppleEquivalentSong);
+    if (!songs.length && resources.has(sourceId)) {
+      songs.push(compactAppleEquivalentSong(resources.get(sourceId)));
+    }
+    return [sourceId, songs];
+  }));
+}
+
+function compactAppleEquivalentSong(song = {}) {
+  const attrs = song.attributes || {};
+  const trackNumber = Number(attrs.trackNumber || 0);
+  const discNumber = Number(attrs.discNumber || 0);
+  const releaseDate = String(attrs.releaseDate || '');
+  return {
+    id: String(song.id || ''),
+    title: String(attrs.name || ''),
+    artist: String(attrs.artistName || ''),
+    album: String(attrs.albumName || ''),
+    durationMs: Number(attrs.durationInMillis || 0),
+    isrc: String(attrs.isrc || ''),
+    ...(trackNumber ? { trackNumber } : {}),
+    ...(discNumber ? { discNumber } : {}),
+    ...(releaseDate ? { releaseDate } : {}),
   };
 }
 
@@ -288,6 +440,10 @@ function compactItunesSong(item) {
       albumName: item.collectionName || item.collectionCensoredName || '',
       durationInMillis: item.trackTimeMillis || 0,
       isrc: '',
+      artwork: compactAppleArtwork({
+        url: String(item.artworkUrl100 || '').replace(/100x100bb/i, '{w}x{h}bb'),
+      }),
+      previews: compactApplePreviews(item.previewUrl ? [{ url: item.previewUrl }] : []),
     },
   };
 }
@@ -399,8 +555,21 @@ function normalizeAppleCatalogSong(song) {
     album: attrs.albumName,
     durationMs: attrs.durationInMillis,
     isrc: attrs.isrc,
+    artworkUrl: attrs.artwork?.url,
+    previewUrl: attrs.previews?.[0]?.url,
     raw: song,
   }, 'apple');
+}
+
+function playableAppleMedia(artworkUrl, previewUrl) {
+  return {
+    platform: 'apple',
+    artworkUrl: artworkUrl || '',
+    previewUrl: previewUrl || '',
+    playable: Boolean(previewUrl),
+    reason: previewUrl ? '' : 'Apple Music 没有为这个版本提供公开试听片段。',
+    expiresAt: '',
+  };
 }
 
 function writeResult(ids, accepted, batches) {
@@ -481,6 +650,8 @@ function compactCachedSong(song) {
       albumName: attrs.albumName || '',
       durationInMillis: attrs.durationInMillis || 0,
       isrc: attrs.isrc || '',
+      artwork: compactAppleArtwork(attrs.artwork),
+      previews: compactApplePreviews(attrs.previews),
     },
   };
 }
@@ -522,6 +693,10 @@ async function searchAppleCatalogTask({ query, limit }) {
         albumName: attrs.albumName || '',
         durationInMillis: attrs.durationInMillis || 0,
         isrc: attrs.isrc || '',
+        artwork: attrs.artwork?.url ? { url: attrs.artwork.url } : null,
+        previews: Array.isArray(attrs.previews)
+          ? attrs.previews.filter((item) => item?.url).slice(0, 1).map((item) => ({ url: item.url }))
+          : [],
       },
     };
   };

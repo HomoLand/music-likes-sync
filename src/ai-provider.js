@@ -61,39 +61,71 @@ export async function requestAiJson(options = {}) {
   };
 
   const fetchImpl = options.fetchImpl || fetch;
-  const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${config.apiKey}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  const timeoutMs = clampInteger(options.timeoutMs || process.env.MUSIC_LIKES_SYNC_AI_TIMEOUT_MS || 180000, 1000, 300000);
+  const maxAttempts = clampInteger(options.maxAttempts || 2, 1, 3);
+  let lastError = null;
 
-  const text = await response.text();
-  const payload = parseJsonOrNull(text);
-  if (!response.ok) {
-    const message = payload?.error?.message || payload?.message || response.statusText;
-    throw new Error(`AI provider request failed: ${message}`);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${config.apiKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const text = await response.text();
+      const payload = parseJsonOrNull(text);
+      if (!response.ok) {
+        const message = payload?.error?.message || payload?.message || response.statusText;
+        lastError = new Error(`AI provider request failed: ${message}`);
+        if (!isTransientAiStatus(response.status)) {
+          lastError.retryable = false;
+          throw lastError;
+        }
+        if (attempt === maxAttempts) throw lastError;
+      } else {
+        const content = payload?.choices?.[0]?.message?.content || '';
+        if (!content.trim()) {
+          lastError = new Error('AI provider returned an empty response.');
+        } else {
+          try {
+            return {
+              provider: config.provider,
+              model: config.model,
+              usage: payload?.usage || null,
+              content,
+              json: JSON.parse(content),
+            };
+          } catch (error) {
+            lastError = new Error(`AI provider JSON parse failed: ${error.message}`);
+          }
+        }
+        if (attempt === maxAttempts) throw lastError;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (lastError.retryable === false || attempt === maxAttempts) {
+        if (lastError.name === 'TimeoutError' || lastError.name === 'AbortError') {
+          throw new Error(`AI provider request timed out after ${timeoutMs} ms.`);
+        }
+        throw lastError;
+      }
+    }
+    await delay(Math.min(5000, attempt * 1500));
   }
+  throw lastError || new Error('AI provider request failed.');
+}
 
-  const content = payload?.choices?.[0]?.message?.content || '';
-  if (!content.trim()) throw new Error('AI provider returned an empty response.');
+function isTransientAiStatus(status) {
+  const code = Number(status || 0);
+  return code === 408 || code === 409 || code === 429 || code >= 500;
+}
 
-  let json = null;
-  try {
-    json = JSON.parse(content);
-  } catch (error) {
-    throw new Error(`AI provider JSON parse failed: ${error.message}`);
-  }
-
-  return {
-    provider: config.provider,
-    model: config.model,
-    usage: payload?.usage || null,
-    content,
-    json,
-  };
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function testAiProviderJson(options = {}) {

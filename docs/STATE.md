@@ -91,7 +91,7 @@ Current schema version: `1`
 Purpose:
 
 - Stores manual decisions for mirror `review` operations.
-- Is user-authored local state, not derived state.
+- Is user-authored local state in the ordinary-user workflow, not derived state.
 - Is applied when generating or rebuilding a mirror plan from snapshots.
 
 Required top-level fields:
@@ -106,6 +106,21 @@ Decision actions:
 - `separate`: treat the reviewed source and target tracks as different. The rebuilt plan creates the necessary `add` and / or `remove` operations, and deletions still require dry-run plus `REMOVE <TARGET>`.
 
 Batch review actions write the same decision entries as single-item review. A decision may include an optional `batchId` string for auditability; clearing a decision removes the item from `items`.
+
+The legacy explicit AI-apply command may leave entries with `aiAppliedAt`; the ordinary-user policy workflow does not treat those entries as manual approval.
+
+### `data/mirror-ai-suggestions.json`
+
+Current schema version: `1`
+
+Purpose:
+
+- Stores consent-gated AI drafts for unresolved Apple-vs-target version conflicts.
+- Is advisory derived state; it is never treated as a user decision or provider-write authorization.
+
+Items are keyed by the same stable `decisionKey` used by `mirror-decisions.json`. Each item may contain a sanitized action (`keep`, `separate`, or `needs_human`), relation, confidence, short evidence, reason, model / batch metadata, and deterministic safety downgrade. Cookies, API keys, playlist ids, signed playback URLs, audio, and raw provider responses are forbidden.
+
+Legacy decision entries carrying `aiAppliedAt` remain compatible with the legacy mirror command path, but the ordinary-user policy workflow treats them as advisory and does not apply them as user decisions. A user click replaces the entry with a manual decision.
 
 ## Policy-Driven Sync State
 
@@ -142,7 +157,7 @@ Rules:
 
 - Baseline state is user-confirmed state, not disposable derived state.
 - Every platform entry must include a normalized track identity set, source metadata, `fetchedAt`, and count.
-- Track identities should prefer stable provider ids, ISRC, MusicBrainz recording ids, and normalized text/duration fallbacks.
+- Track identities should prefer stable provider ids, ISRC, Apple storefront equivalents, MusicBrainz recording ids, provider catalog positions, and normalized text/duration fallbacks.
 - Baseline migration must preserve user-confirmed identities or fail closed with a backup.
 
 ### `data/sync-preview.json`
@@ -161,6 +176,12 @@ Rules:
 - Add and delete buckets must remain separate.
 - Destructive operations in `may_delete` are not executable until explicit confirmation creates or updates tombstone state.
 - `convergence` may contain status, open-operation counts, refreshed targets, and sanitized snapshot summaries only. It must not contain cookies, raw provider responses, or raw AI payloads.
+- Low-confidence add operations may contain a sanitized `aiReview` draft with model name, batch id, action suggestion, relation, confidence, short evidence, reason, and deterministic safety-guard status.
+- Canonical identity-review operations may expose the same compact `aiReview` shape with `keep`, `separate`, or `needs_human`; the durable draft is reattached from `mirror-ai-suggestions.json` by `decisionKey`.
+- `aiReview` never changes an operation from `needs_review` to `ready`; only an explicit user addition or identity decision can do that.
+- Canonical operations retain `decisionKey` and compact `manualDecision` provenance so a user judgment can be undone after the plan is rebuilt into `keep`, `add`, or `remove` operations.
+- Compact tracks may persist a public HTTPS `artworkUrl`; Apple tracks may also persist the public catalog preview URL captured from MusicKit.
+- Signed QQ / NetEase playback URLs are ephemeral process-memory data and must never be written to `sync-preview.json`, snapshots, run logs, backups, AI evidence, or Agent traces.
 
 ### `data/sync-tombstones.json`
 
@@ -286,6 +307,61 @@ Rules:
 - Optional trace feedback is limited to short labels: `useful`, `not_enough_evidence`, or `incorrect`. Do not store free-form private feedback text in this state file.
 - Agent-generated add/delete actions remain drafts until the controlled sync executor runs after user confirmation.
 
+### `data/auto-sync.json`
+
+Current schema version: `1`
+
+Purpose:
+
+- Stores ordinary-user automatic-sync settings and the latest sanitized run summary.
+- Schedules Apple-source refresh, target refresh, preview generation, and safe addition execution.
+
+Rules:
+
+- Automatic sync starts disabled and cannot be enabled until the selected snapshots are fresh, the policy allows writes, and each selected target has fresh live add/remove validation evidence. `canonical_mirror` does not require a historical baseline because it derives additions from the current Apple source; policies that depend on cross-run deletion state still require one when `requireBaseline` is enabled.
+- `targets` may contain only `qq` and `netease`; Apple is never a write target.
+- `autoExecuteAdditions` can enable ready additions after all gates pass. There is intentionally no automatic-delete setting.
+- `nextRunAt` is recalculated when automation is enabled or its interval / targets change.
+- Scheduled Apple refresh accepts only the MusicKit API result for the same playlist. Each MusicKit request, the CDP evaluation, and the single recovery retry are time-bounded; DOM fallback results and large track-count drops fail closed and require manual review.
+- Automatic Apple refresh reapplies the bounded local Apple storefront-equivalents and MusicBrainz ISRC caches before matching; it does not perform unbounded metadata-network lookups during a scheduled run.
+- Cookies, API keys, provider payloads, playlist ids, and raw snapshots are forbidden.
+
+### `data/auto-sync-runs.json`
+
+Current schema version: `1`
+
+Purpose:
+
+- Stores a bounded, sanitized audit history for manual and scheduled automatic-sync runs.
+
+Rules:
+
+- Run entries contain only trigger, status, timing, selected targets, refresh summaries, preview counts, addition counts, deletion-signal counts, and sanitized errors.
+- Deletion signals are recorded as attention items and are never executed by the scheduler.
+- History is bounded to the latest 50 runs by default.
+
+### `data/auto-sync.lock`
+
+This is an ignored runtime lock, not versioned product state. The scheduler acquires it with exclusive file creation before refresh or provider mutation, refreshes its modification time with a heartbeat, and reclaims it only after the stale timeout. It prevents two local server processes from executing automatic sync concurrently and must never be committed.
+
+### `data/sync-backups.json`
+
+Current schema version: `1`
+
+Purpose:
+
+- Stores bounded target snapshots created before real deletions and sanitized restore-run audit entries.
+- Provides an additions-only recovery path if a confirmed deletion later needs to be reversed.
+
+Rules:
+
+- Each backup contains the local target playlist identity, compact restorable track fields, counts, and a SHA-256 checksum. Raw provider payloads are forbidden.
+- The API never returns playlist ids or backup track records.
+- Restore verifies the checksum and requires the current playlist identity to match the saved identity.
+- Restore only adds missing saved tracks. It never deletes tracks added after the backup.
+- Backups are limited to the latest five entries and restore history to the latest 50 entries by default.
+- Cookies and API keys are forbidden.
+
 ## Validation
 
 Run local state validation:
@@ -310,6 +386,18 @@ For an ordinary-user policy sync diagnostic bundle, require the product state fi
 
 ```powershell
 npm run check:state -- --require-sync-policy --require-sync-preview --require-sync-runs
+```
+
+To require the automatic-sync settings and audit log as well:
+
+```powershell
+npm run check:state -- --require-auto-sync --require-auto-sync-runs
+```
+
+To require deletion recovery state as well:
+
+```powershell
+npm run check:state -- --require-sync-backups
 ```
 
 Machine-readable output:
@@ -356,7 +444,7 @@ Rules for future versions:
 - Treat `mirror-plan.json` as regenerable derived state. If migration is unsafe, prefer asking the user to regenerate the plan from snapshots.
 - Treat `mirror-runs.json` as audit history. If migration is unsafe, preserve a timestamped backup and start a new log.
 - Treat `mirror-decisions.json` as user-authored state. If migration is unsafe, preserve a timestamped backup and require explicit review before dropping decisions.
-- Treat `sync-baseline.json`, `sync-tombstones.json`, `sync-runs.json`, `ai-provider-state.json`, `recommendation-shortlists.json`, and `agent-sessions.json` as user-authored, user-confirmed, or audit state.
+- Treat `sync-baseline.json`, `sync-tombstones.json`, `sync-runs.json`, `sync-backups.json`, `ai-provider-state.json`, `recommendation-shortlists.json`, `agent-sessions.json`, `auto-sync.json`, and `auto-sync-runs.json` as user-authored, user-confirmed, recovery, or audit state.
 - Treat `sync-preview.json` as regenerable derived state.
 - Product APIs must validate policy state before every write.
 - Keep destructive operations opt-in across migrations. A migrated remove operation must still require explicit `REMOVE <TARGET>` confirmation before execution.

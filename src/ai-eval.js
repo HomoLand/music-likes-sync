@@ -74,7 +74,11 @@ export function classifyTrackPair({ source = {}, target = {}, score = null, evid
   const artistOverlap = Boolean(evidence.alias_overlap?.artists?.length);
   const durationDelta = evidence.duration_delta_seconds;
   const total = Number(score?.total ?? evidence.algorithm_score?.total ?? evidence.algorithm_score ?? 0);
-  const hasRecordingIdentity = support.has('same_isrc') || support.has('shared_musicbrainz_recording_id');
+  const hasRecordingIdentity = support.has('same_isrc')
+    || support.has('shared_musicbrainz_recording_id')
+    || support.has('apple_storefront_equivalent_fingerprint')
+    || support.has('same_album_track_number');
+  const hasRecordingFingerprint = support.has('exact_recording_fingerprint');
   const hasVersionConflict = risk.has('version_cue_conflict');
   const hasDifferentIsrc = risk.has('different_isrc');
   const hasLongDurationRisk = risk.has('duration_over_20_seconds');
@@ -84,6 +88,7 @@ export function classifyTrackPair({ source = {}, target = {}, score = null, evid
     return 'different_song';
   }
   if (hasRecordingIdentity && !hasVersionConflict && !hasLongDurationRisk) return 'same_recording';
+  if (hasRecordingFingerprint && !hasVersionConflict && !hasDifferentIsrc) return 'same_recording';
   if (hasVersionConflict) return 'same_song_different_version';
   if (titleOverlap && artistOverlap && durationDelta !== null && durationDelta <= 10 && total >= 0.82) {
     return 'same_recording';
@@ -283,6 +288,7 @@ function aiEvalEvidenceRefs(evidence = {}) {
     evidence.isrc?.relation === 'same' ? 'same_isrc' : '',
     evidence.isrc?.relation === 'different' ? 'different_isrc' : '',
     evidence.musicbrainz?.shared_recording_ids?.length ? 'shared_musicbrainz_recording_id' : '',
+    evidence.recording_fingerprint ? 'exact_recording_fingerprint' : '',
     evidence.duration_delta_seconds !== null ? `duration_delta:${evidence.duration_delta_seconds}s` : '',
     evidence.alias_overlap?.titles?.length ? 'title_alias_overlap' : '',
     evidence.alias_overlap?.artists?.length ? 'artist_alias_overlap' : '',

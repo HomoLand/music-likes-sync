@@ -1,6 +1,6 @@
 # music-likes-sync
 
-[English README](README.md)
+[English README](README.md) · [用户指南](docs/USER_GUIDE.zh-CN.md)
 
 本地运行的音乐收藏同步工具。当前正在从个人用“三端并集对账台”重构为开源可用的 Apple Music 可信源同步器：以 Apple Music Favorite Songs / 我喜欢作为唯一可信源，向 QQ 音乐和网易云音乐生成镜像同步计划。
 
@@ -8,8 +8,8 @@
 
 ## 数据源
 
-- Apple Music：CSV/JSON 导入，或通过本地 Edge 登录窗口抓取页面。
-- QQ 音乐：通过本地 QQ Music Web API 适配器 + cookie 拉取和写入。
+- Apple Music：首次在 Apple 官方页面登录后，自动定位 Favorite Songs / 喜爱歌曲；后续复用本机专用 Edge 会话静默刷新，CSV/JSON 仅作为兜底。
+- QQ 音乐：页面内展示腾讯官方登录页生成的 QQ / 微信二维码，也可打开官方页面使用本机快捷登录；连接后通过本地 Web API 适配器读写。
 - 网易云音乐：通过 `NeteaseCloudMusicApi` + cookie 拉取。
 
 ## 安装
@@ -23,6 +23,8 @@ npm run verify
 # 校验本地 mirror state 文件
 npm run check:state
 ```
+
+需要 Node.js 20 或更高版本。跨平台试听片段自动对齐还需要带 Chromaprint muxer 的 FFmpeg（可用 `ffmpeg -hide_banner -h muxer=chromaprint` 检查）；Docker 镜像已内置。
 
 ## Web UI
 
@@ -39,10 +41,12 @@ npm run web
 页面里可以完成：
 
 - 上传或粘贴 Apple Music 导出的 CSV / TSV / TXT / JSON。
-- 通过 QQ 官方登录窗口或网易云二维码自动保存 cookie 到本地 `data/`，手动粘贴只作为兜底。
+- Apple 只需首次官方登录；QQ 可直接扫页面内的 QQ / 微信二维码，或使用腾讯页面的本机快捷登录；网易云继续使用二维码。凭据自动保存在本地忽略目录，手工导入只作为兜底。
 - 拉取平台快照。
 - 生成 Markdown / JSON 缺口报告和统一曲库。
 - 在统一曲库里按条目处理版本冲突、低置信候选。
+- 匹配层统一处理 Unicode、完整简繁转换、Apple 官方跨 storefront 等价信息、平台 / MusicBrainz 别名、专辑轨道与发行日期、日文假名和罗马音变体；同一套证据同时用于确定性评分、AI 复核和安全门。
+- 目录解析会优先组合目标地区 Apple 官方标题 / 歌手、显式别名和源元数据做多查询召回，再按完整候选集、第一第二名分差和证据强度排序。只有标准化标题与专辑精确一致、歌手身份有可信别名或强匹配、时长相差不超过 2 秒、无版本标记冲突且不存在不同 ISRC 时，组合证据才会视为“录音指纹”；多个候选或跨录音共用同一目标 ID 仍进入复核。
 - 可选调用 DeepSeek 生成“同曲同版本 / 同曲不同版本 / 不是同一首”的辅助判断。
 - 为 Apple Music、QQ 音乐或网易云音乐生成旧版缺口写入计划，dry-run 后只写入高置信或已确认的候选曲目。
 - 为 QQ 音乐或网易云生成 Apple 可信源 mirror plan，查看应保留、新增、删除和人工复核的目标曲目。
@@ -52,6 +56,11 @@ npm run web
 - 执行后可刷新目标快照并重建 Apple 可信源计划，输出收敛检查结果。
 - 按批解析 mirror plan 里的新增候选，并在条目里展示已解析目标、低置信候选和备选匹配；已解析新增可执行，未解析新增会被阻塞。
 - 对 mirror plan 执行 dry-run；真实删除会弹出页面内确认层，展示目标平台、计划删除数量，并要求输入精确确认文本。
+- 在独立的“自动同步”页面配置刷新周期和目标平台；Apple 唯一可信源镜像无需历史基线，其他依赖历史状态的策略仍要求基线。快照新鲜度和真实写入验证通过后可自动执行新增，删除信号始终留给用户确认，并保留脱敏运行历史。
+- 真实删除前自动刷新并保存 QQ / 网易云恢复点；“同步预览”页可先检查恢复差异，再以备份专属确认文本执行仅新增、不删除现有歌曲的恢复。
+- 对已搜索出的低置信新增候选执行需明确同意的 AI 草稿复核；AI 只能建议新增、跳过或继续人工确认，不能直接接受候选或写入平台。
+- 人工复核时可对比 Apple 源版本、QQ / 网易云候选和备选的真实封面、时长与按需试听；本机 Chromaprint 会对齐同一音乐时刻，切换平台时保留播放位置。单播放器不自动播放，每次最多 30 秒；音频指纹和签名地址只存在于进程内存，不持久化、不上传，也不会发送给 AI。
+- 对 Apple 与目标平台的疑似匹配条目，需要逐个平台判断“可以，保留”或“不可以，替换”；决定按稳定键持久化并在重建预览后保留。“替换”只生成受保护的新增 / 删除草稿，AI 只提供可审计建议且不会自动采纳。
 
 ## Apple Music 导入
 
@@ -64,7 +73,7 @@ npm run web
 
 也可以提供 JSON 数组，每项包含 `title`、`artists`、`album`、`durationMs`。
 
-如果 Apple Music Windows 导出不方便，也可以在 Web UI 里打开本地 Edge 登录窗口，进入喜欢歌曲页面后抓取当前页面列表。
+推荐直接在 Web UI 点击连接 Apple Music：只需在专用 Edge 窗口完成一次 Apple 官方登录，应用会自动找到系统“喜爱歌曲”并读取；以后刷新在后台进行，不再要求手工打开歌单。文件导入仍可用于故障兜底。
 
 ## Cookie
 
@@ -193,7 +202,7 @@ npm run snapshot -- --apple .\examples\apple.sample.csv --qq-cookie .\missing.qq
 - API 层：`POST /api/mirror/plan` 基于当前 Apple 和目标快照生成镜像计划，`POST /api/mirror/resolve-adds` 按批解析新增候选，`POST /api/mirror/decision` / `POST /api/mirror/decisions` 保存单条或批量复核决定，`POST /api/mirror/apply` 执行 dry-run、已解析新增或受保护删除，`POST /api/mirror/convergence` 做收敛检查，`GET /api/mirror/plan` 读取最近计划。
 - Provider 层：QQ / 网易云已具备删除 helper；QQ mid-only 删除目前会作为不可提交项暴露，避免盲删。
 - 前端迁移：`/` 现在是 React + Vite + TypeScript 普通用户版入口，`/app/` 保留为 React 兼容别名，旧 `web/` 工作台保留在 `/workbench/`。React 已接入 app state、同步模式选择、读侧同步检查、同步预览读取、新增候选查找 / 决策、tombstone 删除信号复核、受控新增 / 删除执行控件、收敛检查、保存基线、本地 AI 画像 / 相似 / 推荐、自然语言 Agent 工具对话、AI Provider consent 自检、Agent 审计刷新 / 反馈、本地草稿 trace 标签和高级设置只读诊断，`npm run smoke:react-ui` 已覆盖桌面/移动端真实浏览器主路径。
-- 测试：`npm run verify` 覆盖 mirror sync 计划、mirror apply 契约、mirror 复核决策、mirror run 幂等键、React/Vite 前端构建、收敛汇总、state schema、provider 删除 no-op、live validation 编排和观测路由；`npm run check:web-app` 单独执行 React + TypeScript 类型检查和 Vite production build；`npm run check:ci` 固定 GitHub Actions 的 Node 20/24、package、fresh-install、HTTP、React app、React UI、UI、Docker、audit 和默认 live gate；`npm run check:privacy` 扫描公开 Git 候选和 npm 包，拦截敏感路径和非占位凭据；`npm run migrate:state` 覆盖状态迁移 dry-run，`-- --write` 会先备份再写回；`npm run smoke:http` 使用临时 `MUSIC_LIKES_SYNC_HOME` fixture 覆盖 mirror plan 生成、批量复核、add-only/remove-only dry-run 分离、QQ mid-only 删除阻塞、幂等元数据和只读收敛检查，不写入本地运行 state；`npm run smoke:web-app` 覆盖默认 `/` React 入口、`/app/` React 兼容别名、`/workbench/` 兼容工作台、SPA fallback、静态资源、读侧 app-state / sync-check / sync-preview API wiring、新增候选查找 / 决策、tombstone 删除信号决策、受控新增 dry-run、真实写入 live validation 拦截、删除确认、收敛摘要、本地 AI 画像 / 相似 / 推荐、AI consent guard、Agent session 脱敏、live validation / AI provider 高级诊断和路径穿越防护；`npm run smoke:react-ui` 覆盖默认 `/` 桌面/移动端真实浏览器导航、同步预览、受控写入保护、本地 AI 动作、自然语言 Agent 工具对话、Agent 审计、本地草稿 trace、高级诊断和横向溢出检查；`npm run smoke:ui` 覆盖 `/workbench/` 桌面/移动视口的镜像控件、筛选、复核按钮、快照新鲜度 / 收敛状态、收敛检查按钮、备选候选和删除确认 smoke；`npm run smoke:package` 覆盖 npm 发布包白名单、CLI bin 和隐私排除；`npm run smoke:fresh-install` 覆盖 npm 包首跑只读命令无 runtime 目录副作用、真实 tarball 安装后的 CLI bin、已安装包内 `npm test`、`music-likes-sync web`、调用者工作目录 runtime root、空 state、样例 Apple 快照和无 cookie 安全跳过；`npm run smoke:docker` 覆盖 Dockerfile 打包约束。
+- 测试：`npm run verify` 覆盖 mirror sync 计划、mirror apply 契约、mirror 复核决策、确定性匹配标注集、mirror run 幂等键、React/Vite 前端构建、收敛汇总、state schema、provider 删除 no-op、live validation 编排和观测路由；`npm run check:match-eval` 单独运行不调用模型的匹配引擎标注集并要求零错误自动接受，`npm run match:shadow` 汇总当前待解析项和目标 ID 碰撞，显式添加 `-- --live` 才会用本地凭据执行只读真实目录搜索；`npm run check:web-app` 单独执行 React + TypeScript 类型检查和 Vite production build；`npm run check:ci` 固定 GitHub Actions 的 Node 20/24、package、fresh-install、HTTP、React app、React UI、UI、Docker、audit 和默认 live gate；`npm run check:privacy` 扫描公开 Git 候选和 npm 包，拦截敏感路径和非占位凭据；`npm run migrate:state` 覆盖状态迁移 dry-run，`-- --write` 会先备份再写回；`npm run smoke:http` 使用临时 `MUSIC_LIKES_SYNC_HOME` fixture 覆盖 mirror plan 生成、批量复核、add-only/remove-only dry-run 分离、QQ mid-only 删除阻塞、幂等元数据和只读收敛检查，不写入本地运行 state；`npm run smoke:web-app` 覆盖默认 `/` React 入口、`/app/` React 兼容别名、`/workbench/` 兼容工作台、SPA fallback、静态资源、读侧 app-state / sync-check / sync-preview API wiring、新增候选查找 / 决策、tombstone 删除信号决策、受控新增 dry-run、真实写入 live validation 拦截、删除确认、收敛摘要、本地 AI 画像 / 相似 / 推荐、AI consent guard、Agent session 脱敏、live validation / AI provider 高级诊断和路径穿越防护；`npm run smoke:react-ui` 覆盖默认 `/` 桌面/移动端真实浏览器导航、同步预览、受控写入保护、本地 AI 动作、自然语言 Agent 工具对话、Agent 审计、本地草稿 trace、高级诊断和横向溢出检查；`npm run smoke:ui` 覆盖 `/workbench/` 桌面/移动视口的镜像控件、筛选、复核按钮、快照新鲜度 / 收敛状态、收敛检查按钮、备选候选和删除确认 smoke；`npm run smoke:package` 覆盖 npm 发布包白名单、CLI bin 和隐私排除；`npm run smoke:fresh-install` 覆盖 npm 包首跑只读命令无 runtime 目录副作用、真实 tarball 安装后的 CLI bin、已安装包内 `npm test`、`music-likes-sync web`、调用者工作目录 runtime root、空 state、样例 Apple 快照和无 cookie 安全跳过；`npm run smoke:docker` 覆盖 Dockerfile 打包约束。
 - 下一步：保持 QQ / 网易云 live validation 报告新鲜，等 schema v2 出现时补具体 v1 -> v2 迁移转换，并在有 Docker 的机器上跑 `npm run smoke:docker -- --require-docker --write-report` 生成 strict gate 可校验的 Docker 证据；如果发布工作站没有 Docker，可先用 `gh workflow run ci.yml --ref <branch>` 手动触发 CI，再用 `npm run fetch:docker-report -- --repo owner/name` 拉取 GitHub Actions Node 24 job 上传的 `docker-smoke-report-node-24` artifact 并写成 `reports/docker-smoke.json`。
 
 ## Git / 隐私
