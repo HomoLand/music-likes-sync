@@ -164,7 +164,12 @@ async function runTarballInstallSmoke() {
 
 function runInstalledPackageTests(bin) {
   assert(fs.existsSync(bin), 'installed package tests should run against the installed package bin.');
-  const result = runNpm(['test'], installedPackageRoot());
+  const testRuntimeRoot = path.join(tempRoot, 'installed-package-test-runtime');
+  const result = runNpm(['test'], installedPackageRoot(), {
+    env: {
+      MUSIC_LIKES_SYNC_HOME: testRuntimeRoot,
+    },
+  });
   assertIncludes(result.stdout, 'pass', 'installed package npm test should pass.');
   assert(!fs.existsSync(path.join(installRoot, 'data')), 'installed package npm test should not create installRoot data/.');
   assert(!fs.existsSync(path.join(installedPackageRoot(), 'data')), 'installed package npm test should not create package data/.');
@@ -281,10 +286,13 @@ function copyPackedFile(filePath) {
   fs.copyFileSync(source, destination);
 }
 
-function runNpm(args, cwd) {
+function runNpm(args, cwd, options = {}) {
   return runCommand(npmCommand(), args, {
     cwd,
-    env: npmEnv(),
+    env: {
+      ...npmEnv(),
+      ...(options.env || {}),
+    },
     windowsCmd: process.platform === 'win32',
   });
 }
