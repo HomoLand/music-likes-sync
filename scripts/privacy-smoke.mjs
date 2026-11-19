@@ -56,6 +56,7 @@ const PLACEHOLDER_TEXT_PATTERNS = [
 
 const findings = [];
 const publicFiles = listPublicGitFiles();
+const publicFileSet = new Set(publicFiles);
 for (const file of publicFiles) {
   checkPublicPath(file);
   checkPublicText(file);
@@ -64,6 +65,7 @@ for (const file of publicFiles) {
 const pack = npmPackDryRun();
 for (const file of pack.files) {
   checkPackedPath(file.path);
+  if (!publicFileSet.has(file.path)) checkPublicText(file.path);
 }
 
 const result = {
@@ -129,7 +131,6 @@ function forbiddenPathReason(filePath) {
   if (PUBLIC_FILE_ALLOWLIST.has(filePath)) return '';
   if (filePath === '.env') return 'root env file';
   if (filePath.startsWith('.env.')) return 'non-example env file';
-  if (filePath.startsWith('web-app/dist/')) return 'generated frontend build output';
   if (filePath.startsWith('data/')) return 'local runtime state';
   if (filePath.startsWith('reports/')) return 'generated report output';
   if (filePath.includes('-edge-profile')) return 'browser profile';

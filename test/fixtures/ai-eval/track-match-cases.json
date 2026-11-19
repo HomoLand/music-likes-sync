@@ -231,6 +231,32 @@
         "durationMs": 270000,
         "isrc": "GBAYE9909999"
       }
+    },
+    {
+      "id": "storefront-localized-artist-credit",
+      "category": "storefront_localization",
+      "expected": {
+        "relation": "same_recording"
+      },
+      "source": {
+        "platform": "apple",
+        "id": "apple-localized-credit",
+        "title": "裁夢為魂",
+        "artist": "Rachel",
+        "artists": ["Rachel"],
+        "album": "蚍蜉渡海",
+        "durationMs": 270832,
+        "isrc": "CNM691700029"
+      },
+      "target": {
+        "platform": "qq",
+        "id": "qq-localized-credit",
+        "title": "裁梦为魂",
+        "artist": "银临",
+        "artists": ["银临"],
+        "album": "蚍蜉渡海",
+        "durationMs": 270000
+      }
     }
   ]
 }

@@ -1,8 +1,10 @@
+import { ChevronRight, Headphones, HelpCircle, RefreshCcw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import {
   applyAdditionDecision,
   applyAdditionDecisionBatch,
+  applyIdentityDecision,
   applyTombstoneDecision,
   applyTombstoneDecisionBatch,
   checkConvergence,
@@ -12,6 +14,8 @@ import {
   fetchAppState,
   fetchSyncPreview,
   resolveAdditions,
+  reviewAdditionCandidates,
+  reviewIdentityCandidates,
   runSyncCheck,
   saveBaseline,
 } from '../api/client';
@@ -20,34 +24,71 @@ import type {
   AppStateSummary,
   ConvergenceSummary,
   PlatformKey,
+  IdentityDecisionAction,
   PreviewBucketId,
   SyncModeId,
   SyncPreviewDetails,
   TombstoneAction,
 } from '../api/types';
+import {
+  formatCount,
+  AlbumArtwork,
+  platformLabel,
+  routeIcons,
+  StatusPill,
+  topStatusIcons,
+} from '../components/MusicVisuals';
 import { AdvancedSettingsScreen } from '../screens/AdvancedSettingsScreen';
 import { AiAssistantScreen } from '../screens/AiAssistantScreen';
+import { AutoSyncScreen } from '../screens/AutoSyncScreen';
 import { ConnectPlatformsScreen } from '../screens/ConnectPlatformsScreen';
+import { HelpScreen } from '../screens/HelpScreen';
 import { OverviewScreen } from '../screens/OverviewScreen';
 import { SyncModeScreen } from '../screens/SyncModeScreen';
-import { SyncPreviewScreen } from '../screens/SyncPreviewScreen';
+import { SyncPreviewScreen, type AuditionPlaybackState } from '../screens/SyncPreviewScreen';
 import { routes, type RouteId } from './routes';
 
-const SCREEN_TITLE: Record<RouteId, string> = {
-  overview: '你的音乐库',
-  connect: '连接平台',
-  mode: '同步方式',
-  preview: '同步预览',
-  ai: 'AI 助手',
-  advanced: '高级设置',
+const SCREEN_META: Record<RouteId, { title: string; description: string }> = {
+  overview: {
+    title: '同步工作台',
+    description: '以 Apple Music 喜欢歌曲为准，安全同步到 QQ 音乐和网易云音乐。',
+  },
+  connect: {
+    title: '连接管理',
+    description: '用尽可能低成本的登录方式连接音乐平台，凭据细节留在高级设置里。',
+  },
+  mode: {
+    title: '同步规则',
+    description: '选择喜欢歌曲如何流动，删除永远需要单独确认。',
+  },
+  preview: {
+    title: '同步预览',
+    description: '先检查匹配、差异和删除风险，再写入目标平台。',
+  },
+  automation: {
+    title: '自动同步',
+    description: '定时刷新三端曲库并同步新增；删除始终保留人工确认。',
+  },
+  ai: {
+    title: '音乐库画像',
+    description: '用本地曲库证据生成画像、推荐和 Copilot 解释。',
+  },
+  advanced: {
+    title: '设置',
+    description: '保留发布验证、本机诊断、AI Provider 和开发者命令。',
+  },
+  help: {
+    title: '帮助与关于',
+    description: '了解同步判断、安全边界、平台账号和版本更新。',
+  },
 };
 
-const FALLBACK_NEXT_ACTION = '连接平台后开始同步检查';
-
 const WRITE_TARGETS: PlatformKey[] = ['qq', 'netease'];
+const FALLBACK_NEXT_ACTION = '连接平台后开始同步检查';
+const MUSIC_ASSET_BASE = `${import.meta.env.BASE_URL}assets/music`;
 
 export function App() {
-  const [activeRoute, setActiveRoute] = useState<RouteId>('overview');
+  const [activeRoute, setActiveRoute] = useState<RouteId>(() => routeFromLocation());
   const [appState, setAppState] = useState<AppStateSummary | null>(null);
   const [selectedMode, setSelectedMode] = useState<SyncModeId>('canonical_mirror');
   const [previewDetails, setPreviewDetails] = useState<SyncPreviewDetails | null>(null);
@@ -58,6 +99,7 @@ export function App() {
   const [syncMessage, setSyncMessage] = useState('');
   const [syncError, setSyncError] = useState('');
   const [lastConvergence, setLastConvergence] = useState<ConvergenceSummary | null>(null);
+  const [auditionPlayback, setAuditionPlayback] = useState<AuditionPlaybackState | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -69,8 +111,7 @@ export function App() {
         setLoadError('');
       })
       .catch((error: Error) => {
-        if (!active) return;
-        setLoadError(error.message);
+        if (active) setLoadError(error.message);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -80,7 +121,192 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const syncRouteFromHistory = () => setActiveRoute(routeFromLocation());
+    window.addEventListener('hashchange', syncRouteFromHistory);
+    window.addEventListener('popstate', syncRouteFromHistory);
+    return () => {
+      window.removeEventListener('hashchange', syncRouteFromHistory);
+      window.removeEventListener('popstate', syncRouteFromHistory);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeRoute !== 'preview' || previewDetails || !appState?.preview.buckets.length) return;
+    void handleLoadPreview(pickPreviewBucket(appState.preview.buckets));
+  }, [activeRoute, appState, previewDetails]);
+
   const nextAction = useMemo(() => appState?.preview.nextAction || FALLBACK_NEXT_ACTION, [appState]);
+  const meta = SCREEN_META[activeRoute];
+  const platformCount = appState?.platforms.filter((platform) => platform.status !== 'not_connected').length || 0;
+  const SidebarShieldIcon = topStatusIcons.shield;
+
+  return (
+    <div className="app-shell apple-shell" data-testid="react-app-shell">
+      <aside className="side-nav" aria-label="主导航">
+        <button className="brand-block" onClick={() => navigateTo('overview')} type="button">
+          <img alt="" className="brand-mark" src={`${MUSIC_ASSET_BASE}/brand-ls.webp`} />
+          <span>
+            <strong>Likes Sync</strong>
+            <small>多平台喜欢歌曲同步</small>
+          </span>
+        </button>
+
+        <nav className="nav-list">
+          {routes.map((route) => {
+            const Icon = routeIcons[route.id];
+            return (
+              <button
+                className={activeRoute === route.id ? 'active' : ''}
+                data-testid={`react-nav-${route.id}`}
+                key={route.id}
+                onClick={() => navigateTo(route.id)}
+                type="button"
+              >
+                <Icon size={18} strokeWidth={2.1} />
+                <span>{route.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="sidebar-library">
+          <div className="sidebar-library-head">
+            <span>连接状态</span>
+            <StatusPill tone={platformCount >= 3 ? 'success' : 'warning'}>{platformCount}/3</StatusPill>
+          </div>
+          {(appState?.platforms || []).map((platform) => (
+            <div className="sidebar-platform" key={platform.key}>
+              <span>{platform.label}</span>
+              <strong>{formatCount(platform.tracks)} 首</strong>
+            </div>
+          ))}
+        </div>
+
+        <button className="sidebar-protection" onClick={() => navigateTo('advanced')} title="查看写入保护和本机诊断" type="button">
+          <SidebarShieldIcon size={18} strokeWidth={2.2} />
+          <span>
+            <strong>写入保护</strong>
+            <small>已开启</small>
+          </span>
+          <ChevronRight size={16} strokeWidth={2.1} />
+        </button>
+
+        <div className={auditionPlayback ? 'sidebar-player active' : 'sidebar-player empty'} aria-label="试听状态" data-testid="react-sidebar-player">
+          <div className="sidebar-player-track">
+            {auditionPlayback ? (
+              <AlbumArtwork src={auditionPlayback.artworkUrl} title={auditionPlayback.title} />
+            ) : (
+              <span className="sidebar-player-placeholder"><Headphones size={18} /></span>
+            )}
+            <span aria-live="polite">
+              <strong data-testid="react-sidebar-player-title">{auditionPlayback?.title || '暂未试听'}</strong>
+              <small>{auditionPlayback?.artist || '在同步预览中选择版本'}</small>
+            </span>
+          </div>
+          {auditionPlayback ? (
+            <>
+              <div className="sidebar-player-status">
+                <span>{auditionPlayback.playing ? '正在试听' : '试听已暂停'} · {platformLabel(auditionPlayback.platform)}</span>
+                <time>{Math.round(auditionPlayback.elapsedSeconds)} / {Math.round(auditionPlayback.limitSeconds)} 秒</time>
+              </div>
+              <span className="sidebar-player-progress">
+                <i style={{ width: `${Math.min(100, auditionPlayback.elapsedSeconds / Math.max(1, auditionPlayback.limitSeconds) * 100)}%` }} />
+              </span>
+            </>
+          ) : null}
+        </div>
+      </aside>
+
+      <main className="main-surface">
+        <header className="top-status-bar" aria-label="运行状态">
+          <div className="top-status-group">
+            <StatusRailItem icon={topStatusIcons.local} label={loading ? '读取状态中' : loadError ? '本地服务异常' : '本地运行中'} tone={loadError ? 'danger' : 'success'} />
+            <StatusRailItem icon={topStatusIcons.check} label={appState?.preview.generatedAt ? '上次检查已生成' : '尚未运行检查'} />
+            <StatusRailItem icon={topStatusIcons.shield} label="写入保护已开启" />
+          </div>
+          <div className="top-actions">
+            <button className="ghost-button" onClick={() => void refreshAppStateAndPreview()} title="重新读取本机连接和同步状态" type="button">
+              <RefreshCcw size={16} />
+              刷新状态
+            </button>
+            <button aria-label="帮助与关于" className="round-button" data-testid="react-open-help" onClick={() => navigateTo('help')} type="button">
+              <HelpCircle size={18} />
+            </button>
+          </div>
+        </header>
+
+        {activeRoute !== 'ai' ? (
+          <section className="page-title-block">
+            <div>
+              <h1>{meta.title}</h1>
+              <p>{meta.description}</p>
+            </div>
+            {activeRoute !== 'advanced' && activeRoute !== 'help' ? (
+              <StatusPill tone="accent">下一步：{nextAction}</StatusPill>
+            ) : null}
+          </section>
+        ) : null}
+
+        {loadError ? (
+          <div className="inline-alert danger" role="status">
+            无法读取当前本地服务状态：{loadError}
+          </div>
+        ) : null}
+
+        {activeRoute === 'overview' ? (
+          <OverviewScreen
+            appState={appState}
+            onNavigate={navigateTo}
+            onRunCheck={handleRunSyncCheck}
+            syncBusy={syncBusy}
+            syncError={syncError}
+            syncMessage={syncMessage}
+          />
+        ) : null}
+        {activeRoute === 'connect' ? (
+          <ConnectPlatformsScreen appState={appState} onRefresh={refreshAppStateAndPreview} />
+        ) : null}
+        {activeRoute === 'mode' ? (
+          <SyncModeScreen appState={appState} onSelectMode={setSelectedMode} selectedMode={selectedMode} />
+        ) : null}
+        {activeRoute === 'preview' ? (
+          <SyncPreviewScreen
+            activeBucket={activePreviewBucket}
+            appState={appState}
+            lastConvergence={lastConvergence}
+            onApplyAdditionDecision={handleApplyAdditionDecision}
+            onApplyAdditionDecisionBatch={handleApplyAdditionDecisionBatch}
+            onApplyIdentityDecision={handleApplyIdentityDecision}
+            onApplyTombstoneDecision={handleApplyTombstoneDecision}
+            onApplyTombstoneDecisionBatch={handleApplyTombstoneDecisionBatch}
+            onAuditionPlaybackChange={setAuditionPlayback}
+            onCheckConvergence={handleCheckConvergence}
+            onChangeBucket={handleLoadPreview}
+            onLoadMore={handleLoadMorePreview}
+            onConfirmDeletions={handleConfirmDeletions}
+            onExecuteAdditions={handleExecuteAdditions}
+            onExecuteDeletions={handleExecuteDeletions}
+            onResolveAdditions={handleResolveAdditions}
+            onRefreshState={refreshAppStateAndPreview}
+            onReviewItems={handleReviewItems}
+            onRunCheck={handleRunSyncCheck}
+            onSaveBaseline={handleSaveBaseline}
+            previewDetails={previewDetails}
+            syncBusy={syncBusy}
+            syncError={syncError}
+            syncMessage={syncMessage}
+          />
+        ) : null}
+        {activeRoute === 'automation' ? (
+          <AutoSyncScreen appState={appState} onRefresh={refreshAppStateAndPreview} />
+        ) : null}
+        {activeRoute === 'ai' ? <AiAssistantScreen appState={appState} onOpenReview={() => navigateTo('preview')} /> : null}
+        {activeRoute === 'advanced' ? <AdvancedSettingsScreen appState={appState} /> : null}
+        {activeRoute === 'help' ? <HelpScreen onNavigate={navigateTo} /> : null}
+      </main>
+    </div>
+  );
 
   async function handleRunSyncCheck() {
     setSyncBusy(true);
@@ -89,7 +315,7 @@ export function App() {
     try {
       const result = await runSyncCheck({
         mode: selectedMode,
-        targets: ['qq', 'netease'],
+        targets: WRITE_TARGETS,
         platforms: ['apple', 'qq', 'netease'],
       });
       setLastConvergence(null);
@@ -109,8 +335,8 @@ export function App() {
           },
         }
         : current);
-      setSyncMessage(`已生成同步预览，当前显示「${bucketLabel(bucket)}」。`);
-      setActiveRoute('preview');
+      setSyncMessage(`同步预览已生成，当前显示「${bucketLabel(bucket)}」。`);
+      navigateTo('preview');
     } catch (error) {
       setSyncError(errorMessage(error));
       setSyncMessage('');
@@ -127,16 +353,7 @@ export function App() {
     try {
       const preview = await fetchSyncPreview({ bucket, limit: 30 });
       setPreviewDetails(preview);
-      setAppState((current) => current
-        ? {
-          ...current,
-          preview: {
-            generatedAt: preview.generatedAt,
-            buckets: preview.buckets,
-            nextAction: current.preview.nextAction,
-          },
-        }
-        : current);
+      setAppStateFromPreview(preview);
       setSyncMessage(`已读取「${bucketLabel(bucket)}」，共 ${preview.total} 首。`);
     } catch (error) {
       setSyncError(errorMessage(error));
@@ -146,16 +363,49 @@ export function App() {
     }
   }
 
-  async function handleResolveAdditions() {
+  async function handleLoadMorePreview() {
+    const cursor = previewDetails?.nextCursor;
+    if (!cursor || syncBusy) return;
     setSyncBusy(true);
     setSyncError('');
-    setSyncMessage('正在查找目标平台对应歌曲...');
+    setSyncMessage(`正在继续读取「${bucketLabel(activePreviewBucket)}」...`);
+    try {
+      const page = await fetchSyncPreview({
+        bucket: activePreviewBucket,
+        cursor,
+        limit: 30,
+      });
+      setPreviewDetails((current) => mergePreviewPage(current, page));
+      setAppStateFromPreview(page);
+      const loaded = Math.min(page.total, (previewDetails?.items.length || 0) + page.items.length);
+      setSyncMessage(`已加载 ${loaded} / ${page.total} 首。`);
+    } catch (error) {
+      setSyncError(errorMessage(error));
+      setSyncMessage('');
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  function navigateTo(route: RouteId) {
+    if (route !== activeRoute) {
+      window.history.pushState(null, '', `#/${route}`);
+      setActiveRoute(route);
+    }
+  }
+
+  async function handleResolveAdditions(operationIds?: string[], refresh = false) {
+    setSyncBusy(true);
+    setSyncError('');
+    setSyncMessage(operationIds?.length === 1 ? '正在为这首歌查找目标平台候选...' : '正在查找目标平台对应歌曲...');
     try {
       const result = await resolveAdditions({
         bucket: activePreviewBucket,
-        targets: ['qq', 'netease'],
-        resolveLimit: 50,
+        operationIds,
+        targets: WRITE_TARGETS,
+        resolveLimit: operationIds?.length || 50,
         searchLimit: 12,
+        refresh,
       });
       setPreviewDetails(result.preview);
       setAppStateFromPreview(result.preview, result.preview.nextCursor ? undefined : result.preview.buckets);
@@ -218,6 +468,110 @@ export function App() {
     }
   }
 
+  async function handleReviewItems(operationIds?: string[]) {
+    const requested = new Set(operationIds || []);
+    const selectedItems = (previewDetails?.items || [])
+      .filter((item) => !requested.size || requested.has(item.id))
+      .filter((item) => !item.aiReview)
+      .filter((item) => (
+        (item.action === 'add' && Boolean(item.candidateTarget))
+        || (item.action === 'review' && Boolean(item.sourceTrack) && Boolean(item.targetTrack || item.candidateTarget))
+      ));
+    const additionIds = selectedItems.filter((item) => item.action === 'add').map((item) => item.id);
+    const identityIds = selectedItems.filter((item) => item.action === 'review').map((item) => item.id);
+    if (!additionIds.length && !identityIds.length) {
+      setSyncError('当前列表没有尚未复核的跨平台候选。');
+      setSyncMessage('');
+      return;
+    }
+    setSyncBusy(true);
+    setSyncError('');
+    setSyncMessage('正在把当前版本的最小化证据交给 AI 复核...');
+    let latestPreview = previewDetails;
+    try {
+      const messages: string[] = [];
+      if (additionIds.length) {
+        const result = await reviewAdditionCandidates({
+          operationIds: additionIds,
+          targets: WRITE_TARGETS,
+          limit: Math.min(30, additionIds.length),
+          bucket: activePreviewBucket,
+        });
+        latestPreview = result.preview;
+        messages.push(`新增：建议接受 ${result.summary.add}，建议跳过 ${result.summary.skip}，仍需人工 ${result.summary.needsHuman}`);
+      }
+      if (identityIds.length) {
+        const result = await reviewIdentityCandidates({
+          operationIds: identityIds,
+          targets: WRITE_TARGETS,
+          limit: Math.min(30, identityIds.length),
+          bucket: activePreviewBucket,
+        });
+        latestPreview = result.preview;
+        messages.push(`版本：建议视为同一 ${result.summary.keep}，建议分开 ${result.summary.separate}，仍需人工 ${result.summary.needsHuman}`);
+      }
+      if (latestPreview) {
+        setPreviewDetails(latestPreview);
+        setAppStateFromPreview(latestPreview);
+      }
+      setSyncMessage(`AI 草稿完成：${messages.join('；')}。未采纳决定，也未写入平台。`);
+    } catch (error) {
+      if (latestPreview && latestPreview !== previewDetails) {
+        setPreviewDetails(latestPreview);
+        setAppStateFromPreview(latestPreview);
+      }
+      setSyncError(errorMessage(error));
+      setSyncMessage('');
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function handleApplyIdentityDecision(operationId: string, action: IdentityDecisionAction) {
+    setSyncBusy(true);
+    setSyncError('');
+    setSyncMessage(action === 'clear' ? '正在撤销版本判断...' : '正在保存版本判断...');
+    try {
+      const result = await applyIdentityDecision({
+        operationId,
+        action,
+        bucket: activePreviewBucket,
+      });
+      setPreviewDetails(result.preview);
+      setAppStateFromPreview(result.preview);
+      if (action === 'separate' && result.resolutionOperationIds.length) {
+        setSyncMessage('版本判断已保存，正在目标平台重新查找对应版本...');
+        try {
+          const resolution = await resolveAdditions({
+            bucket: activePreviewBucket,
+            operationIds: result.resolutionOperationIds,
+            targets: WRITE_TARGETS,
+            resolveLimit: result.resolutionOperationIds.length,
+            searchLimit: 12,
+          });
+          setPreviewDetails(resolution.preview);
+          setAppStateFromPreview(resolution.preview, resolution.preview.nextCursor ? undefined : resolution.preview.buckets);
+          setSyncMessage(`版本判断已保存。${addResolutionMessage(resolution.preview)}`);
+        } catch (error) {
+          setSyncError(`版本判断已保存，但候选查找失败：${errorMessage(error)}`);
+          setSyncMessage('可在该条目点击“重新查找候选”继续。');
+        }
+        return;
+      }
+      const message = action === 'keep'
+        ? '已保留目标平台现有版本：它会代表 Apple Music 源歌曲，不产生新增或删除。'
+        : action === 'separate'
+          ? '已生成版本替换草稿：将补入 Apple 对应版本；旧版本仍需单独确认后才会删除。'
+          : '已撤销版本判断并恢复人工复核。';
+      setSyncMessage(message);
+    } catch (error) {
+      setSyncError(errorMessage(error));
+      setSyncMessage('');
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
   async function handleApplyTombstoneDecision(input: {
     tombstoneKey: string;
     operationId?: string;
@@ -259,7 +613,7 @@ export function App() {
       const preview = await fetchSyncPreview({ bucket: activePreviewBucket, limit: 30 });
       setPreviewDetails(preview);
       setAppStateFromPreview(preview, result.preview?.buckets?.length ? result.preview.buckets : preview.buckets);
-      setSyncMessage(`已处理 ${result.changed || items.length} 个删除信号：${tombstoneActionLabel(action)}。`);
+      setSyncMessage(`已处理 ${result.changed || items.length} 个删除信号。`);
     } catch (error) {
       setSyncError(errorMessage(error));
       setSyncMessage('');
@@ -278,8 +632,8 @@ export function App() {
       await refreshAppStateAndPreview();
       const requested = result.add?.requested || 0;
       setSyncMessage(dryRun
-        ? `新增 dry-run 完成：请求新增 ${requested} 首，未写入平台。`
-        : `新增执行完成：请求新增 ${requested} 首，请检查收敛状态。`);
+        ? `新增模拟完成：请求新增 ${requested} 首，未写入平台。`
+        : `新增执行完成：请求新增 ${requested} 首，请检查一致性。`);
     } catch (error) {
       setSyncError(errorMessage(error));
       setSyncMessage('');
@@ -314,7 +668,9 @@ export function App() {
       const result = await executeDeletions({ targets: WRITE_TARGETS });
       if (result.convergence) setLastConvergence(result.convergence);
       await refreshAppStateAndPreview();
-      setSyncMessage(`删除执行完成：请求删除 ${result.remove?.requested || 0} 首，请检查收敛状态。`);
+      setSyncMessage(result.backup
+        ? `删除执行完成：已先创建恢复点，请求删除 ${result.remove?.requested || 0} 首。`
+        : `删除执行完成：请求删除 ${result.remove?.requested || 0} 首，请检查一致性。`);
     } catch (error) {
       setSyncError(errorMessage(error));
       setSyncMessage('');
@@ -364,97 +720,6 @@ export function App() {
     }
   }
 
-  return (
-    <div className="app-shell" data-testid="react-app-shell">
-      <aside className="side-nav" aria-label="主导航">
-        <div className="brand-block">
-          <div className="brand-mark">LS</div>
-          <div>
-            <strong>Likes Sync</strong>
-            <span>多平台喜欢歌曲同步</span>
-          </div>
-        </div>
-        <nav>
-          {routes.map((route) => (
-            <button
-              className={activeRoute === route.id ? 'active' : ''}
-              data-testid={`react-nav-${route.id}`}
-              key={route.id}
-              onClick={() => setActiveRoute(route.id)}
-              type="button"
-            >
-              {route.label}
-            </button>
-          ))}
-        </nav>
-        <div className="nav-status">
-          <span>下一步</span>
-          <strong>{nextAction}</strong>
-        </div>
-      </aside>
-
-      <main className="main-surface">
-        <header className="page-header">
-          <div>
-            <p className="eyebrow">普通用户版</p>
-            <h1>{SCREEN_TITLE[activeRoute]}</h1>
-            <p>
-              连接平台、选择同步方式、复核风险项，再由受控执行器写入。删除永远需要单独确认。
-            </p>
-          </div>
-          <div className="header-status">
-            {loading ? '读取状态中' : loadError ? '本地服务未连接' : '本地状态已同步'}
-          </div>
-        </header>
-
-        {loadError ? (
-          <div className="inline-alert" role="status">
-            无法读取当前本地服务状态。React 壳仍可预览交互结构，接入现有 Node 服务后会自动显示真实数据。
-          </div>
-        ) : null}
-
-        {activeRoute === 'overview' ? (
-          <OverviewScreen
-            appState={appState}
-            onRunCheck={handleRunSyncCheck}
-            syncBusy={syncBusy}
-            syncError={syncError}
-            syncMessage={syncMessage}
-          />
-        ) : null}
-        {activeRoute === 'connect' ? <ConnectPlatformsScreen appState={appState} /> : null}
-        {activeRoute === 'mode' ? (
-          <SyncModeScreen appState={appState} onSelectMode={setSelectedMode} selectedMode={selectedMode} />
-        ) : null}
-        {activeRoute === 'preview' ? (
-          <SyncPreviewScreen
-            activeBucket={activePreviewBucket}
-            appState={appState}
-            lastConvergence={lastConvergence}
-            onApplyAdditionDecision={handleApplyAdditionDecision}
-            onApplyAdditionDecisionBatch={handleApplyAdditionDecisionBatch}
-            onApplyTombstoneDecision={handleApplyTombstoneDecision}
-            onApplyTombstoneDecisionBatch={handleApplyTombstoneDecisionBatch}
-            onCheckConvergence={handleCheckConvergence}
-            onChangeBucket={handleLoadPreview}
-            onConfirmDeletions={handleConfirmDeletions}
-            onExecuteAdditions={handleExecuteAdditions}
-            onExecuteDeletions={handleExecuteDeletions}
-            onResolveAdditions={handleResolveAdditions}
-            onRunCheck={handleRunSyncCheck}
-            onSaveBaseline={handleSaveBaseline}
-            previewDetails={previewDetails}
-            syncBusy={syncBusy}
-            syncError={syncError}
-            syncMessage={syncMessage}
-          />
-        ) : null}
-        {activeRoute === 'ai' ? <AiAssistantScreen /> : null}
-        {activeRoute === 'advanced' ? <AdvancedSettingsScreen appState={appState} /> : null}
-      </main>
-    </div>
-  );
-
   async function refreshAppStateAndPreview(bucket: PreviewBucketId = activePreviewBucket) {
     const state = await fetchAppState();
     setAppState(state);
@@ -482,11 +747,29 @@ export function App() {
   }
 }
 
+function StatusRailItem({
+  icon: Icon,
+  label,
+  tone = 'neutral',
+}: {
+  icon: typeof topStatusIcons.local;
+  label: string;
+  tone?: 'neutral' | 'success' | 'danger';
+}) {
+  return (
+    <span className={`top-status-pill ${tone}`}>
+      <Icon size={15} strokeWidth={2.2} />
+      {label}
+    </span>
+  );
+}
+
 function pickPreviewBucket(buckets: AppStateSummary['preview']['buckets']): PreviewBucketId {
   return (
     buckets.find((bucket) => bucket.id === 'needs_confirmation' && bucket.count > 0)?.id
     || buckets.find((bucket) => bucket.id === 'may_delete' && bucket.count > 0)?.id
     || buckets.find((bucket) => bucket.id === 'will_add' && bucket.count > 0)?.id
+    || buckets.find((bucket) => bucket.id === 'not_found' && bucket.count > 0)?.id
     || buckets.find((bucket) => bucket.id === 'will_keep' && bucket.count > 0)?.id
     || 'will_add'
   );
@@ -497,6 +780,7 @@ function bucketLabel(bucket: PreviewBucketId): string {
     will_add: '会新增',
     will_keep: '会保留',
     needs_confirmation: '需要确认',
+    not_found: '未找到',
     may_delete: '可能删除',
   };
   return labels[bucket];
@@ -513,30 +797,37 @@ function addResolutionMessage(preview: SyncPreviewDetails): string {
   const resolution = preview.addResolution;
   if (!resolution) return '已刷新新增候选；仍未写入任何平台。';
   if (resolution.skipped > 0 && resolution.total === 0) return '目标平台凭据不足，候选查找已安全跳过。';
-  return `已查找 ${resolution.total} 首，确认 ${resolution.resolved} 首，需复核 ${resolution.review} 首，未找到 ${resolution.notFound} 首。`;
+  return `已查找 ${resolution.total} 首，确认 ${resolution.resolved} 首，需要复核 ${resolution.review} 首，未找到 ${resolution.notFound} 首。`;
+}
+
+function mergePreviewPage(current: SyncPreviewDetails | null, page: SyncPreviewDetails): SyncPreviewDetails {
+  if (!current || current.previewId !== page.previewId || current.bucket !== page.bucket) return page;
+  const seen = new Set<string>();
+  const items = [...current.items, ...page.items].filter((item) => {
+    const key = item.id || `${item.action}:${item.title}:${item.artist}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return {
+    ...page,
+    items,
+  };
 }
 
 function addDecisionMessage(action: AdditionDecisionAction): string {
-  if (action === 'accept_candidate') return '已接受这个候选；仍需后续受控新增执行才会写入平台。';
-  if (action === 'select_alternative') return '已选择备选歌曲；仍需后续受控新增执行才会写入平台。';
+  if (action === 'accept_candidate') return '已接受这个候选；仍需受控执行新增才会写入平台。';
+  if (action === 'select_alternative') return '已选择备选歌曲；仍需受控执行新增才会写入平台。';
   if (action === 'skip') return '已跳过这个新增候选；执行时不会把它当作成功新增。';
   return '已清除本地新增候选决策。';
 }
 
 function tombstoneMessage(action: TombstoneAction): string {
-  if (action === 'confirm_global_delete') return '已确认这个删除信号为全局删除意图；真实删除仍需后续受控执行。';
+  if (action === 'confirm_global_delete') return '已确认这个删除信号为全局删除意图；真实删除仍需受控执行。';
   if (action === 'ignore') return '已忽略这个删除信号，不会传播成全局删除。';
   if (action === 'restore') return '已标记为需要恢复，后续会走受控新增路径。';
   if (action === 'current_platform_only') return '已标记为仅当前平台删除，不会传播到其他平台。';
   return '已清除本地删除意图处理。';
-}
-
-function tombstoneActionLabel(action: TombstoneAction): string {
-  if (action === 'confirm_global_delete') return '全局删除';
-  if (action === 'ignore') return '忽略';
-  if (action === 'restore') return '恢复';
-  if (action === 'current_platform_only') return '仅当前平台';
-  return '清除';
 }
 
 function convergenceMessage(convergence: ConvergenceSummary | null): string {
@@ -550,4 +841,9 @@ function convergenceMessage(convergence: ConvergenceSummary | null): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error || '操作失败');
+}
+
+function routeFromLocation(): RouteId {
+  const candidate = window.location.hash.replace(/^#\/?/, '').trim();
+  return candidate === 'help' || routes.some((route) => route.id === candidate) ? candidate as RouteId : 'overview';
 }

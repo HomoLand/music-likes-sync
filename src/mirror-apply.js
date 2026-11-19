@@ -96,14 +96,30 @@ export async function executeMirrorSyncPlan(plan, options = {}) {
       batchSize: options.batchSize,
     })
     : emptyMutationResult();
+  const status = mirrorMutationStatus({
+    addResult,
+    removeResult,
+  });
 
   return {
     ...preview,
+    status,
     dryRun: false,
     addResult,
     removeResult,
     blocked: buildBlockedSummary(blockedAdds, blockedRemoves, reviewOperations),
   };
+}
+
+export function mirrorMutationStatus(result = {}) {
+  const mutations = [
+    mutationOutcome(result.addResult, 'add'),
+    mutationOutcome(result.removeResult, 'remove'),
+  ].filter((outcome) => outcome.requested > 0);
+  if (!mutations.length) return 'completed';
+  if (mutations.every((outcome) => outcome.complete)) return 'completed';
+  if (mutations.some((outcome) => outcome.accounted > 0)) return 'partial';
+  return 'failed';
 }
 
 export function expectedMirrorRemoveConfirmation(target) {
@@ -267,6 +283,25 @@ function emptyMutationResult() {
     verified: false,
     batches: [],
   };
+}
+
+function mutationOutcome(result = {}, action) {
+  const requested = Number(result.requested || 0);
+  const changed = action === 'remove' ? Number(result.removed || 0) : Number(result.added || 0);
+  const already = action === 'remove' ? Number(result.alreadyAbsent || 0) : Number(result.alreadyPresent || 0);
+  const unresolved = action === 'remove'
+    ? arrayLength(result.stillPresentIds) + arrayLength(result.unsupportedIds)
+    : arrayLength(result.missingIds);
+  const accounted = Math.max(0, changed + already);
+  return {
+    requested,
+    accounted,
+    complete: result.verified === true && unresolved === 0 && accounted >= requested,
+  };
+}
+
+function arrayLength(value) {
+  return Array.isArray(value) ? value.length : 0;
 }
 
 function sha256(value) {

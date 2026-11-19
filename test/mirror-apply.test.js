@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { buildMirrorRunIdentity, executeMirrorSyncPlan, expectedMirrorRemoveConfirmation } from '../src/mirror-apply.js';
+import { buildMirrorRunIdentity, executeMirrorSyncPlan, expectedMirrorRemoveConfirmation, mirrorMutationStatus } from '../src/mirror-apply.js';
 
 describe('mirror apply contract', () => {
   it('dry-runs add/remove/review without calling adapters', async () => {
@@ -173,6 +173,27 @@ describe('mirror apply contract', () => {
     assert.equal(result.remove.requested, 0);
     assert.equal(result.addResult.added, 1);
     assert.equal(result.removeResult.removed, 0);
+  });
+
+  it('marks verified writes with missing tracks as partial instead of completed', () => {
+    assert.equal(mirrorMutationStatus({
+      addResult: {
+        requested: 10,
+        added: 0,
+        alreadyPresent: 2,
+        verified: true,
+        missingIds: new Array(8).fill('missing'),
+      },
+    }), 'partial');
+    assert.equal(mirrorMutationStatus({
+      removeResult: {
+        requested: 2,
+        removed: 0,
+        alreadyAbsent: 0,
+        verified: true,
+        stillPresentIds: ['one', 'two'],
+      },
+    }), 'failed');
   });
 });
 

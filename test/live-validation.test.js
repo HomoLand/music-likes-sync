@@ -154,6 +154,19 @@ describe('live provider validation orchestration', () => {
     assert.equal(errors.some((error) => error.includes('within 14 days')), true);
   });
 
+  it('invalidates live-validation evidence older than the current credential', () => {
+    const report = fixtureLiveResult('qq');
+    const summary = summarizeLiveValidationEvidence('qq', report, {
+      packageInfo: currentPackageInfo(),
+      now: new Date('2026-07-08T00:00:00.000Z'),
+      credentialUpdatedAt: '2026-07-07T00:03:00.000Z',
+    });
+
+    assert.equal(summary.ok, false);
+    assert.equal(summary.status, 'stale');
+    assert.match(summary.message, /current credential/);
+  });
+
   it('chooses a search candidate that is not already in the disposable playlist', async () => {
     const state = {
       tracks: [track('existing-id', 'existing-mid', 'Existing Track')],

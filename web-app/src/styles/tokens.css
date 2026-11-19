@@ -1,29 +1,50 @@
 :root {
-  --color-bg: #f5f7f8;
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  --color-bg: #fbfbfd;
   --color-surface: #ffffff;
-  --color-ink: #172026;
-  --color-muted: #60707b;
-  --color-line: #dfe6ea;
-  --color-primary: #0f766e;
-  --color-primary-weak: #d9f2ee;
-  --color-accent: #315a91;
-  --color-warning: #a16207;
-  --color-danger: #b42318;
-  --color-danger-weak: #fee4e2;
-  --color-green-weak: #dcfce7;
-  --radius-sm: 6px;
+  --color-surface-muted: #f5f5f7;
+  --color-surface-hover: #f0f0f2;
+  --color-ink: #1d1d1f;
+  --color-muted: #6e6e73;
+  --color-subtle: #86868b;
+  --color-line: #e5e5e7;
+  --color-line-strong: #d2d2d7;
+  --color-primary: #fa2d48;
+  --color-primary-hover: #e82741;
+  --color-primary-weak: #fff0f2;
+  --color-accent: #007aff;
+  --color-accent-weak: #edf6ff;
+  --color-success: #248a3d;
+  --color-green-weak: #ecf8ef;
+  --color-warning: #b25000;
+  --color-warning-weak: #fff6e5;
+  --color-danger: #d70015;
+  --color-danger-weak: #fff0f1;
+  --radius-xs: 5px;
+  --radius-sm: 7px;
   --radius-md: 8px;
-  --shadow-soft: 0 18px 48px rgba(19, 39, 52, 0.08);
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
-    sans-serif;
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --sidebar-width: 248px;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--color-bg);
+}
+
 body {
+  min-width: 320px;
+  min-height: 100vh;
   margin: 0;
   background: var(--color-bg);
   color: var(--color-ink);
@@ -31,7 +52,36 @@ body {
 
 button,
 input,
-select,
-textarea {
+textarea,
+select {
   font: inherit;
+  letter-spacing: 0;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid rgba(0, 122, 255, 0.28);
+  outline-offset: 2px;
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+::selection {
+  background: rgba(250, 45, 72, 0.18);
 }

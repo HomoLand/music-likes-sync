@@ -15,6 +15,7 @@ const PRODUCT_BUCKETS = [
   ['all', '全部变化'],
   ['will_add', '将新增'],
   ['needs_confirmation', '需复核'],
+  ['not_found', '未找到'],
   ['may_delete', '可能删除'],
   ['will_keep', '保持不动'],
 ];
@@ -997,7 +998,7 @@ function renderProductPreviewSummary() {
   }
   const counts = latest.counts || {};
   if (summary) {
-    summary.textContent = `${Number(counts.will_add || 0)} 新增 / ${Number(counts.may_delete || 0)} 删除 / ${Number(counts.needs_confirmation || 0)} 复核`;
+    summary.textContent = `${Number(counts.will_add || 0)} 新增 / ${Number(counts.may_delete || 0)} 删除 / ${Number(counts.needs_confirmation || 0)} 复核 / ${Number(counts.not_found || 0)} 未找到`;
   }
   if (hint) hint.textContent = latest.generatedAt ? `生成于 ${formatProductTime(latest.generatedAt)}` : '已生成同步预览。';
 }
@@ -2279,6 +2280,8 @@ function resolutionReasonText(reason) {
   if (reason === 'user_skipped_add_candidate') return '已跳过，不会写入';
   if (reason === 'decision_cleared') return '已清除手动决策';
   if (reason === 'target_catalog_not_found') return '目标平台没有搜索到候选';
+  if (reason === 'target_catalog_low_score') return '搜索结果与源歌曲差异明显';
+  if (reason === 'ai_rejected_candidate') return 'AI 复核已排除错误候选';
   if (reason === 'missing_source_track') return '源歌曲信息不足';
   if (reason === 'not_found') return '目标平台未找到';
   return reason || '等待查找';

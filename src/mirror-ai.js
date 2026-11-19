@@ -135,7 +135,11 @@ function extractMirrorFacts(context = {}) {
   const evidence = context.match_evidence || {};
   const support = new Set(evidence.support_signals || []);
   const risk = new Set(evidence.risk_signals || []);
-  const hasRecordingIdentity = support.has('same_isrc') || support.has('shared_musicbrainz_recording_id');
+  const hasRecordingIdentity = support.has('same_isrc')
+    || support.has('shared_musicbrainz_recording_id')
+    || support.has('apple_storefront_equivalent_fingerprint')
+    || support.has('same_album_track_number');
+  const hasRecordingFingerprint = support.has('exact_recording_fingerprint');
   const hasStrongTextSupport = (
     support.has('duration_within_5_seconds')
     && support.has('title_alias_overlap')
@@ -143,7 +147,7 @@ function extractMirrorFacts(context = {}) {
   );
   return {
     hasRecordingIdentity,
-    hasStrongSupport: hasRecordingIdentity || hasStrongTextSupport,
+    hasStrongSupport: hasRecordingIdentity || hasRecordingFingerprint || hasStrongTextSupport,
     differentIsrc: risk.has('different_isrc'),
     durationOver20: risk.has('duration_over_20_seconds'),
     versionCueConflict: risk.has('version_cue_conflict'),
@@ -224,10 +228,12 @@ Rules:
 5. external_evidence.musicbrainz comes from a provider-independent MusicBrainz ISRC lookup. Missing or not_found MusicBrainz is neutral, not negative evidence.
 6. match_evidence.support_signals and match_evidence.risk_signals summarize deterministic checks. Use them as evidence, but do not override a large duration mismatch or one-sided version wording.
 7. Duration matters: <= 5 seconds supports same, 5-15 seconds weakly supports same, > 20 seconds is suspicious unless ISRC/shared MusicBrainz recording identity is present.
-8. Version words matter. live, cover, acoustic, piano, instrumental, remix, movie ver, album version, single version, remaster, karaoke, off vocal, TV size, short, extended, and similar terms can mean a different version.
-9. Alias overlap from MusicBrainz or platform metadata is useful evidence, especially for localized artist/title names, but alias overlap alone is not enough when duration/version risks exist.
-10. If evidence is insufficient, use decision uncertain and recommended_action needs_human.
-11. Do not use speculative wording such as "likely", "known alias", "seems", "metadata error", or "album difference is acceptable" as evidence.
+8. Version words matter. live, cover, acoustic, piano, instrumental, remix, movie ver, album version, single version, remaster, karaoke, off vocal, TV size, short, extended, year/version labels, and similar terms can mean a different version. When an explicit cue appears on only one side and no supplied recording identity proves equivalence, use different + same_song_different_version + separate.
+9. Alias overlap may include deterministic Unicode, Chinese script, kana/romaji normalization plus MusicBrainz or platform aliases. Treat supplied overlap as evidence for localized names, but it is not enough when duration/version risks exist.
+10. exact_recording_fingerprint means normalized title and album are exact, artist identity is supported by a trusted alias or strong normalized match, duration differs by no more than 2 seconds, no version cue conflicts, and no different ISRC is present. Treat it as strong supplied evidence when storefront display credits differ only because the supplied aliases prove the artist relation.
+11. If evidence is insufficient, use decision uncertain and recommended_action needs_human. Do not use needs_human when supplied titles, artists, albums, track positions, or explicit version labels directly prove a different song/version.
+12. Do not use speculative wording such as "likely", "known alias", "seems", "metadata error", or "album difference is acceptable" as evidence.
+13. confidence is confidence that your decision and relation are correct, not a similarity score or probability that the tracks match. A clearly different song/version should normally use separate with high confidence near 1.0.
 
 Output schema:
 {

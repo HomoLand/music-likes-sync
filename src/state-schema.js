@@ -1,3 +1,5 @@
+import { verifySyncBackup } from './sync-backup.js';
+
 export const MIRROR_PLAN_SCHEMA_VERSION = 1;
 export const MIRROR_RUN_LOG_SCHEMA_VERSION = 1;
 export const MIRROR_DECISION_SCHEMA_VERSION = 1;
@@ -10,6 +12,9 @@ export const AI_PROVIDER_STATE_SCHEMA_VERSION = 1;
 export const MUSIC_PROFILE_STATE_SCHEMA_VERSION = 1;
 export const RECOMMENDATION_SHORTLISTS_STATE_SCHEMA_VERSION = 1;
 export const AGENT_SESSIONS_STATE_SCHEMA_VERSION = 1;
+export const AUTO_SYNC_STATE_SCHEMA_VERSION = 1;
+export const AUTO_SYNC_RUN_LOG_STATE_SCHEMA_VERSION = 1;
+export const SYNC_BACKUP_STATE_SCHEMA_VERSION = 1;
 
 const MIRROR_MODE = 'source_of_truth_mirror';
 const SOURCE_PLATFORM = 'apple';
@@ -25,6 +30,9 @@ const SYNC_OPERATION_STATUSES = new Set(['ready', 'needs_resolution', 'needs_rev
 const TOMBSTONE_ACTIONS = new Set(['confirm_global_delete', 'ignore', 'restore', 'current_platform_only']);
 const SYNC_POLICY_DELETE_MODES = new Set(['ask', 'manual', 'never', 'confirm_each']);
 const AGENT_TRACE_FEEDBACK_LABELS = new Set(['useful', 'not_enough_evidence', 'incorrect']);
+const AUTO_SYNC_STATUSES = new Set(['never', 'disabled', 'running', 'completed', 'attention', 'failed', 'skipped']);
+const AUTO_SYNC_RUN_STATUSES = new Set(['completed', 'attention', 'failed', 'skipped']);
+const AUTO_SYNC_TRIGGERS = new Set(['manual', 'scheduled', 'startup']);
 const PLAN_SUMMARY_KEYS = [
   'total',
   'keep',
@@ -374,6 +382,84 @@ export function validateSyncRunLogState(state) {
   return finish(report);
 }
 
+export function validateAutoSyncState(state) {
+  const report = createReport('auto-sync');
+  if (!isObject(state)) {
+    addError(report, '$', 'Auto-sync state must be a JSON object.');
+    return finish(report);
+  }
+
+  validateVersion(report, '$.version', state.version, AUTO_SYNC_STATE_SCHEMA_VERSION);
+  validateTimestamp(report, '$.updatedAt', state.updatedAt, { required: true });
+  if (typeof state.enabled !== 'boolean') addError(report, '$.enabled', 'Auto-sync enabled must be boolean.');
+  if (!Number.isInteger(state.intervalMinutes) || state.intervalMinutes < 15 || state.intervalMinutes > 1440) {
+    addError(report, '$.intervalMinutes', 'Auto-sync interval must be an integer from 15 to 1440 minutes.');
+  }
+  validatePlatformArray(report, '$.targets', state.targets, { required: true, allowApple: false });
+  for (const key of ['refreshApple', 'refreshTargets', 'autoExecuteAdditions', 'requireBaseline']) {
+    if (typeof state[key] !== 'boolean') addError(report, `$.${key}`, `Auto-sync ${key} must be boolean.`);
+  }
+  if (!Number.isInteger(state.maxSourceAgeMinutes) || state.maxSourceAgeMinutes < 60 || state.maxSourceAgeMinutes > 10080) {
+    addError(report, '$.maxSourceAgeMinutes', 'Auto-sync source age must be an integer from 60 to 10080 minutes.');
+  }
+  if (state.enabled) validateTimestamp(report, '$.nextRunAt', state.nextRunAt, { required: true });
+  else if (state.nextRunAt) addWarning(report, '$.nextRunAt', 'Disabled auto-sync should not retain a next run timestamp.');
+  validateTimestamp(report, '$.lastRunAt', state.lastRunAt, { required: false });
+  if (!AUTO_SYNC_STATUSES.has(state.lastStatus)) addError(report, '$.lastStatus', 'Auto-sync last status is not supported.');
+  if (typeof state.lastMessage !== 'string') addError(report, '$.lastMessage', 'Auto-sync last message must be a string.');
+  if (typeof state.lastRunId !== 'string') addError(report, '$.lastRunId', 'Auto-sync last run id must be a string.');
+  validateNoSecrets(report, '$', state);
+  return finish(report);
+}
+
+export function validateAutoSyncRunLogState(state) {
+  const report = createReport('auto-sync-runs');
+  if (!isObject(state)) {
+    addError(report, '$', 'Auto-sync run log must be a JSON object.');
+    return finish(report);
+  }
+  validateVersion(report, '$.version', state.version, AUTO_SYNC_RUN_LOG_STATE_SCHEMA_VERSION);
+  validateTimestamp(report, '$.updatedAt', state.updatedAt, { required: false });
+  if (!Array.isArray(state.runs)) {
+    addError(report, '$.runs', 'Auto-sync run log runs must be an array.');
+    return finish(report);
+  }
+  report.runCount = state.runs.length;
+  for (let index = 0; index < state.runs.length; index += 1) {
+    validateAutoSyncRun(report, state.runs[index], index);
+  }
+  validateNoSecrets(report, '$', state);
+  return finish(report);
+}
+
+export function validateSyncBackupState(state) {
+  const report = createReport('sync-backups');
+  if (!isObject(state)) {
+    addError(report, '$', 'Sync backup state must be a JSON object.');
+    return finish(report);
+  }
+  validateVersion(report, '$.version', state.version, SYNC_BACKUP_STATE_SCHEMA_VERSION);
+  validateTimestamp(report, '$.updatedAt', state.updatedAt, { required: false });
+  if (!Array.isArray(state.backups)) {
+    addError(report, '$.backups', 'Sync backup state backups must be an array.');
+  } else {
+    report.backupCount = state.backups.length;
+    for (let index = 0; index < state.backups.length; index += 1) {
+      validateSyncBackup(report, state.backups[index], index);
+    }
+  }
+  if (!Array.isArray(state.restoreRuns)) {
+    addError(report, '$.restoreRuns', 'Sync backup restore runs must be an array.');
+  } else {
+    report.restoreRunCount = state.restoreRuns.length;
+    for (let index = 0; index < state.restoreRuns.length; index += 1) {
+      validateSyncBackupRestoreRun(report, state.restoreRuns[index], index);
+    }
+  }
+  validateNoSecrets(report, '$', state);
+  return finish(report);
+}
+
 export function validateAiProviderState(state) {
   const report = createReport('ai-provider-state');
   if (!isObject(state)) {
@@ -471,6 +557,7 @@ export function validatePolicyStateFiles(state = {}) {
   if (state.musicProfile !== undefined) reports.push(validateMusicProfileState(state.musicProfile));
   if (state.recommendationShortlists !== undefined) reports.push(validateRecommendationShortlistsState(state.recommendationShortlists));
   if (state.agentSessions !== undefined) reports.push(validateAgentSessionsState(state.agentSessions));
+  if (state.syncBackups !== undefined) reports.push(validateSyncBackupState(state.syncBackups));
   return {
     ok: reports.every((report) => report.ok),
     reports,
@@ -935,6 +1022,100 @@ function validateSyncRun(report, run, index) {
   validateCounterObject(report, `${base}.addResult`, run.addResult, ['requested', 'submitted', 'accepted']);
   validateCounterObject(report, `${base}.removeResult`, run.removeResult, ['requested', 'submitted', 'accepted']);
   validateCounterObject(report, `${base}.blocked`, run.blocked, ['unresolvedAdds', 'invalidRemoves', 'reviewItems']);
+}
+
+function validateAutoSyncRun(report, run, index) {
+  const base = `$.runs[${index}]`;
+  if (!isObject(run)) {
+    addError(report, base, 'Auto-sync run entry must be an object.');
+    return;
+  }
+  if (!nonEmptyString(run.id)) addError(report, `${base}.id`, 'Auto-sync run id is required.');
+  if (!AUTO_SYNC_TRIGGERS.has(run.trigger)) addError(report, `${base}.trigger`, 'Auto-sync trigger is not supported.');
+  if (!AUTO_SYNC_RUN_STATUSES.has(run.status)) addError(report, `${base}.status`, 'Auto-sync run status is not supported.');
+  validateTimestamp(report, `${base}.startedAt`, run.startedAt, { required: true });
+  validateTimestamp(report, `${base}.completedAt`, run.completedAt, { required: true });
+  validatePolicyId(report, `${base}.policy`, run.policy);
+  validatePlatformArray(report, `${base}.targets`, run.targets, { required: true, allowApple: false });
+  if (typeof run.dryRun !== 'boolean') addError(report, `${base}.dryRun`, 'Auto-sync run dryRun must be boolean.');
+  if (run.message !== undefined && typeof run.message !== 'string') addError(report, `${base}.message`, 'Auto-sync message must be a string.');
+  if (run.error !== undefined && typeof run.error !== 'string') addError(report, `${base}.error`, 'Auto-sync error must be a string.');
+  if (run.deletionSignals !== undefined && (!Number.isInteger(run.deletionSignals) || run.deletionSignals < 0)) {
+    addError(report, `${base}.deletionSignals`, 'Auto-sync deletion signal count must be a non-negative integer.');
+  }
+  if (run.preview !== undefined && !isObject(run.preview)) addError(report, `${base}.preview`, 'Auto-sync preview summary must be an object.');
+  if (run.additions !== undefined && !isObject(run.additions)) addError(report, `${base}.additions`, 'Auto-sync addition summary must be an object.');
+  if (run.snapshotRefresh !== undefined && !isObject(run.snapshotRefresh)) addError(report, `${base}.snapshotRefresh`, 'Auto-sync snapshot refresh summary must be an object.');
+  if (run.convergence !== undefined && run.convergence !== null && !isObject(run.convergence)) addError(report, `${base}.convergence`, 'Auto-sync convergence summary must be an object.');
+}
+
+function validateSyncBackup(report, backup, index) {
+  const base = `$.backups[${index}]`;
+  if (!isObject(backup)) {
+    addError(report, base, 'Sync backup entry must be an object.');
+    return;
+  }
+  if (!nonEmptyString(backup.id)) addError(report, `${base}.id`, 'Sync backup id is required.');
+  validateTimestamp(report, `${base}.createdAt`, backup.createdAt, { required: true });
+  validatePolicyId(report, `${base}.policy`, backup.policy);
+  validatePlatformArray(report, `${base}.targets`, backup.targets, { required: true, allowApple: false });
+  if (!isObject(backup.snapshots)) {
+    addError(report, `${base}.snapshots`, 'Sync backup snapshots must be an object.');
+    return;
+  }
+  for (const target of backup.targets || []) {
+    const snapshot = backup.snapshots[target];
+    const snapshotPath = `${base}.snapshots.${target}`;
+    if (!isObject(snapshot)) {
+      addError(report, snapshotPath, `Sync backup must contain ${target} snapshot.`);
+      continue;
+    }
+    if (snapshot.platform !== target) addError(report, `${snapshotPath}.platform`, 'Backup snapshot platform must match its key.');
+    validateTimestamp(report, `${snapshotPath}.fetchedAt`, snapshot.fetchedAt, { required: true });
+    if (!nonEmptyString(snapshot.playlistId)) addError(report, `${snapshotPath}.playlistId`, 'Backup snapshot playlist identity is required.');
+    if (!Array.isArray(snapshot.tracks)) {
+      addError(report, `${snapshotPath}.tracks`, 'Backup snapshot tracks must be an array.');
+      continue;
+    }
+    if (snapshot.count !== snapshot.tracks.length) {
+      addError(report, `${snapshotPath}.count`, `Backup count mismatch: expected ${snapshot.tracks.length}, got ${snapshot.count}.`);
+    }
+    if (!Number.isInteger(snapshot.restorable) || snapshot.restorable < 0 || snapshot.restorable > snapshot.tracks.length) {
+      addError(report, `${snapshotPath}.restorable`, 'Backup restorable count must be between zero and the track count.');
+    }
+    if (!/^[a-f0-9]{64}$/iu.test(String(snapshot.checksum || ''))) {
+      addError(report, `${snapshotPath}.checksum`, 'Backup checksum must be a SHA-256 hex string.');
+    }
+    for (let trackIndex = 0; trackIndex < snapshot.tracks.length; trackIndex += 1) {
+      const track = snapshot.tracks[trackIndex];
+      const trackPath = `${snapshotPath}.tracks[${trackIndex}]`;
+      validateTrack(report, trackPath, track, { required: true, platform: target });
+      if (isObject(track) && Object.prototype.hasOwnProperty.call(track, 'raw')) {
+        addError(report, `${trackPath}.raw`, 'Backup tracks must not contain raw provider payloads.');
+      }
+    }
+  }
+  const integrity = verifySyncBackup(backup);
+  for (const message of integrity.errors) {
+    addError(report, `${base}.snapshots`, `Backup integrity check failed: ${message}.`);
+  }
+}
+
+function validateSyncBackupRestoreRun(report, run, index) {
+  const base = `$.restoreRuns[${index}]`;
+  if (!isObject(run)) {
+    addError(report, base, 'Sync backup restore run must be an object.');
+    return;
+  }
+  if (!nonEmptyString(run.id)) addError(report, `${base}.id`, 'Restore run id is required.');
+  if (!nonEmptyString(run.backupId)) addError(report, `${base}.backupId`, 'Restore run backup id is required.');
+  validateTimestamp(report, `${base}.startedAt`, run.startedAt, { required: true });
+  validateTimestamp(report, `${base}.completedAt`, run.completedAt, { required: true });
+  if (!['preview', 'completed', 'failed'].includes(run.status)) addError(report, `${base}.status`, 'Restore run status is not supported.');
+  if (typeof run.dryRun !== 'boolean') addError(report, `${base}.dryRun`, 'Restore run dryRun must be boolean.');
+  validatePlatformArray(report, `${base}.targets`, run.targets, { required: true, allowApple: false });
+  if (!isObject(run.summary)) addError(report, `${base}.summary`, 'Restore run summary must be an object.');
+  if (run.error !== undefined && typeof run.error !== 'string') addError(report, `${base}.error`, 'Restore run error must be a string.');
 }
 
 function validateOperationKeySet(report, path, value) {

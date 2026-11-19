@@ -109,6 +109,8 @@ export function buildAppleSnapshotFromTracks(rows, source = 'apple-browser') {
       durationMs: row.durationMs,
       duration: row.duration,
       isrc: row.isrc || row.raw?.isrc || row.raw?.raw?.isrc || row.raw?.raw?.catalogIsrc,
+      artworkUrl: row.artworkUrl || row.raw?.artworkUrl || row.raw?.raw?.artworkUrl,
+      previewUrl: row.previewUrl || row.raw?.previewUrl || row.raw?.raw?.previewUrl,
       aliases: row.aliases,
       metadata: row.metadata,
       raw: row,

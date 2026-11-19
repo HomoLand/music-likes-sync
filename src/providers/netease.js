@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { normalizeTrack } from '../normalize.js';
+import { normalizeHttpUrl, trackArtworkUrl } from '../track-media.js';
 import { formatErrorMessage } from '../utils.js';
 
 const require = createRequire(import.meta.url);
@@ -32,6 +33,10 @@ export async function fetchNeteaseLiked(cookie, options = {}) {
     return skipped('netease', '无法通过 cookie 获取网易云用户 ID');
   }
 
+  const likedPlaylist = options.playlistId
+    ? { id: String(options.playlistId) }
+    : await fetchNeteaseLikedPlaylist(cookie, uid);
+  const playlistId = likedPlaylist?.id ? String(likedPlaylist.id) : null;
   const tracks = options.playlistId
     ? await fetchPlaylistTracks(cookie, options.playlistId)
     : await fetchLikedTracks(cookie, uid);
@@ -41,10 +46,33 @@ export async function fetchNeteaseLiked(cookie, options = {}) {
     source: options.playlistId ? `netease-playlist:${options.playlistId}` : `netease-liked:${uid}`,
     fetchedAt: new Date().toISOString(),
     userId: String(uid),
-    playlistId: options.playlistId ? String(options.playlistId) : null,
+    playlistId,
     skipped: false,
     tracks: tracks.map(normalizeNeteaseTrack),
   };
+}
+
+export async function fetchNeteaseLikedPlaylist(cookie, uid) {
+  const result = await getNeteaseApi().user_playlist({
+    uid: String(uid),
+    limit: 1000,
+    offset: 0,
+    includeVideo: false,
+    cookie,
+  });
+  return selectNeteaseLikedPlaylist(result.body?.playlist || result.body?.playlists || [], uid);
+}
+
+export function selectNeteaseLikedPlaylist(playlists, uid) {
+  const userId = String(uid || '');
+  const owned = (Array.isArray(playlists) ? playlists : []).filter((playlist) => {
+    const creatorId = playlist?.creator?.userId ?? playlist?.userId;
+    return String(creatorId || '') === userId && playlist?.subscribed !== true;
+  });
+  return owned.find((playlist) => Number(playlist?.specialType) === 5)
+    || owned.find((playlist) => /^(我喜欢的音乐|liked songs)$/iu.test(String(playlist?.name || '').trim()))
+    || owned[0]
+    || null;
 }
 
 export async function fetchNeteasePlaylistSnapshot(cookie, playlistId) {
@@ -74,6 +102,44 @@ export async function searchNeteaseTracks(cookie, query, options = {}) {
     endpoint: options.endpoint || process.env.NETEASE_SEARCH_ENDPOINT || 'direct',
     onRetry: options.onRetry,
   }));
+}
+
+export async function resolveNeteaseTrackMedia(cookie, track = {}, options = {}) {
+  if (!String(cookie || '').trim()) throw new Error('缺少网易云音乐 cookie，请先扫码登录。');
+  const id = String(track.id || track.songId || '').trim();
+  if (!id) throw new Error('缺少网易云音乐歌曲 ID，无法解析试听。');
+  const api = options.api || getNeteaseApi();
+  const [urlResult, detailResult] = await Promise.all([
+    resolveNeteaseSongUrl(api, { id, cookie }),
+    trackArtworkUrl({ ...track, platform: 'netease' }, { size: options.artworkSize })
+      ? Promise.resolve(null)
+      : api.song_detail({ ids: id, cookie }),
+  ]);
+  const media = urlResult?.body?.data?.[0] || {};
+  const detail = detailResult?.body?.songs?.[0] || {};
+  const artworkUrl = trackArtworkUrl({
+    ...track,
+    platform: 'netease',
+    raw: Object.keys(detail).length ? detail : track.raw,
+  }, { size: options.artworkSize });
+  const previewUrl = normalizeHttpUrl(media.url || media.proxyUrl || '');
+  return {
+    platform: 'netease',
+    artworkUrl,
+    previewUrl,
+    playable: Boolean(previewUrl),
+    reason: previewUrl ? '' : '网易云音乐未返回可播放地址，可能受版权、会员或地区限制。',
+    expiresAt: previewUrl ? new Date(Date.now() + 10 * 60 * 1000).toISOString() : '',
+  };
+}
+
+async function resolveNeteaseSongUrl(api, input) {
+  try {
+    return await api.song_url_v1({ id: input.id, level: 'standard', cookie: input.cookie });
+  } catch (error) {
+    if (typeof api.song_url !== 'function') throw error;
+    return api.song_url({ id: input.id, br: 128000, cookie: input.cookie });
+  }
 }
 
 export async function matchNeteaseTrack(cookie, track, options = {}) {
@@ -298,6 +364,7 @@ export function normalizeNeteaseTrack(item) {
     title: item.name,
     artists: item.ar || item.artists,
     album: item.al?.name || item.album?.name,
+    artworkUrl: item.al?.picUrl || item.album?.picUrl,
     durationMs: item.dt || item.duration,
     aliases: {
       titles: [...asArray(item.alia), ...asArray(item.tns)],

@@ -1,5 +1,7 @@
 import {
   AGENT_SESSIONS_STATE_SCHEMA_VERSION,
+  AUTO_SYNC_RUN_LOG_STATE_SCHEMA_VERSION,
+  AUTO_SYNC_STATE_SCHEMA_VERSION,
   AI_PROVIDER_STATE_SCHEMA_VERSION,
   MIRROR_DECISION_SCHEMA_VERSION,
   MIRROR_PLAN_SCHEMA_VERSION,
@@ -7,12 +9,15 @@ import {
   MUSIC_PROFILE_STATE_SCHEMA_VERSION,
   RECOMMENDATION_SHORTLISTS_STATE_SCHEMA_VERSION,
   SYNC_BASELINE_STATE_SCHEMA_VERSION,
+  SYNC_BACKUP_STATE_SCHEMA_VERSION,
   SYNC_POLICY_STATE_SCHEMA_VERSION,
   SYNC_PREVIEW_STATE_SCHEMA_VERSION,
   SYNC_RUN_LOG_STATE_SCHEMA_VERSION,
   SYNC_TOMBSTONE_STATE_SCHEMA_VERSION,
   summarizeMirrorOperations,
   validateAgentSessionsState,
+  validateAutoSyncRunLogState,
+  validateAutoSyncState,
   validateAiProviderState,
   validateMusicProfileState,
   validateMirrorDecisionState,
@@ -20,6 +25,7 @@ import {
   validateMirrorRunLog,
   validateRecommendationShortlistsState,
   validateSyncBaselineState,
+  validateSyncBackupState,
   validateSyncPolicyState,
   validateSyncPreviewState,
   validateSyncRunLogState,
@@ -37,6 +43,9 @@ export const SYNC_STATE_KINDS = [
   'music-profile',
   'recommendation-shortlists',
   'agent-sessions',
+  'auto-sync',
+  'auto-sync-runs',
+  'sync-backups',
 ];
 export const STATE_KINDS = [...MIRROR_STATE_KINDS, ...SYNC_STATE_KINDS];
 
@@ -101,6 +110,21 @@ const STATE_CONFIG = {
     currentVersion: AGENT_SESSIONS_STATE_SCHEMA_VERSION,
     validate: validateAgentSessionsState,
     migrateLegacy: migrateLegacyUpdatedAtState,
+  },
+  'auto-sync': {
+    currentVersion: AUTO_SYNC_STATE_SCHEMA_VERSION,
+    validate: validateAutoSyncState,
+    migrateLegacy: migrateLegacyAutoSyncState,
+  },
+  'auto-sync-runs': {
+    currentVersion: AUTO_SYNC_RUN_LOG_STATE_SCHEMA_VERSION,
+    validate: validateAutoSyncRunLogState,
+    migrateLegacy: migrateLegacyAutoSyncRunLogState,
+  },
+  'sync-backups': {
+    currentVersion: SYNC_BACKUP_STATE_SCHEMA_VERSION,
+    validate: validateSyncBackupState,
+    migrateLegacy: migrateLegacySyncBackupState,
   },
 };
 
@@ -182,6 +206,9 @@ export function migrateStateBundle(state = {}, options = {}) {
   if (state.musicProfile !== undefined) reports.push(migrateMirrorState('music-profile', state.musicProfile, options));
   if (state.recommendationShortlists !== undefined) reports.push(migrateMirrorState('recommendation-shortlists', state.recommendationShortlists, options));
   if (state.agentSessions !== undefined) reports.push(migrateMirrorState('agent-sessions', state.agentSessions, options));
+  if (state.autoSync !== undefined) reports.push(migrateMirrorState('auto-sync', state.autoSync, options));
+  if (state.autoSyncRuns !== undefined) reports.push(migrateMirrorState('auto-sync-runs', state.autoSyncRuns, options));
+  if (state.syncBackups !== undefined) reports.push(migrateMirrorState('sync-backups', state.syncBackups, options));
   return {
     ok: reports.every((report) => report.ok),
     changed: reports.some((report) => report.changed),
@@ -341,6 +368,47 @@ function migrateLegacyUpdatedAtState(state, options = {}) {
       ...state,
       version: 1,
       updatedAt: state.updatedAt || options.now || new Date().toISOString(),
+    },
+  };
+}
+
+function migrateLegacyAutoSyncState(state, options = {}) {
+  return {
+    ok: true,
+    state: {
+      ...state,
+      version: AUTO_SYNC_STATE_SCHEMA_VERSION,
+      updatedAt: state.updatedAt || options.now || new Date().toISOString(),
+      lastStatus: state.lastStatus || 'never',
+      lastMessage: state.lastMessage || '',
+      lastRunId: state.lastRunId || '',
+      lastRunAt: state.lastRunAt || '',
+      nextRunAt: state.enabled ? state.nextRunAt || options.now || new Date().toISOString() : '',
+    },
+  };
+}
+
+function migrateLegacyAutoSyncRunLogState(state, options = {}) {
+  if (!Array.isArray(state.runs)) return legacyFailure('Legacy auto-sync run log must include a runs array.');
+  return {
+    ok: true,
+    state: {
+      ...state,
+      version: AUTO_SYNC_RUN_LOG_STATE_SCHEMA_VERSION,
+      updatedAt: state.updatedAt || inferRunLogUpdatedAt(state.runs) || options.now || new Date().toISOString(),
+    },
+  };
+}
+
+function migrateLegacySyncBackupState(state, options = {}) {
+  if (!Array.isArray(state.backups)) return legacyFailure('Legacy sync backup state must include a backups array.');
+  return {
+    ok: true,
+    state: {
+      ...state,
+      version: SYNC_BACKUP_STATE_SCHEMA_VERSION,
+      updatedAt: state.updatedAt || latestIsoDate(state.backups.map((backup) => backup?.createdAt)) || options.now || new Date().toISOString(),
+      restoreRuns: Array.isArray(state.restoreRuns) ? state.restoreRuns : [],
     },
   };
 }

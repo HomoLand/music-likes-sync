@@ -22,6 +22,9 @@ const files = [
   stateFile('music-profile', args.musicProfile, 'music-profile.json', args.requireMusicProfile),
   stateFile('recommendation-shortlists', args.recommendationShortlists, 'recommendation-shortlists.json', args.requireRecommendationShortlists),
   stateFile('agent-sessions', args.agentSessions, 'agent-sessions.json', args.requireAgentSessions),
+  stateFile('auto-sync', args.autoSync, 'auto-sync.json', args.requireAutoSync),
+  stateFile('auto-sync-runs', args.autoSyncRuns, 'auto-sync-runs.json', args.requireAutoSyncRuns),
+  stateFile('sync-backups', args.syncBackups, 'sync-backups.json', args.requireSyncBackups),
 ];
 
 const reports = [];
@@ -137,6 +140,9 @@ function parseArgs(argv) {
     requireMusicProfile: false,
     requireRecommendationShortlists: false,
     requireAgentSessions: false,
+    requireAutoSync: false,
+    requireAutoSyncRuns: false,
+    requireSyncBackups: false,
     dataDir: '',
     backupDir: '',
     plan: '',
@@ -151,6 +157,9 @@ function parseArgs(argv) {
     musicProfile: '',
     recommendationShortlists: '',
     agentSessions: '',
+    autoSync: '',
+    autoSyncRuns: '',
+    syncBackups: '',
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -169,6 +178,9 @@ function parseArgs(argv) {
     else if (arg === '--require-music-profile') result.requireMusicProfile = true;
     else if (arg === '--require-recommendation-shortlists') result.requireRecommendationShortlists = true;
     else if (arg === '--require-agent-sessions') result.requireAgentSessions = true;
+    else if (arg === '--require-auto-sync') result.requireAutoSync = true;
+    else if (arg === '--require-auto-sync-runs') result.requireAutoSyncRuns = true;
+    else if (arg === '--require-sync-backups') result.requireSyncBackups = true;
     else if (arg === '--data-dir') result.dataDir = requireValue(argv, index += 1, arg);
     else if (arg === '--backup-dir') result.backupDir = requireValue(argv, index += 1, arg);
     else if (arg === '--plan') result.plan = requireValue(argv, index += 1, arg);
@@ -183,6 +195,9 @@ function parseArgs(argv) {
     else if (arg === '--music-profile') result.musicProfile = requireValue(argv, index += 1, arg);
     else if (arg === '--recommendation-shortlists') result.recommendationShortlists = requireValue(argv, index += 1, arg);
     else if (arg === '--agent-sessions') result.agentSessions = requireValue(argv, index += 1, arg);
+    else if (arg === '--auto-sync') result.autoSync = requireValue(argv, index += 1, arg);
+    else if (arg === '--auto-sync-runs') result.autoSyncRuns = requireValue(argv, index += 1, arg);
+    else if (arg === '--sync-backups') result.syncBackups = requireValue(argv, index += 1, arg);
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -258,6 +273,9 @@ Options:
   --recommendation-shortlists <path>
                                   Recommendation shortlists JSON path.
   --agent-sessions <path>       Agent sessions JSON path.
+  --auto-sync <path>            Auto-sync settings JSON path.
+  --auto-sync-runs <path>       Auto-sync scheduler run-log JSON path.
+  --sync-backups <path>         Pre-delete sync backup JSON path.
   --require-mirror-plan         Fail when the mirror plan file is missing.
   --require-mirror-runs         Fail when the mirror run-log file is missing.
   --require-mirror-decisions    Fail when the mirror decisions file is missing.
@@ -271,6 +289,9 @@ Options:
   --require-recommendation-shortlists
                                   Fail when recommendation-shortlists.json is missing.
   --require-agent-sessions      Fail when agent-sessions.json is missing.
+  --require-auto-sync           Fail when auto-sync.json is missing.
+  --require-auto-sync-runs      Fail when auto-sync-runs.json is missing.
+  --require-sync-backups        Fail when sync-backups.json is missing.
   --write                       Write migrated files after creating backups.
   --json                        Print machine-readable JSON.
 `);

@@ -1,4 +1,5 @@
 import { durationLabel, normalizeText } from './normalize.js';
+import { matchingTextVariants } from './transliterate.js';
 
 const ALIAS_LIMIT = 8;
 const RECORDING_ID_LIMIT = 8;
@@ -24,7 +25,10 @@ export function compactTrackForAi(platform, track = {}) {
 export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = null) {
   const sourceMusicBrainz = compactMusicBrainzEvidence(sourceTrack);
   const targetMusicBrainz = compactMusicBrainzEvidence(targetTrack);
-  const durationDeltaSeconds = durationDelta(sourceTrack.durationMs, targetTrack.durationMs);
+  const durationDeltaMilliseconds = durationDeltaMs(sourceTrack.durationMs, targetTrack.durationMs);
+  const durationDeltaSeconds = durationDeltaMilliseconds === null
+    ? null
+    : Math.round(durationDeltaMilliseconds / 1000);
   const isrc = compareIsrc(sourceTrack.isrc, targetTrack.isrc);
   const sharedRecordingIds = intersect(
     sourceMusicBrainz?.recording_ids || [],
@@ -35,11 +39,25 @@ export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = n
     artists: overlapField(sourceTrack, targetTrack, 'artists'),
     albums: overlapField(sourceTrack, targetTrack, 'albums'),
   };
-  const versionCueConflicts = compareVersionCues(sourceTrack, targetTrack);
+  const authoritativeVersionEvidence = score?.appleEquivalentFingerprint === true
+    || score?.catalogTrackFingerprint === true;
+  const versionCueConflicts = authoritativeVersionEvidence ? [] : compareVersionCues(sourceTrack, targetTrack);
+  const recordingFingerprint = score?.recordingFingerprint === true || (
+    aliasOverlap.titles.length > 0
+    && aliasOverlap.albums.length > 0
+    && durationDeltaMilliseconds !== null
+    && durationDeltaMilliseconds <= 2000
+    && isrc.relation !== 'different'
+    && versionCueConflicts.length === 0
+  );
+  const appleEquivalentFingerprint = score?.appleEquivalentFingerprint === true;
+  const catalogTrackFingerprint = score?.catalogTrackFingerprint === true;
 
   return {
     algorithm_score: score || null,
+    duration_delta_ms: durationDeltaMilliseconds,
     duration_delta_seconds: durationDeltaSeconds,
+    recording_fingerprint: recordingFingerprint,
     isrc,
     musicbrainz: {
       source: sourceMusicBrainz,
@@ -53,6 +71,9 @@ export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = n
       isrc,
       sharedRecordingIds,
       aliasOverlap,
+      recordingFingerprint,
+      appleEquivalentFingerprint,
+      catalogTrackFingerprint,
     }),
     risk_signals: riskSignals({
       durationDeltaSeconds,
@@ -64,8 +85,49 @@ export function buildMatchEvidence(sourceTrack = {}, targetTrack = {}, score = n
 
 export function compactExternalEvidence(track = {}) {
   const musicbrainz = compactMusicBrainzEvidence(track);
-  if (!musicbrainz) return null;
-  return { musicbrainz };
+  const appleStorefronts = compactAppleStorefrontEvidence(track);
+  const providerCatalog = compactProviderCatalogEvidence(track);
+  if (!musicbrainz && !appleStorefronts && !providerCatalog) return null;
+  return {
+    ...(musicbrainz ? { musicbrainz } : {}),
+    ...(appleStorefronts ? { apple_storefronts: appleStorefronts } : {}),
+    ...(providerCatalog ? { provider_catalog: providerCatalog } : {}),
+  };
+}
+
+function compactAppleStorefrontEvidence(track = {}) {
+  const metadata = track.metadata?.appleStorefronts;
+  if (!metadata) return null;
+  return {
+    source_storefront: metadata.sourceStorefront || '',
+    storefronts: Array.isArray(metadata.storefronts) ? metadata.storefronts.slice(0, 12) : [],
+    equivalent_count: Number(metadata.equivalentCount || 0),
+    equivalents: Array.isArray(metadata.equivalents)
+      ? metadata.equivalents.filter((item) => item.isrcMatch === true).slice(0, ALIAS_LIMIT).map((item) => ({
+        storefront: item.storefront || '',
+        title: item.title || '',
+        artist: item.artist || '',
+        album: item.album || '',
+        duration_ms: Number(item.durationMs || 0),
+        isrc: item.isrc || '',
+        track_number: Number(item.trackNumber || 0),
+        disc_number: Number(item.discNumber || 0),
+      }))
+      : [],
+  };
+}
+
+function compactProviderCatalogEvidence(track = {}) {
+  const metadata = track.metadata?.providerCatalog;
+  if (!metadata) return null;
+  return {
+    platform: metadata.platform || track.platform || '',
+    track_number: Number(metadata.trackNumber || 0),
+    disc_number: Number(metadata.discNumber || 0),
+    album_id: metadata.albumId || '',
+    subtitle: metadata.subtitle || '',
+    release_date: metadata.releaseDate || '',
+  };
 }
 
 function compactMusicBrainzEvidence(track = {}) {
@@ -101,17 +163,17 @@ function compareIsrc(left, right) {
   return { relation: 'missing', source: null, target: null };
 }
 
-function durationDelta(left, right) {
+function durationDeltaMs(left, right) {
   const a = Number(left || 0);
   const b = Number(right || 0);
   if (!a || !b) return null;
-  return Math.round(Math.abs(a - b) / 1000);
+  return Math.abs(a - b);
 }
 
 function overlapField(sourceTrack, targetTrack, key) {
   const source = normalizedFieldValues(sourceTrack, key);
   const target = normalizedFieldValues(targetTrack, key);
-  return intersect(source, target).slice(0, ALIAS_LIMIT);
+  return uniqueTextEvidence(intersect(source, target)).slice(0, ALIAS_LIMIT);
 }
 
 function normalizedFieldValues(track = {}, key) {
@@ -121,58 +183,76 @@ function normalizedFieldValues(track = {}, key) {
       ? [track.artist, ...(track.artists || [])]
       : [track.album];
   const aliases = Array.isArray(track.aliases?.[key]) ? track.aliases[key] : [];
-  return unique([...base, ...aliases].map((value) => normalizeText(value)).filter(Boolean));
+  return unique([...base, ...aliases]
+    .flatMap((value) => [normalizeText(value), ...matchingTextVariants(value)])
+    .filter(Boolean));
 }
 
-function compareVersionCues(sourceTrack = {}, targetTrack = {}) {
-  const source = versionCueSet([
-    sourceTrack.title,
-    sourceTrack.album,
-    ...(sourceTrack.aliases?.titles || []),
-    ...(sourceTrack.aliases?.albums || []),
-  ].join(' '));
-  const target = versionCueSet([
-    targetTrack.title,
-    targetTrack.album,
-    ...(targetTrack.aliases?.titles || []),
-    ...(targetTrack.aliases?.albums || []),
-  ].join(' '));
+export function compareVersionCues(sourceTrack = {}, targetTrack = {}) {
+  const sourceTitle = versionCueSet(sourceTrack.title);
+  const sourceAlbum = versionCueSet(sourceTrack.album);
+  const targetTitle = versionCueSet(targetTrack.title);
+  const targetAlbum = versionCueSet(targetTrack.album);
+  const source = new Set([...sourceTitle, ...sourceAlbum]);
+  const target = new Set([...targetTitle, ...targetAlbum]);
   const conflicts = [];
-  for (const cue of source) {
-    if (!target.has(cue)) conflicts.push({ cue, source: true, target: false });
+  for (const cue of sourceTitle) {
+    if (!target.has(cue)) conflicts.push({ field: 'title', cue, source: true, target: false });
   }
-  for (const cue of target) {
-    if (!source.has(cue)) conflicts.push({ cue, source: false, target: true });
+  for (const cue of targetTitle) {
+    if (!source.has(cue)) conflicts.push({ field: 'title', cue, source: false, target: true });
   }
   return conflicts;
 }
 
-function versionCueSet(text) {
+export function versionCueSet(text) {
   const value = String(text || '').toLowerCase().normalize('NFKC');
   const cues = new Set();
   const checks = [
-    ['live', /\b(live|concert|the first take)\b|现场|ライブ/u],
+    ['live', /\blive(?:\s+(?:at|from|in)\b|$)|[\[(]\s*live[\])]|\bconcert\b|the first take|现场|現場|实况|實況|ライブ/u],
     ['cover', /\bcover\b|翻唱|カバー/u],
-    ['acoustic', /\bacoustic\b|不插电|アコースティック/u],
-    ['piano', /\bpiano\b|钢琴|ピアノ/u],
-    ['instrumental', /\b(instrumental|inst|off vocal|karaoke)\b|伴奏|器乐|カラオケ/u],
-    ['tv-size', /\b(tv size|tv ver|short ver|short edit|edit version)\b|tvサイズ|テレビサイズ/u],
-    ['remix', /\b(remix|mixed|dj mix)\b|混音|リミックス/u],
-    ['remaster', /\bremaster(?:ed)?\b|重制|リマスター/u],
-    ['single-version', /\bsingle version\b|单曲版|シングルバージョン/u],
-    ['album-version', /\balbum version\b|专辑版|アルバムバージョン/u],
-    ['movie-version', /\b(movie|film|cinema) ver\b|电影版/u],
+    ['acoustic', /\bacoustic\b|不插电|不插電|アコースティック|弾き語り/u],
+    ['piano', /\bpiano\b|钢琴(?:版|演奏|伴奏)|鋼琴(?:版|演奏|伴奏)|ピアノ(?:版|バージョン|アレンジ)/u],
+    ['instrumental', /\b(instrumental|inst\.?|off vocal|karaoke)\b|伴奏|器乐|器樂|纯音乐|純音樂|インスト(?:ゥルメンタル)?|オフボーカル|カラオケ/u],
+    ['tv-size', /\b(tv[- ]?size|tv ver|short ver|short edit|edit version)\b|tvサイズ|テレビサイズ/u],
+    ['remix', /\bremix(?:ed)?\b|\b(?:club|dance|radio|extended|china|dj)\s+mix\b|混音|リミックス/u],
+    ['remaster', /\bremaster(?:ed)?\b|重制|重製|修复|修復|リマスター/u],
+    ['single-version', /\bsingle version\b|单曲版|單曲版|シングル(?:・| )?バージョン/u],
+    ['album-version', /\balbum version\b|专辑版|專輯版|アルバム(?:・| )?バージョン/u],
+    ['movie-version', /\b(movie|film|cinema)[ -]?ver(?:sion)?\b|电影版|電影版|劇場版/u],
+    ['orchestral', /\borchestral(?:\s+(?:version|ver|mix))?\b|管弦乐版|管弦樂版|オーケストラ(?:版|バージョン)/u],
+    ['anniversary', /\banniversary\b|周年纪念|週年紀念|周年記念/u],
+    ['original', /\boriginal\s+ver(?:sion)?\b|原版|原曲版|オリジナル(?:版|バージョン)/u],
+    ['choir', /\bchoir\s+(?:version|ver|verse)\b|合唱版|合唱版本/u],
+    ['explicit', /\bexplicit\b|未删减版|未刪減版/u],
+    ['clean', /\bclean\b|健康版|洁净版|潔淨版/u],
+    ['version', /(?:\b|[\[(])(?:version|ver\.?)(?:\b|[\])])|バージョン|版本/u],
   ];
   for (const [name, pattern] of checks) {
     if (pattern.test(value)) cues.add(name);
   }
+  for (const match of value.matchAll(/(?:19|20)\d{2}/g)) {
+    cues.add(`year:${match[0]}`);
+  }
+  if (cues.size > 1) cues.delete('version');
   return cues;
 }
 
-function supportSignals({ durationDeltaSeconds, isrc, sharedRecordingIds, aliasOverlap }) {
+function supportSignals({
+  durationDeltaSeconds,
+  isrc,
+  sharedRecordingIds,
+  aliasOverlap,
+  recordingFingerprint,
+  appleEquivalentFingerprint,
+  catalogTrackFingerprint,
+}) {
   const signals = [];
   if (isrc.relation === 'same') signals.push('same_isrc');
   if (sharedRecordingIds.length) signals.push('shared_musicbrainz_recording_id');
+  if (appleEquivalentFingerprint) signals.push('apple_storefront_equivalent_fingerprint');
+  if (catalogTrackFingerprint) signals.push('same_album_track_number');
+  if (recordingFingerprint) signals.push('exact_recording_fingerprint');
   if (durationDeltaSeconds !== null && durationDeltaSeconds <= 5) signals.push('duration_within_5_seconds');
   if (aliasOverlap.titles.length) signals.push('title_alias_overlap');
   if (aliasOverlap.artists.length) signals.push('artist_alias_overlap');
@@ -201,6 +281,18 @@ function unique(values) {
     if (!text || seen.has(text)) continue;
     seen.add(text);
     result.push(text);
+  }
+  return result;
+}
+
+function uniqueTextEvidence(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const key = String(value || '').replace(/\s+/g, '');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
   }
   return result;
 }

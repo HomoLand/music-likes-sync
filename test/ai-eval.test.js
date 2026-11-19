@@ -23,12 +23,13 @@ describe('AI evaluation fixtures', () => {
     const categories = new Set(result.cases.map((item) => item.category));
 
     assert.equal(result.ok, true);
-    assert.equal(result.summary.total, 8);
+    assert.equal(result.summary.total, 9);
     assert.equal(result.summary.failed, 0);
     assert(categories.has('same_recording'));
     assert(categories.has('same_song_different_version'));
     assert(categories.has('different_song_same_title'));
     assert(categories.has('japanese_romanization'));
+    assert(categories.has('storefront_localization'));
     assert(categories.has('missing_isrc_duration_conflict'));
   });
 

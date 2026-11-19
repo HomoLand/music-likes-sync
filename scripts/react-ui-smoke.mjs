@@ -61,10 +61,12 @@ try {
   browser = await chromium.launch(browserPath ? { executablePath: browserPath } : {});
 
   const results = [];
+  await resetReactAppFixtures(tempRoot);
   results.push(await runViewportSmoke(browser, {
     name: 'desktop',
     viewport: { width: 1440, height: 1000 },
   }));
+  await resetReactAppFixtures(tempRoot);
   results.push(await runViewportSmoke(browser, {
     name: 'mobile',
     viewport: { width: 390, height: 844 },
@@ -87,10 +89,174 @@ async function runViewportSmoke(browserInstance, options) {
     viewport: options.viewport,
     deviceScaleFactor: options.name === 'mobile' ? 2 : 1,
   });
+  await context.addInitScript(() => {
+    Object.defineProperty(HTMLMediaElement.prototype, 'paused', {
+      configurable: true,
+      get() { return this.__testPlaying !== true; },
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+      configurable: true,
+      get() { return this.__testCurrentTime || 0; },
+      set(value) { this.__testCurrentTime = Number(value) || 0; },
+    });
+    HTMLMediaElement.prototype.play = function play() {
+      this.__testPlaying = true;
+      return Promise.resolve();
+    };
+    HTMLMediaElement.prototype.pause = function pause() {
+      this.__testPlaying = false;
+    };
+  });
   const page = await context.newPage();
   const problems = [];
   const apiCalls = new Set();
-  const expectedClientErrorPaths = new Set(['/api/sync/convergence']);
+  const expectedClientErrorPaths = new Set(['/api/qq/playlists', '/api/sync/convergence']);
+  const qrFixture = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlS7gAAAABJRU5ErkJggg==';
+  let mockConnectedQqPlaylists = false;
+
+  await page.route('https://api.github.com/repos/HomoLand/music-likes-sync/releases/latest', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({
+        tag_name: 'v0.2.0',
+        html_url: 'https://github.com/HomoLand/music-likes-sync/releases/tag/v0.2.0',
+      }),
+    });
+  });
+
+  await page.route('**/api/apple/connect/start', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        message: '请在 Apple 官方窗口完成登录；登录成功后会自动继续。',
+        status: {
+          code: 'waiting_for_login',
+          message: '请在 Apple 官方窗口完成登录；登录成功后会自动继续。',
+          done: false,
+          waiting: true,
+          count: 0,
+        },
+      }),
+    });
+  });
+
+  await page.route('**/api/apple/connect/check', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        message: '等待 Apple 登录。',
+        status: { code: 'waiting_for_login', message: '等待 Apple 登录。', done: false, waiting: true, count: 0 },
+      }),
+    });
+  });
+
+  await page.route('**/api/qq/qr/start', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        message: '请用手机 QQ 或微信扫码，并在手机上确认登录。',
+        status: { code: 'waiting_for_scan', message: '等待手机确认。', done: false, waiting: true },
+        qr: {
+          key: 'fixture-qq-qr-session',
+          images: { qq: qrFixture, wechat: qrFixture },
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        },
+      }),
+    });
+  });
+
+  await page.route('**/api/qq/qr/check', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        message: '等待手机确认。',
+        status: { code: 'waiting_for_scan', message: '等待手机确认。', done: false, waiting: true },
+      }),
+    });
+  });
+
+  await page.route('**/api/qq/playlists', async (route) => {
+    if (!mockConnectedQqPlaylists) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        message: '已读取 QQ 歌单：1 个',
+        playlists: [{
+          index: 0,
+          name: '我喜欢',
+          dirid: '201',
+          tid: 'fixture-liked-tid',
+          dissid: '',
+          id: '201',
+          songCount: 38,
+          listenCount: 0,
+          isLiked: true,
+        }],
+      }),
+    });
+  });
+
+  await page.route('**/api/sync/media', async (route) => {
+    const body = route.request().postDataJSON() || {};
+    const platform = body.role === 'source' ? 'apple' : 'qq';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          previewId: body.previewId,
+          operationId: body.operationId,
+          role: body.role,
+          alternativeIndex: body.alternativeIndex ?? null,
+          track: {
+            platform,
+            id: `${platform}-media-fixture`,
+            title: 'Real media fixture',
+            artist: 'Fixture Artist',
+            album: 'Fixture Album',
+            durationMs: 180000,
+            artworkUrl: `${baseUrl}/assets/music/platform-${platform}.webp`,
+          },
+          media: {
+            artworkUrl: `${baseUrl}/assets/music/platform-${platform}.webp`,
+            previewUrl: 'https://audio.example.test/preview.mp3',
+            playable: true,
+            reason: '',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            maxPreviewSeconds: 30,
+            alignment: body.alignWithSource ? {
+              status: 'aligned',
+              method: 'chromaprint',
+              confidence: 0.96,
+              offsetFromSourceSeconds: 44.954,
+              sourceStartSeconds: 0,
+              targetStartSeconds: 44.954,
+              overlapSeconds: 87.31,
+              maxPreviewSeconds: 30,
+              reason: '',
+            } : null,
+          },
+        },
+        warnings: [],
+      }),
+    });
+  });
 
   page.on('pageerror', (error) => {
     problems.push(`pageerror: ${error.message}`);
@@ -118,8 +284,56 @@ async function runViewportSmoke(browserInstance, options) {
   try {
     await page.goto(baseUrl, { waitUntil: 'networkidle' });
     await expectVisible(page, '[data-testid="react-app-shell"]', 'React app shell');
-    assert((await page.locator('aside nav button').count()) >= 6, 'React app should expose six navigation items');
+    assert((await page.locator('aside nav button').count()) >= 7, 'React app should expose seven navigation items');
     await assertNoHorizontalOverflow(page, 'initial load');
+
+    await page.getByTestId('react-nav-connect').click();
+    await expectVisible(page, '[data-testid="react-connect-screen"]', 'platform connection screen');
+    await expectVisible(page, '[data-testid="react-apple-connect"]', 'Apple Music one-time connection action');
+    await expectVisible(page, '[data-testid="react-apple-import-trigger"]', 'Apple Music import action');
+    await expectVisible(page, '[data-testid="react-qq-login"]', 'QQ Music guided login action');
+    assert(await page.getByTestId('react-qq-playlists').count() === 0, 'QQ playlist action must stay hidden without a credential');
+    await expectVisible(page, '[data-testid="react-netease-login"]', 'NetEase QR login action');
+    await assertNoHorizontalOverflow(page, 'platform connection');
+
+    await page.getByTestId('react-apple-connect').click();
+    await expectVisible(page, '[data-testid="react-apple-login-status"]', 'Apple Music automatic login status');
+    await expectVisibleText(page, '等待 Apple 登录', 'Apple Music automatic polling state');
+    await page.getByTestId('react-connection-close').click();
+
+    await page.getByTestId('react-qq-login').click();
+    await expectVisible(page, '[data-testid="react-qq-qr-image"]', 'embedded QQ official-page QR image');
+    await expectVisibleText(page, 'QQ 扫码', 'QQ QR method switch');
+    await expectVisibleText(page, '微信扫码', 'WeChat QR method switch');
+    await expectVisibleText(page, '使用本机快捷登录', 'Tencent local quick-login fallback');
+    await assertNoHorizontalOverflow(page, 'QQ connection dialog');
+    await page.getByTestId('react-connection-close').click();
+
+    await fs.writeFile(path.join(tempRoot, 'data', 'qq.cookie'), 'fixture-credential-present', 'utf8');
+    mockConnectedQqPlaylists = true;
+    await page.reload({ waitUntil: 'networkidle' });
+    await expectVisible(page, '[data-testid="react-connect-screen"]', 'connected platform screen');
+    assert(await page.getByTestId('react-qq-login').count() === 0, 'QQ login action must stay hidden with a saved credential');
+    await expectVisible(page, '[data-testid="react-qq-playlists"]', 'QQ Music playlist action with a saved credential');
+
+    const qqPlaylistRead = waitForApi(page, '/api/qq/playlists');
+    await page.getByTestId('react-qq-playlists').click();
+    await qqPlaylistRead;
+    await expectVisible(page, '[data-testid="react-qq-connected"]', 'QQ connected-state dialog');
+    await expectVisible(page, '[data-testid="react-qq-playlist-list"]', 'QQ playlist list');
+    assert(await page.getByTestId('react-qq-qr-image').count() === 0, 'QQ QR must not render with a saved credential');
+    assert(await page.getByText('使用本机快捷登录', { exact: true }).count() === 0, 'QQ quick login must not render with a saved credential');
+    await expectVisible(page, '[data-testid="react-qq-connection-check"]', 'QQ credential health check action');
+    await assertNoHorizontalOverflow(page, 'QQ connected dialog');
+    await page.getByTestId('react-connection-close').click();
+
+    await fs.rm(path.join(tempRoot, 'data', 'qq.cookie'), { force: true });
+    mockConnectedQqPlaylists = false;
+    await page.reload({ waitUntil: 'networkidle' });
+    await expectVisible(page, '[data-testid="react-connect-screen"]', 'reset platform connection screen');
+
+    await page.getByTestId('react-nav-overview').click();
+    await expectVisible(page, '[data-testid="react-run-sync-check"]', 'overview sync action');
 
     const syncCheck = waitForApi(page, '/api/sync/check');
     const previewFetch = waitForApi(page, '/api/sync/preview');
@@ -127,10 +341,70 @@ async function runViewportSmoke(browserInstance, options) {
     await syncCheck;
     await previewFetch;
     await expectVisible(page, '[data-testid="react-preview-list"]', 'sync preview list');
+    await expectVisible(page, '[data-testid="react-preview-pagination"]', 'sync preview pagination status');
+    await expectVisible(page, '[data-testid="react-preview-bucket-not_found"]', 'not-found preview bucket');
     await expectVisible(page, '[data-testid="react-write-panel"]', 'controlled write panel');
+    await expectVisible(page, '[data-testid="react-deletion-safety"]', 'pre-delete recovery controls');
+    await expectVisible(page, '[data-testid="react-ai-review-additions"]', 'AI addition review draft action');
     const previewItems = await page.getByTestId('react-preview-item').count();
     assert(previewItems > 0, 'React preview should render fixture operations');
     await assertNoHorizontalOverflow(page, 'sync preview');
+
+    const reviewPage = waitForApi(page, '/api/sync/preview');
+    const mediaResolve = waitForApi(page, '/api/sync/media');
+    await page.getByTestId('react-preview-bucket-needs_confirmation').click();
+    await reviewPage;
+    await mediaResolve;
+    await expectVisible(page, '[data-testid="react-version-audition"]', 'version audition comparison');
+    await expectVisibleText(page, '版本试听对比', 'version audition heading');
+    const identityDecisionPanels = page.locator('.audition-decision');
+    await identityDecisionPanels.first().waitFor({ state: 'visible', timeout: 15000 });
+    assert(await identityDecisionPanels.count() > 0, 'platform-scoped identity decision controls should be visible');
+    await expectVisibleText(page, '可以，保留', 'keep-existing-version decision action');
+    await expectVisibleText(page, '不可以，替换', 'replace-with-Apple-version decision action');
+    await expectVisibleText(page, '每个决定只影响它所在的平台', 'platform-scoped decision explanation');
+    const auditionRows = await page.locator('.audition-row').count();
+    assert(auditionRows >= 2, 'manual review should compare the source and at least one provider version');
+    assert(await page.locator('.audition-audio').evaluate((audio) => audio.paused), 'version audition must not autoplay');
+    const artworkSources = await page.locator('.audition-row .album-art img').evaluateAll((images) => images.map((image) => image.getAttribute('src') || ''));
+    assert(artworkSources.length > 0, 'version audition should render resolved artwork');
+    assert(artworkSources.every((src) => !src.includes('album-imagine') && !src.includes('album-get-lucky')), 'version audition must not use demo album covers');
+    const auditionAudio = page.locator('.audition-audio');
+    const auditionSourcePlay = page.locator('.audition-row').nth(0).locator('.audition-play');
+    const auditionTargetPlay = page.locator('.audition-row').nth(1).locator('.audition-play');
+    const auditionSourceTitle = (await page.locator('.audition-row').nth(0).locator('.audition-track-copy > strong').textContent())?.trim() || '';
+    await auditionSourcePlay.click();
+    await page.waitForFunction((title) => (
+      document.querySelector('[data-testid="react-sidebar-player-title"]')?.textContent?.trim() === title
+    ), auditionSourceTitle, { timeout: 10000 });
+    assert(auditionSourceTitle && auditionSourceTitle !== 'Night Driver', 'sidebar player should use the real auditioned track');
+    await auditionAudio.evaluate((audio) => { audio.currentTime = 8; });
+    const alignedMediaResolve = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === '/api/sync/media'
+      && response.request().postDataJSON()?.alignWithSource === true
+    ));
+    await auditionTargetPlay.click();
+    await alignedMediaResolve;
+    const alignedStart = await auditionAudio.evaluate((audio) => audio.currentTime);
+    assert(Math.abs(alignedStart - 52.954) < 0.001, `aligned A/B switch should preserve the musical position, got ${alignedStart}`);
+    await expectVisibleText(page, '片段已对齐 96%', 'aligned audition status');
+    await assertNoHorizontalOverflow(page, 'version audition');
+
+    const mayDeletePage = waitForApi(page, '/api/sync/preview');
+    await page.getByTestId('react-preview-bucket-may_delete').click();
+    await mayDeletePage;
+    const firstDeletePageItems = await page.getByTestId('react-preview-item').count();
+    assert(firstDeletePageItems === 30, 'React preview should render the first 30 deletion items');
+    await expectVisible(page, '[data-testid="react-preview-load-more"]', 'sync preview load-more action');
+    const nextDeletePage = waitForApi(page, '/api/sync/preview');
+    await page.getByTestId('react-preview-load-more').click();
+    await nextDeletePage;
+    await page.waitForFunction((previousCount) => (
+      document.querySelectorAll('[data-testid="react-preview-item"]').length > previousCount
+    ), firstDeletePageItems, { timeout: 10000 });
+    const paginatedPreviewItems = await page.getByTestId('react-preview-item').count();
+    assert(paginatedPreviewItems > firstDeletePageItems, 'React preview should append the next page');
+    await assertNoHorizontalOverflow(page, 'paginated sync preview');
 
     const dryRunAdd = page.getByTestId('react-execute-additions-dry-run');
     const realAdd = page.getByTestId('react-execute-additions-write');
@@ -199,6 +473,18 @@ async function runViewportSmoke(browserInstance, options) {
     await expectVisibleText(page, '不写平台', 'Agent read-only non-provider pill');
     await assertNoHorizontalOverflow(page, 'AI assistant');
 
+    await page.getByTestId('react-nav-automation').click();
+    await expectVisible(page, '[data-testid="react-auto-sync-screen"]', 'auto-sync screen');
+    await expectVisible(page, '[data-testid="react-auto-sync-readiness"]', 'auto-sync readiness gate');
+    await expectVisible(page, '[data-testid="react-auto-sync-history"]', 'auto-sync history');
+    await expectVisible(page, '[data-testid="react-auto-sync-save"]', 'auto-sync save action');
+    await expectVisible(page, '[data-testid="react-auto-sync-check"]', 'auto-sync manual check action');
+    await expectVisible(page, '[data-testid="react-auto-sync-run"]', 'auto-sync real run action');
+    assert(await page.getByTestId('react-auto-sync-run').isDisabled(), 'real auto-sync run should stay disabled before readiness and enablement');
+    await expectVisibleText(page, '同步基线', 'auto-sync baseline gate');
+    await assertNoHorizontalOverflow(page, 'auto-sync');
+    await assertAutoSyncFitsViewport(page);
+
     await page.getByTestId('react-nav-advanced').click();
     await expectVisible(page, '[data-testid="react-advanced-screen"]', 'advanced settings screen');
     await expectVisible(page, '[data-testid="react-open-compat-workbench"]', 'compatibility workbench action');
@@ -216,14 +502,25 @@ async function runViewportSmoke(browserInstance, options) {
     await validationRequest;
     await assertNoHorizontalOverflow(page, 'advanced settings');
 
+    await page.getByTestId('react-open-help').click();
+    await expectVisible(page, '[data-testid="react-help-screen"]', 'help and about screen');
+    await expectVisibleText(page, '没有 Likes Sync 云端账号', 'local-only account explanation');
+    await expectVisibleText(page, '当前版本 v0.1.0', 'current application version');
+    await page.getByRole('button', { name: '检查新版本' }).click();
+    await expectVisibleText(page, '发现新版本 v0.2.0', 'explicit release update check');
+    assert(await page.getByLabel('用户').count() === 0, 'misleading product account avatar should not be rendered');
+    await assertNoHorizontalOverflow(page, 'help and about');
+
     assert(problems.length === 0, `browser problems:\n${problems.join('\n')}`);
     return {
       name: options.name,
       viewport: options.viewport,
       navItems: await page.locator('aside nav button').count(),
       previewItems,
+      paginatedPreviewItems,
       realAddDisabled,
       realDeleteDisabled,
+      deletionSafety: true,
       apiCalls: [...apiCalls].sort(),
       horizontalOverflowPx: await horizontalOverflow(page),
     };
@@ -267,9 +564,47 @@ async function waitForEnabled(locator, label) {
 
 async function assertNoHorizontalOverflow(page, label) {
   const overflow = await horizontalOverflow(page);
-  if (overflow <= 1) return;
   const offenders = await horizontalOverflowOffenders(page);
+  if (overflow <= 1 && offenders.length === 0) return;
   assert(false, `${label} should not overflow horizontally, got ${overflow}px. offenders=${JSON.stringify(offenders)}`);
+}
+
+async function assertAutoSyncFitsViewport(page) {
+  const result = await page.evaluate(() => {
+    const viewport = document.documentElement.clientWidth;
+    const selectors = [
+      '[data-testid="react-auto-sync-screen"]',
+      '[data-testid="react-auto-sync-save"]',
+      '[data-testid="react-auto-sync-check"]',
+      '[data-testid="react-auto-sync-run"]',
+      '[data-testid="react-auto-sync-readiness"]',
+      '[data-testid="react-auto-sync-history"]',
+      '.page-title-block .status-pill',
+      '.automation-delete-guard',
+    ];
+    const items = selectors.map((selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return { selector, missing: true };
+      const rect = element.getBoundingClientRect();
+      return {
+        selector,
+        missing: false,
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      };
+    });
+    return {
+      viewport,
+      items,
+      problems: items.filter((item) => item.missing
+        || item.left < -1
+        || item.right > viewport + 1
+        || item.scrollWidth > item.clientWidth + 1),
+    };
+  });
+  assert(result.problems.length === 0, `auto-sync controls should fit the viewport: ${JSON.stringify(result)}`);
 }
 
 async function horizontalOverflow(page) {
@@ -287,6 +622,15 @@ async function horizontalOverflow(page) {
 async function horizontalOverflowOffenders(page) {
   return page.evaluate(() => {
     const viewport = document.documentElement.clientWidth;
+    const insideHorizontalScroller = (element) => {
+      let current = element.parentElement;
+      while (current && current !== document.body) {
+        const overflowX = getComputedStyle(current).overflowX;
+        if (['auto', 'scroll'].includes(overflowX) && current.scrollWidth > current.clientWidth + 1) return true;
+        current = current.parentElement;
+      }
+      return false;
+    };
     return [...document.querySelectorAll('body *')]
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -299,9 +643,10 @@ async function horizontalOverflowOffenders(page) {
           right: Math.round(rect.right),
           width: Math.round(rect.width),
           overflowRight: Math.round(rect.right - viewport),
+          insideHorizontalScroller: insideHorizontalScroller(element),
         };
       })
-      .filter((item) => item.overflowRight > 1 || item.left < -1)
+      .filter((item) => !item.insideHorizontalScroller && (item.overflowRight > 1 || item.left < -1))
       .sort((left, right) => right.overflowRight - left.overflowRight)
       .slice(0, 8);
   });
@@ -334,12 +679,14 @@ async function seedReactAppFixtures(root) {
   await fs.writeFile(path.join(dataDir, 'netease.json'), JSON.stringify(snapshot('netease', [
     track('n-1', 'Already There', 'Alice', 181000),
     track('n-2', 'Old Target Only', 'Dora', 200000),
-    track('n-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('n-3', 'Night Drive Acoustic', 'Carol', 190000),
+    ...Array.from({ length: 35 }, (_, index) => track(`n-page-${index}`, `NetEase Page Fixture ${index}`, 'Page Artist', 200000 + index)),
   ])), 'utf8');
   await fs.writeFile(path.join(dataDir, 'qq.json'), JSON.stringify(snapshot('qq', [
     track('q-1', 'Already There', 'Alice', 181000),
     qqMidOnlyTrack('qq-mid-old-target-only', 'Old Target Only', 'Dora', 200000),
-    track('q-3', 'Night Drive Acoustic', 'Carol', 240000),
+    track('q-3', 'Night Drive Acoustic', 'Carol', 190000),
+    ...Array.from({ length: 35 }, (_, index) => track(`q-page-${index}`, `QQ Page Fixture ${index}`, 'Page Artist', 210000 + index)),
   ])), 'utf8');
   await fs.writeFile(path.join(dataDir, 'agent-sessions.json'), JSON.stringify({
     version: 1,
@@ -390,6 +737,11 @@ async function seedReactAppFixtures(root) {
       },
     ],
   }), 'utf8');
+}
+
+async function resetReactAppFixtures(root) {
+  await fs.rm(path.join(root, 'data'), { recursive: true, force: true });
+  await seedReactAppFixtures(root);
 }
 
 function snapshot(platform, tracks) {

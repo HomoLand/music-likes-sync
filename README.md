@@ -10,8 +10,9 @@ The open-source direction is simple: Apple Music Favorite Songs / Liked Songs is
 
 Stable today:
 
-- Import Apple Music liked songs from CSV / TSV / TXT / JSON, or capture them from a local Edge session.
-- Fetch QQ Music and NetEase Cloud Music snapshots with local cookies.
+- Connect Apple Music once through its official page, automatically discover Favorite Songs, and silently refresh it from a persistent local Edge profile; file import remains a fallback.
+- Connect QQ Music with embedded QQ / WeChat QR images from Tencent's official login page, or use the page's local quick-login options; NetEase Cloud Music uses its QR flow.
+- Fetch QQ Music and NetEase Cloud Music snapshots with locally stored credentials that are never returned to the frontend.
 - Normalize and match tracks across Apple Music, QQ Music, and NetEase Cloud Music.
 - Build the legacy unified-library review surface for low-confidence matches and version conflicts.
 - Build a new Apple-source-of-truth mirror plan with `keep`, `add`, `remove`, and `review` operations.
@@ -22,6 +23,7 @@ Stable today:
 - Refresh target snapshots and regenerate the mirror plan to produce post-run convergence checks.
 - Run live provider validation with disposable-playlist safeguards that choose a candidate absent from the target playlist and verify snapshots after add and remove.
 - Surface stale snapshots and post-run convergence status in the Web UI.
+- Configure guarded automatic sync from a dedicated screen: Apple-canonical mirrors can start without a historical baseline, while baseline-dependent policies remain gated; ready additions can execute automatically, deletion signals stay pending for manual confirmation, and run history is bounded and sanitized.
 - Validate local mirror state with `npm run check:state`.
 - Keep GitHub Actions release gates aligned with `npm run check:ci`.
 - Run local tests and syntax checks with `npm run verify`.
@@ -41,6 +43,8 @@ Not release-complete yet:
 - `add` means Apple has a track that the target does not have; the target catalog ID must be resolved first.
 - `remove` means the target has a track that Apple does not have.
 - `review` means the matcher found a low-confidence, duplicate, version-sensitive, or reverse-only relationship that should not be mutated automatically.
+- Deterministic matching builds target-localized search queries from trusted Apple storefront equivalents and explicit aliases, ranks the full candidate set, and combines artist identity, recording fingerprints, provider album positions, release dates, full Chinese/Japanese character folding, and score margins. One-to-two-second duration drift is treated as provider rounding, while conflicting version cues or ISRCs still block automatic merging.
+- AI reviews only the remaining ambiguous relationships from minimized evidence. Its output is an auditable suggestion and cannot bypass ISRC, version, duplicate, write, or deletion gates.
 - Manual `review` decisions are stored locally. `keep` treats the reviewed target as the Apple match; `separate` rebuilds the plan into add and / or remove operations while preserving the destructive confirmation gate.
 - Deletion is destructive and requires both a dry-run and an explicit confirmation string: `REMOVE QQ` or `REMOVE NETEASE`.
 - Delete operations require a target track `id`; QQ mid-only tracks are blocked instead of being guessed or submitted.
@@ -55,7 +59,7 @@ npm install
 npm run verify
 ```
 
-Node.js 20 or newer is required. The Dockerfile currently uses Node 24.
+Node.js 20 or newer is required. Aligned cross-platform audition also requires an FFmpeg build with the Chromaprint muxer (`ffmpeg -hide_banner -h muxer=chromaprint`). The Docker image includes both. The Dockerfile currently uses Node 24.
 
 ## Web UI
 
@@ -73,8 +77,8 @@ The Web UI port must be an integer from `1` to `65535`; invalid `PORT` or `--por
 
 The UI supports:
 
-- Apple Music import by file, paste, URL-assisted capture, or local browser capture.
-- Guided QQ / NetEase login flows with local cookie storage under `data/`.
+- One-time Apple Music official login with automatic Favorite Songs discovery and background refresh; file import remains available.
+- Embedded QQ / WeChat QR login from Tencent's official page, local QQ / WeChat quick-login fallback, and NetEase QR login, with credentials stored only under ignored local state.
 - Platform snapshot refresh.
 - Legacy unified-library review and AI-assisted review.
 - Apple -> QQ / NetEase mirror plan generation.
@@ -87,6 +91,9 @@ The UI supports:
 - Separate mirror-add and mirror-delete execution paths.
 - In-app deletion confirmation with plan target, delete count, and exact confirmation text.
 - Post-run convergence check that can refresh the target snapshot and rebuild the Apple-source-of-truth plan.
+- Automatic-sync readiness, schedule, target selection, immediate dry-run check, additions-only execution, and sanitized run history.
+- Consent-gated AI draft review for already searched low-confidence addition candidates; AI suggestions never become platform writes without a separate user decision and controlled executor.
+- Human source / target version audition with real artwork, local Chromaprint alignment, position-preserving A/B switching, and durable same-version / different-version decisions; optional identity AI drafts remain advisory and survive preview regeneration.
 
 ## CLI
 
@@ -165,6 +172,9 @@ DeepSeek is optional and only used for AI-assisted review when explicitly invoke
 - `src/mirror-resolve.js`: target catalog resolution for mirror additions.
 - `src/mirror-apply.js`: dry-run and mutation contract for additions and deletions.
 - `src/state-schema.js`: versioned local mirror plan, run-log, and review-decision state validation.
+- `src/auto-sync.js`: automatic-sync settings, schedule, and sanitized history domain helpers.
+- `src/run-lock.js`: heartbeat-backed cross-process execution lock for scheduled writes.
+- `src/sync-backup.js`: compact checksummed pre-delete recovery points and additions-only restore planning.
 - `src/workflow.js`: file-backed application workflow and run logs.
 - `src/server.js`: local HTTP API and static Web UI server, reachable through `music-likes-sync web`.
 - `src/agent-mcp.js`: optional stdio MCP adapter for Hermes or other local Agent runtimes.
@@ -215,6 +225,8 @@ Current automated coverage includes:
 - Mirror plan construction.
 - Low-confidence and duplicate-match safety behavior.
 - Mirror add resolution.
+- Human-labeled deterministic match evaluation with zero unsafe auto-accepts.
+- Read-only live match shadow runs and cross-recording target-collision audits.
 - Dry-run and destructive-confirmation contracts.
 - Add-only execution separation from delete execution.
 - Mirror run idempotency keys and operation-key propagation.
@@ -226,6 +238,7 @@ Current automated coverage includes:
 - React + Vite + TypeScript frontend shell type-check and production build through `npm run check:web-app`.
 - React app HTTP smoke for the default `/` React entry, `/app/` compatibility alias, `/workbench/` compatibility workbench, SPA fallback, built assets, read-side app-state / sync-check / sync-preview API wiring, add-candidate lookup / decisions, tombstone deletion-signal decisions, controlled add dry-run / real-write live-validation blocking, delete confirmation / real-delete live-validation blocking, convergence summary checks, local AI profile / similar / recommendation contracts, AI consent guards, Agent session redaction, live-validation / AI-provider advanced diagnostics, missing assets, and path traversal through `npm run smoke:web-app`.
 - React browser UI smoke for the default `/` desktop and mobile ordinary-user entry, sync preview, controlled write guards, local AI profile / similar search, natural-language Agent chat, Agent audit refresh, local-draft shortlist trace display, advanced diagnostics, and horizontal overflow checks through `npm run smoke:react-ui`.
+- Manual review compares real Apple / QQ / NetEase artwork and user-initiated clips of at most 30 seconds. Audio fingerprints and signed media URLs stay in process memory, are never persisted or uploaded, and are never sent to AI.
 - Privacy smoke for public Git candidates and npm package contents, including cookie/API-key placeholders and forbidden runtime paths.
 - Desktop and mobile UI smoke coverage for mirror controls, operation filters, manual review controls, stale snapshot / convergence health, convergence control, add alternatives, and executable delete confirmation.
 - npm pack dry-run smoke that enforces the public package whitelist, checks the CLI `bin` target, and excludes local state, reports, cookies, browser profiles, and env files.

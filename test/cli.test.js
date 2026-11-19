@@ -121,6 +121,10 @@ describe('cli', () => {
     ], {
       cwd,
       encoding: 'utf8',
+      env: {
+        ...process.env,
+        MUSIC_LIKES_SYNC_HOME: cwd,
+      },
     });
     assert.equal(planResult.status, 0, planResult.stderr || planResult.stdout);
 
@@ -147,6 +151,10 @@ describe('cli', () => {
     ], {
       cwd,
       encoding: 'utf8',
+      env: {
+        ...process.env,
+        MUSIC_LIKES_SYNC_HOME: cwd,
+      },
     });
 
     assert.equal(decisionResult.status, 0, decisionResult.stderr || decisionResult.stdout);

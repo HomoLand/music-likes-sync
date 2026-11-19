@@ -1,1 +1,1 @@
-dist/
+# dist/ is built by the root prepack script and shipped with the npm package.

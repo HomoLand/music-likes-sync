@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "exact-recording",
+      "source": { "id": "a1", "platform": "apple", "title": "Blue Hour", "artist": "Aster", "album": "Sky", "durationMs": 180500, "isrc": "USAAA2600001" },
+      "candidates": [
+        { "id": "q-wrong", "platform": "qq", "title": "Blue Hour Live", "artist": "Aster", "album": "Sky Live", "durationMs": 201000 },
+        { "id": "q-right", "platform": "qq", "title": "Blue Hour", "artist": "Aster", "album": "Sky", "durationMs": 180000 }
+      ],
+      "expected": { "status": "match", "targetId": "q-right" }
+    },
+    {
+      "id": "traditional-simplified-alias",
+      "source": { "id": "a2", "platform": "apple", "title": "裁夢為魂", "artist": "Rachel", "album": "蚍蜉渡海", "durationMs": 270832, "aliases": { "artists": ["银临"] } },
+      "candidates": [
+        { "id": "n-right", "platform": "netease", "title": "裁梦为魂", "artist": "银临", "album": "蚍蜉渡海", "durationMs": 270000 }
+      ],
+      "expected": { "status": "match", "targetId": "n-right" }
+    },
+    {
+      "id": "japanese-localized-alias",
+      "source": { "id": "a3", "platform": "apple", "title": "ヤキモチ", "artist": "高橋優", "album": "今、そこにある明滅と群生", "durationMs": 314500, "aliases": { "artists": ["高桥优"] } },
+      "candidates": [
+        { "id": "q-right", "platform": "qq", "title": "ヤキモチ", "artist": "高桥优", "album": "今、そこにある明滅と群生", "durationMs": 314000 }
+      ],
+      "expected": { "status": "match", "targetId": "q-right" }
+    },
+    {
+      "id": "two-second-provider-rounding",
+      "source": { "id": "a4", "platform": "apple", "title": "Night Drive", "artist": "Example", "album": "Road", "durationMs": 200900 },
+      "candidates": [
+        { "id": "q-right", "platform": "qq", "title": "Night Drive", "artist": "Example", "album": "Road", "durationMs": 199000 }
+      ],
+      "expected": { "status": "match", "targetId": "q-right" }
+    },
+    {
+      "id": "seven-second-duration-risk",
+      "source": { "id": "a5", "platform": "apple", "title": "Long Intro", "artist": "Example", "album": "Road", "durationMs": 240000 },
+      "candidates": [
+        { "id": "n-risk", "platform": "netease", "title": "Long Intro", "artist": "Example", "album": "Road", "durationMs": 247000 }
+      ],
+      "expected": { "status": "review", "targetId": "n-risk" }
+    },
+    {
+      "id": "live-version-conflict",
+      "source": { "id": "a6", "platform": "apple", "title": "Open Road", "artist": "Example", "album": "Road", "durationMs": 210000 },
+      "candidates": [
+        { "id": "q-live", "platform": "qq", "title": "Open Road (Live)", "artist": "Example", "album": "Live at Home", "durationMs": 223000 }
+      ],
+      "expected": { "status": "review", "targetId": "q-live" }
+    },
+    {
+      "id": "remix-version-conflict",
+      "source": { "id": "a7", "platform": "apple", "title": "Signal", "artist": "Example", "album": "Signal", "durationMs": 190000 },
+      "candidates": [
+        { "id": "n-remix", "platform": "netease", "title": "Signal (Club Remix)", "artist": "Example", "album": "Signal Remixes", "durationMs": 205000 }
+      ],
+      "expected": { "status": "review", "targetId": "n-remix" }
+    },
+    {
+      "id": "same-title-different-artist",
+      "source": { "id": "a8", "platform": "apple", "title": "Home", "artist": "Artist One", "album": "Home", "durationMs": 200000 },
+      "candidates": [
+        { "id": "q-other", "platform": "qq", "title": "Home", "artist": "Artist Two", "album": "Home", "durationMs": 200000 }
+      ],
+      "expected": { "status": "review", "targetId": "q-other" }
+    },
+    {
+      "id": "different-isrc-conflict",
+      "source": { "id": "a9", "platform": "apple", "title": "One Version", "artist": "Example", "album": "One", "durationMs": 180000, "isrc": "USAAA2600002" },
+      "candidates": [
+        { "id": "n-conflict", "platform": "netease", "title": "One Version", "artist": "Example", "album": "One", "durationMs": 180000, "isrc": "USAAA2600003" }
+      ],
+      "expected": { "status": "review", "targetId": "n-conflict" }
+    },
+    {
+      "id": "unrelated-search-result",
+      "source": { "id": "a10", "platform": "apple", "title": "Wanted Song", "artist": "Wanted Artist", "album": "Wanted", "durationMs": 180000 },
+      "candidates": [
+        { "id": "q-wrong", "platform": "qq", "title": "Different", "artist": "Someone Else", "album": "Other", "durationMs": 45000 }
+      ],
+      "expected": { "status": "missing", "targetId": "q-wrong" }
+    },
+    {
+      "id": "close-candidate-ambiguity",
+      "source": { "id": "a11", "platform": "apple", "title": "New Song", "artist": "Alice", "album": "Source Album", "durationMs": 180000 },
+      "candidates": [
+        { "id": "q-best", "platform": "qq", "title": "New Song", "artist": "Alice", "album": "Target Album", "durationMs": 180000 },
+        { "id": "q-close", "platform": "qq", "title": "New Song", "artist": "Alice B", "album": "Target Album", "durationMs": 180000 }
+      ],
+      "expected": { "status": "review", "targetId": "q-best" }
+    },
+    {
+      "id": "trusted-apple-equivalent",
+      "source": {
+        "id": "a12",
+        "platform": "apple",
+        "title": "Ai Ren Cuo Guo",
+        "artist": "Accusefive",
+        "album": "Somewhere in Time",
+        "durationMs": 292075,
+        "isrc": "TWAAA2600001",
+        "aliases": { "titles": ["爱人错过"], "artists": ["告五人"], "albums": ["我肯定在几百年前就说过爱你"] },
+        "metadata": { "appleStorefronts": { "equivalents": [{ "storefront": "cn", "title": "爱人错过", "artist": "告五人", "album": "我肯定在几百年前就说过爱你", "durationMs": 292075, "isrc": "TWAAA2600001", "isrcMatch": true, "aliasTrusted": true }] } }
+      },
+      "candidates": [
+        { "id": "q-right", "platform": "qq", "title": "爱人错过", "artist": "告五人", "album": "我肯定在几百年前就说过爱你", "durationMs": 292000 }
+      ],
+      "expected": { "status": "match", "targetId": "q-right" }
+    }
+  ]
+}
